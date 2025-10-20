@@ -1,0 +1,24 @@
+# Add cu128 PyTorch index for CUDA 12.8/cuDNN 9 compatibility
+--extra-index-url https://download.pytorch.org/whl/cu128
+
+# PyTorch 2.7.1 with CUDA 12.8/cuDNN 9 support (fixes cuDNN crash)
+torch>=2.7.1
+torchaudio>=2.7.1
+
+# WhisperX - Latest version with fixed VAD URL
+whisperx==3.3.1
+
+# Opus audio decoder for Discord voice
+opuslib>=3.0.0
+
+# NumPy - Pin to 1.x for compatibility with pyannote.audio
+numpy<2.0.0
+
+# WebSocket server
+websockets==12.0
+
+# HTTP server for health checks
+aiohttp==3.9.1
+
+# Audio processing
+ffmpeg-python==0.2.0

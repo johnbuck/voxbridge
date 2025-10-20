@@ -1,0 +1,91 @@
+services:
+  # WhisperX STT Server - Handles speech-to-text with GPU
+  whisperx:
+    build:
+      context: .
+      dockerfile: Dockerfile.whisperx
+    container_name: voxbridge-whisperx
+    security_opt:
+      - seccomp:unconfined
+    ports:
+      - "4901:4901"  # WebSocket
+      - "4902:4902"  # Health check
+    volumes:
+      - ./whisper-server.py:/app/whisper-server.py  # Live code updates
+      - ./requirements.txt:/app/requirements.txt    # For reference
+      - whisperx-models:/root/.cache/whisperx       # Cache downloaded models
+    environment:
+      - WHISPERX_MODEL=${WHISPERX_MODEL:-small}
+      - WHISPERX_DEVICE=${WHISPERX_DEVICE:-auto}
+      - WHISPERX_COMPUTE_TYPE=${WHISPERX_COMPUTE_TYPE:-float16}
+      - WHISPERX_BATCH_SIZE=${WHISPERX_BATCH_SIZE:-16}
+      - WHISPER_SERVER_PORT=4901
+    restart: unless-stopped
+    networks:
+      - bot-network
+      - pinkleberry_bridge
+    # GPU support - Use GPU 1 only
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['1']
+              capabilities: [gpu]
+
+  # VoxBridge Discord - Python Discord voice bridge (STT/TTS)
+  voxbridge-discord:
+    build:
+      context: .
+      dockerfile: Dockerfile.python
+    container_name: voxbridge-discord
+    ports:
+      - "4900:4900"
+    volumes:
+      - ./discord_bot.py:/app/discord_bot.py                # Live code updates
+      - ./whisper_client.py:/app/whisper_client.py          # Live code updates
+      - ./speaker_manager.py:/app/speaker_manager.py        # Live code updates
+      - ./streaming_handler.py:/app/streaming_handler.py    # Live code updates
+      - ./requirements-bot.txt:/app/requirements-bot.txt    # For reference
+    environment:
+      # Discord
+      - DISCORD_TOKEN=${DISCORD_TOKEN}
+      
+      # WhisperX Configuration - Connect to whisperx container
+      - WHISPER_SERVER_URL=ws://whisperx:4901
+      
+      # Speaker Management
+      - SILENCE_THRESHOLD_MS=${SILENCE_THRESHOLD_MS:-800}
+      - MAX_SPEAKING_TIME_MS=${MAX_SPEAKING_TIME_MS:-45000}
+      
+      # Chatterbox TTS
+      - CHATTERBOX_URL=${CHATTERBOX_URL:-http://chatterbox:4800}
+      - CHATTERBOX_VOICE_ID=${CHATTERBOX_VOICE_ID}
+      
+      # n8n Integration
+      - N8N_WEBHOOK_URL=${N8N_WEBHOOK_URL}
+      - N8N_WEBHOOK_TEST_URL=${N8N_WEBHOOK_TEST_URL}
+      - N8N_TEST_MODE=${N8N_TEST_MODE:-false}
+      
+      # Server Config
+      - PORT=4900
+    depends_on:
+      - whisperx
+    restart: unless-stopped
+    networks:
+      - bot-network
+      - pinkleberry_bridge
+
+networks:
+  bot-network:
+    external: true
+  pinkleberry_bridge:
+    external: true
+
+volumes:
+  whisperx-models:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ../zexternal-volumes/voxbridge-whisperx-models

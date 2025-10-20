@@ -1,0 +1,58 @@
+# WhisperX Server - Separate Container
+# Handles speech-to-text transcription with GPU support
+
+FROM pytorch/pytorch:2.7.1-cuda12.8-cudnn9-runtime
+
+WORKDIR /app
+
+# Install runtime dependencies
+# PyTorch base image already includes CUDA/cuDNN
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ffmpeg \
+    curl \
+    libsndfile1 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Add NVIDIA repository and install cuDNN 9 development libraries
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    wget \
+    gnupg2 \
+    && wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-keyring_1.1-1_all.deb \
+    && dpkg -i cuda-keyring_1.1-1_all.deb \
+    && rm cuda-keyring_1.1-1_all.deb \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends \
+        libcudnn9-dev-cuda-12 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Python dependencies (WhisperX will install ctranslate2 4.4.0)
+COPY requirements.txt .
+RUN pip3 install --no-cache-dir -r requirements.txt && \
+    rm requirements.txt
+
+# Upgrade ctranslate2 AFTER whisperx install to avoid dependency conflicts
+# 4.6.0 has cuDNN 9 compatibility, fixes bundled cuDNN 8.9.7 conflicts
+RUN pip3 install --no-cache-dir --upgrade ctranslate2==4.6.0
+
+# Set LD_LIBRARY_PATH so ctranslate2 can find cuDNN libraries
+# Solution from: https://github.com/OpenNMT/CTranslate2/issues/1806
+ENV LD_LIBRARY_PATH="/lib/x86_64-linux-gnu:/opt/conda/lib/python3.11/site-packages/nvidia/cudnn/lib:$LD_LIBRARY_PATH"
+
+# Copy WhisperX server
+COPY whisper-server.py .
+RUN chmod +x whisper-server.py
+
+# Create non-root user with UID 1001 to avoid conflicts
+RUN adduser --disabled-password --gecos '' --uid 1001 appuser && \
+    chown -R appuser:appuser /app
+USER appuser
+
+# Expose ports
+EXPOSE 4901 4902
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD curl -f http://localhost:4902/health || exit 1
+
+# Run WhisperX server
+CMD ["python3", "/app/whisper-server.py"]

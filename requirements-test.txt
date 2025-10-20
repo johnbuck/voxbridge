@@ -1,0 +1,23 @@
+# VoxBridge Testing Dependencies
+# Core testing framework
+pytest>=7.4.0
+pytest-asyncio>=0.21.0
+pytest-mock>=3.12.0
+pytest-cov>=4.1.0         # Coverage reporting
+
+# HTTP/WebSocket testing
+pytest-httpx>=0.26.0      # Mock httpx requests
+httpx>=0.25.0             # Already in requirements-bot.txt but explicit here
+aioresponses>=0.7.4       # Mock aiohttp if needed
+websockets>=12.0          # Already in requirements-bot.txt but explicit here
+
+# Discord bot testing
+dpytest>=0.7.0            # Discord.py testing utilities
+
+# Async testing utilities
+asynctest>=0.13.0         # Additional async test utilities
+pytest-timeout>=2.2.0     # Timeout handling for tests
+
+# Test data and utilities
+Faker>=20.0.0             # Generate fake data
+freezegun>=1.4.0          # Time mocking

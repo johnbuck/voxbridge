@@ -1,0 +1,45 @@
+# Discord Bot (Python)
+# Handles Discord voice operations and HTTP API
+
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ffmpeg \
+    libopus0 \
+    libopus-dev \
+    libsodium23 \
+    libsodium-dev \
+    libffi-dev \
+    build-essential \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy requirements and install Python dependencies
+COPY requirements-bot.txt ./
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -r requirements-bot.txt && \
+    rm requirements-bot.txt
+
+# Copy application code
+COPY discord_bot.py ./
+COPY whisper_client.py ./
+COPY speaker_manager.py ./
+COPY streaming_handler.py ./
+
+# Create non-root user
+RUN adduser --disabled-password --gecos '' --uid 1001 appuser && \
+    chown -R appuser:appuser /app
+USER appuser
+
+# Expose port
+EXPOSE 4900
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
+    CMD curl -f http://localhost:4900/health || exit 1
+
+# Run Discord bot
+CMD ["python", "discord_bot.py"]
