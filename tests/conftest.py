@@ -20,7 +20,7 @@ if not hasattr(discord, 'sinks'):
     discord.sinks = MagicMock()
     discord.sinks.Sink = type('Sink', (), {})
 
-from discord_bot import app
+from src.discord_bot import app
 
 # ============================================================
 # Event Loop Configuration

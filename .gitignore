@@ -12,6 +12,21 @@ __pycache__/
 venv/
 env/
 ENV/
+*.egg-info/
+
+# Testing
+htmlcov/
+.pytest_cache/
+.coverage
+*.cover
+.hypothesis/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
 
 # Whisper models cache
 ~/.cache/huggingface/

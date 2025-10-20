@@ -12,7 +12,7 @@ import json
 from unittest.mock import AsyncMock, MagicMock, patch
 import websockets.exceptions
 
-from whisper_client import WhisperClient
+from src.whisper_client import WhisperClient
 
 
 # ============================================================

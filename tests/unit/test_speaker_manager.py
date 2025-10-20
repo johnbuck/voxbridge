@@ -12,7 +12,7 @@ import time
 from unittest.mock import AsyncMock, MagicMock, patch, call
 import httpx
 
-from speaker_manager import SpeakerManager
+from src.speaker_manager import SpeakerManager
 
 
 # ============================================================
@@ -118,7 +118,7 @@ async def test_start_transcription_creates_whisper_client():
     async def mock_audio_stream():
         yield b'\x00' * 960
 
-    with patch('speaker_manager.WhisperClient') as MockWhisperClient:
+    with patch('src.speaker_manager.WhisperClient') as MockWhisperClient:
         mock_client = AsyncMock()
         MockWhisperClient.return_value = mock_client
 

@@ -22,17 +22,12 @@ Discord Voice Channel
 
 ### Dual-Language Architecture
 
-**Current (Python-based):**
-- `discord_bot.py` - Main Discord bot with voice handling
-- `speaker_manager.py` - Single-speaker lock system
-- `whisper_client.py` - WhisperX WebSocket client
-- `streaming_handler.py` - n8n streaming response processor
-- `whisper-server.py` - WhisperX WebSocket server
-
-**Legacy (Node.js - being phased out):**
-- `server.js`, `speaker-manager.js`, `whisper-client.js`, `streaming-response-handler.js`
-- Only modify if explicitly requested by user
-- Default to Python implementation for new features
+**Python-based implementation:**
+- `src/discord_bot.py` - Main Discord bot with voice handling
+- `src/speaker_manager.py` - Single-speaker lock system
+- `src/whisper_client.py` - WhisperX WebSocket client
+- `src/streaming_handler.py` - n8n streaming response processor
+- `src/whisper_server.py` - WhisperX WebSocket server
 
 ### Docker Services
 
@@ -57,8 +52,8 @@ Discord Voice Channel
 - Manual finalization
 
 **Key Files:**
-- `speaker_manager.py:74-103` - Lock acquisition
-- `speaker_manager.py:334-358` - Lock release
+- `src/speaker_manager.py:74-103` - Lock acquisition
+- `src/speaker_manager.py:334-358` - Lock release
 
 ### Streaming Pipeline
 
@@ -71,8 +66,8 @@ Discord Voice Channel
 4. **Chatterbox TTS** - Audio generation and playback
 
 **Key Files:**
-- `streaming_handler.py` - Response chunk processing
-- `speaker_manager.py:291-333` - Streaming response handler
+- `src/streaming_handler.py` - Response chunk processing
+- `src/speaker_manager.py:291-333` - Streaming response handler
 
 ### Test Mode
 
@@ -84,7 +79,7 @@ Discord Voice Channel
 - `N8N_TEST_MODE=true|false` - Mode selector
 
 **Implementation:**
-- `speaker_manager.py:52-67` - Webhook selection logic
+- `src/speaker_manager.py:52-67` - Webhook selection logic
 - Logs full webhook URL on startup (🧪 test mode, 🌐 production mode)
 - Requires container restart to switch modes
 
@@ -93,11 +88,13 @@ Discord Voice Channel
 ### Python Core (Primary)
 ```
 /
-├── discord_bot.py              # Main Discord bot entry point
-├── speaker_manager.py          # Speaker lock + n8n integration
-├── whisper_client.py           # WhisperX WebSocket client
-├── streaming_handler.py        # n8n streaming response handler
-├── whisper-server.py           # WhisperX server (runs in whisperx container)
+├── src/                        # Python source code
+│   ├── __init__.py
+│   ├── discord_bot.py          # Main Discord bot entry point
+│   ├── speaker_manager.py      # Speaker lock + n8n integration
+│   ├── whisper_client.py       # WhisperX WebSocket client
+│   ├── streaming_handler.py    # n8n streaming response handler
+│   └── whisper_server.py       # WhisperX server (runs in whisperx container)
 ├── requirements-bot.txt        # Discord bot dependencies
 └── requirements.txt            # WhisperX server dependencies
 ```
@@ -137,7 +134,7 @@ tests/
 
 ### When Modifying Speaker Lock Logic
 
-**File:** `speaker_manager.py`
+**File:** `src/speaker_manager.py`
 
 **Critical sections:**
 - `on_speaking_start()` - Lock acquisition (lines 74-103)
@@ -157,7 +154,7 @@ tests/
 
 ### When Adding n8n Integration Features
 
-**File:** `speaker_manager.py`
+**File:** `src/speaker_manager.py`
 
 **Key methods:**
 - `_send_to_n8n()` - Webhook POST with retry (lines 248-289)
@@ -180,7 +177,7 @@ tests/
 
 ### When Modifying WhisperX Integration
 
-**Files:** `whisper_client.py`, `whisper-server.py`
+**Files:** `src/whisper_client.py`, `src/whisper_server.py`
 
 **WebSocket protocol:**
 1. Client connects → sends `{"type": "start", "userId": "..."}`
@@ -233,16 +230,16 @@ tests/
 
 ```bash
 # Quick validation (unit tests only)
-./test.sh tests/unit -v
+./scripts/test.sh tests/unit -v
 
 # Full test suite with coverage
-./test.sh tests/unit --cov=. --cov-report=term-missing
+./scripts/test.sh tests/unit --cov=. --cov-report=term-missing
 
 # Specific integration test
-./test.sh tests/integration/test_streaming_latency.py -v
+./scripts/test.sh tests/integration/test_streaming_latency.py -v
 
 # Watch mode for development
-./test.sh tests/unit -v --looponfail
+./scripts/test.sh tests/unit -v --looponfail
 ```
 
 ### Test File Naming
@@ -265,7 +262,7 @@ tests/
 
 ### Debugging a Test Failure
 
-1. **Run specific test** - `./test.sh tests/unit/test_file.py::test_name -v`
+1. **Run specific test** - `./scripts/test.sh tests/unit/test_file.py::test_name -v`
 2. **Add print statements** - Run with `-s` flag to see prints
 3. **Check logs** - Look for emoji indicators (🎤 🔇 🤫 🏁 etc.)
 4. **Use debugger** - Run with `--pdb` flag
@@ -318,8 +315,8 @@ tests/
 
 ```yaml
 volumes:
-  - ./discord_bot.py:/app/discord_bot.py
-  - ./speaker_manager.py:/app/speaker_manager.py
+  - ./src/discord_bot.py:/app/src/discord_bot.py
+  - ./src/speaker_manager.py:/app/src/speaker_manager.py
 ```
 
 **Restart after code changes:**
@@ -525,10 +522,10 @@ async def _unlock():
 
 ```python
 # BAD - Creating new implementation file
-Write(file_path="speaker_manager_v2.py", content="...")
+Write(file_path="src/speaker_manager_v2.py", content="...")
 
 # GOOD - Editing existing file
-Edit(file_path="speaker_manager.py", old_string="...", new_string="...")
+Edit(file_path="src/speaker_manager.py", old_string="...", new_string="...")
 ```
 
 ## Quick Reference
@@ -541,10 +538,11 @@ Edit(file_path="speaker_manager.py", old_string="...", new_string="...")
 
 ### Common File Paths
 
-- Discord bot: `/home/wiley/Docker/voxbridge/discord_bot.py`
-- Speaker manager: `/home/wiley/Docker/voxbridge/speaker_manager.py`
-- WhisperX client: `/home/wiley/Docker/voxbridge/whisper_client.py`
-- Streaming handler: `/home/wiley/Docker/voxbridge/streaming_handler.py`
+- Discord bot: `/home/wiley/Docker/voxbridge/src/discord_bot.py`
+- Speaker manager: `/home/wiley/Docker/voxbridge/src/speaker_manager.py`
+- WhisperX client: `/home/wiley/Docker/voxbridge/src/whisper_client.py`
+- Streaming handler: `/home/wiley/Docker/voxbridge/src/streaming_handler.py`
+- WhisperX server: `/home/wiley/Docker/voxbridge/src/whisper_server.py`
 - Environment: `/home/wiley/Docker/voxbridge/.env`
 - Compose: `/home/wiley/Docker/voxbridge/docker-compose.yml`
 
@@ -561,13 +559,13 @@ docker logs voxbridge-discord -f
 docker compose build --no-cache
 
 # Run unit tests
-./test.sh tests/unit -v
+./scripts/test.sh tests/unit -v
 
 # Run integration tests
-./test.sh tests/integration -v
+./scripts/test.sh tests/integration -v
 
 # Check coverage
-./test.sh tests/unit --cov=. --cov-report=term-missing
+./scripts/test.sh tests/unit --cov=. --cov-report=term-missing
 ```
 
 ### Environment Variables to Know

@@ -24,10 +24,7 @@ RUN pip install --no-cache-dir --upgrade pip && \
     rm requirements-bot.txt
 
 # Copy application code
-COPY discord_bot.py ./
-COPY whisper_client.py ./
-COPY speaker_manager.py ./
-COPY streaming_handler.py ./
+COPY src/ ./src/
 
 # Create non-root user
 RUN adduser --disabled-password --gecos '' --uid 1001 appuser && \
@@ -42,4 +39,4 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
     CMD curl -f http://localhost:4900/health || exit 1
 
 # Run Discord bot
-CMD ["python", "discord_bot.py"]
+CMD ["python", "-m", "src.discord_bot"]

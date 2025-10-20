@@ -19,9 +19,9 @@ import asyncio
 from unittest.mock import MagicMock, AsyncMock, patch
 import time
 
-from speaker_manager import SpeakerManager
-from streaming_handler import StreamingResponseHandler
-from whisper_client import WhisperClient
+from src.speaker_manager import SpeakerManager
+from src.streaming_handler import StreamingResponseHandler
+from src.whisper_client import WhisperClient
 
 
 # ============================================================

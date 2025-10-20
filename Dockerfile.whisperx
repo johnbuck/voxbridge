@@ -39,8 +39,8 @@ RUN pip3 install --no-cache-dir --upgrade ctranslate2==4.6.0
 ENV LD_LIBRARY_PATH="/lib/x86_64-linux-gnu:/opt/conda/lib/python3.11/site-packages/nvidia/cudnn/lib:$LD_LIBRARY_PATH"
 
 # Copy WhisperX server
-COPY whisper-server.py .
-RUN chmod +x whisper-server.py
+COPY src/whisper_server.py ./src/whisper_server.py
+RUN chmod +x src/whisper_server.py
 
 # Create non-root user with UID 1001 to avoid conflicts
 RUN adduser --disabled-password --gecos '' --uid 1001 appuser && \
@@ -55,4 +55,4 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
     CMD curl -f http://localhost:4902/health || exit 1
 
 # Run WhisperX server
-CMD ["python3", "/app/whisper-server.py"]
+CMD ["python3", "/app/src/whisper_server.py"]

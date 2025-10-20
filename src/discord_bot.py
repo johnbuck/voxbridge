@@ -26,8 +26,8 @@ import httpx
 import uvicorn
 from dotenv import load_dotenv
 
-from speaker_manager import SpeakerManager
-from streaming_handler import StreamingResponseHandler
+from src.speaker_manager import SpeakerManager
+from src.streaming_handler import StreamingResponseHandler
 
 # Load environment variables
 load_dotenv()

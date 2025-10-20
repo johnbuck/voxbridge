@@ -6,10 +6,7 @@ services:
     container_name: voxbridge-test
     volumes:
       # Mount source code for live updates during development
-      - ./discord_bot.py:/app/discord_bot.py
-      - ./whisper_client.py:/app/whisper_client.py
-      - ./speaker_manager.py:/app/speaker_manager.py
-      - ./streaming_handler.py:/app/streaming_handler.py
+      - ./src:/app/src
 
       # Mount test directory
       - ./tests:/app/tests

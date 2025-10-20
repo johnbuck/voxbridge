@@ -11,9 +11,9 @@ services:
       - "4901:4901"  # WebSocket
       - "4902:4902"  # Health check
     volumes:
-      - ./whisper-server.py:/app/whisper-server.py  # Live code updates
-      - ./requirements.txt:/app/requirements.txt    # For reference
-      - whisperx-models:/root/.cache/whisperx       # Cache downloaded models
+      - ./src/whisper_server.py:/app/src/whisper_server.py  # Live code updates
+      - ./requirements.txt:/app/requirements.txt             # For reference
+      - whisperx-models:/root/.cache/whisperx                # Cache downloaded models
     environment:
       - WHISPERX_MODEL=${WHISPERX_MODEL:-small}
       - WHISPERX_DEVICE=${WHISPERX_DEVICE:-auto}
@@ -42,11 +42,11 @@ services:
     ports:
       - "4900:4900"
     volumes:
-      - ./discord_bot.py:/app/discord_bot.py                # Live code updates
-      - ./whisper_client.py:/app/whisper_client.py          # Live code updates
-      - ./speaker_manager.py:/app/speaker_manager.py        # Live code updates
-      - ./streaming_handler.py:/app/streaming_handler.py    # Live code updates
-      - ./requirements-bot.txt:/app/requirements-bot.txt    # For reference
+      - ./src/discord_bot.py:/app/src/discord_bot.py              # Live code updates
+      - ./src/whisper_client.py:/app/src/whisper_client.py        # Live code updates
+      - ./src/speaker_manager.py:/app/src/speaker_manager.py      # Live code updates
+      - ./src/streaming_handler.py:/app/src/streaming_handler.py  # Live code updates
+      - ./requirements-bot.txt:/app/requirements-bot.txt          # For reference
     environment:
       # Discord
       - DISCORD_TOKEN=${DISCORD_TOKEN}

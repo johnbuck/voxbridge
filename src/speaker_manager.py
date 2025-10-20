@@ -26,7 +26,7 @@ from tenacity import (
     retry_if_exception_type
 )
 
-from whisper_client import WhisperClient
+from src.whisper_client import WhisperClient
 
 logger = logging.getLogger(__name__)
 

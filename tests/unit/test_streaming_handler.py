@@ -12,7 +12,7 @@ import tempfile
 from unittest.mock import AsyncMock, MagicMock, patch, mock_open
 import httpx
 
-from streaming_handler import StreamingResponseHandler
+from src.streaming_handler import StreamingResponseHandler
 
 
 # ============================================================

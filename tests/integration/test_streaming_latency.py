@@ -21,7 +21,7 @@ import httpx
 from unittest.mock import MagicMock, patch, AsyncMock
 import time
 
-from streaming_handler import StreamingResponseHandler
+from src.streaming_handler import StreamingResponseHandler
 
 
 # ============================================================
