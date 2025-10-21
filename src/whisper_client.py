@@ -156,13 +156,18 @@ class WhisperClient:
         Send audio chunk to WhisperX server
 
         Args:
-            audio_chunk: Binary Opus audio data
+            audio_chunk: Binary Opus audio data (bytes, bytearray, memoryview, etc.)
         """
         if not self.is_connected or not self.ws:
             logger.warning("⚠️ Cannot send audio - not connected to WhisperX")
             return
 
         try:
+            # Ensure audio_chunk is bytes (handle bytearray, memoryview, etc.)
+            # VoiceData.packet from discord-ext-voice-recv may not be plain bytes
+            if not isinstance(audio_chunk, bytes):
+                audio_chunk = bytes(audio_chunk)
+
             await self.ws.send(audio_chunk)
         except Exception as e:
             logger.error(f"❌ Error sending audio: {e}")

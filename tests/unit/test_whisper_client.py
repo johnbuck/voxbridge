@@ -131,6 +131,39 @@ async def test_send_audio_when_disconnected():
     # No WebSocket, so nothing to verify sent
 
 
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_send_audio_with_different_buffer_types():
+    """Test sending audio with bytes, bytearray, and memoryview types"""
+    client = WhisperClient()
+    client.is_connected = True
+    client.ws = AsyncMock()
+
+    # Test with bytes (standard)
+    audio_bytes = b'\x00' * 960
+    await client.send_audio(audio_bytes)
+    assert client.ws.send.call_count == 1
+    assert client.ws.send.call_args[0][0] == audio_bytes
+
+    # Test with bytearray (VoiceData.packet may be this type)
+    audio_bytearray = bytearray(b'\x01' * 960)
+    await client.send_audio(audio_bytearray)
+    assert client.ws.send.call_count == 2
+    # Should convert to bytes before sending
+    sent_data = client.ws.send.call_args[0][0]
+    assert isinstance(sent_data, bytes)
+    assert sent_data == bytes(audio_bytearray)
+
+    # Test with memoryview (another possible buffer type)
+    audio_memoryview = memoryview(b'\x02' * 960)
+    await client.send_audio(audio_memoryview)
+    assert client.ws.send.call_count == 3
+    # Should convert to bytes before sending
+    sent_data = client.ws.send.call_args[0][0]
+    assert isinstance(sent_data, bytes)
+    assert sent_data == bytes(audio_memoryview)
+
+
 # ============================================================
 # Message Handling Tests
 # ============================================================
