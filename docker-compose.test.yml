@@ -35,5 +35,10 @@ services:
       - PYTHONDONTWRITEBYTECODE=1
       - PYTHONUNBUFFERED=1
 
-    # No networks needed for unit tests (fully mocked)
-    # Integration tests use mock servers within same container
+    # Networks: pinkleberry_bridge for E2E tests with real services
+    networks:
+      - pinkleberry_bridge
+
+networks:
+  pinkleberry_bridge:
+    external: true
