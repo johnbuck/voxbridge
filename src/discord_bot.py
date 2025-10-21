@@ -138,7 +138,9 @@ class AudioReceiver(voice_recv.AudioSink):
         # Create buffer for this user if not exists
         if user_id not in self.user_buffers:
             logger.info(f"📥 New audio stream from user {user_id}")
-            self.user_buffers[user_id] = asyncio.Queue()
+            # Bounded queue prevents memory issues - 100 packets @ 20ms = 2 seconds of audio
+            max_queue_size = int(os.getenv('DISCORD_AUDIO_QUEUE_SIZE', '100'))
+            self.user_buffers[user_id] = asyncio.Queue(maxsize=max_queue_size)
 
             # Create async generator for this user's audio stream
             async def audio_stream_generator(uid):
