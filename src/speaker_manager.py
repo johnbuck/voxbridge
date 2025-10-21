@@ -298,7 +298,7 @@ class SpeakerManager:
         """
         try:
             # Import here to avoid circular dependency
-            from streaming_handler import StreamingResponseHandler
+            from src.streaming_handler import StreamingResponseHandler
 
             logger.info("🌊 Starting streaming response handler")
 
@@ -337,16 +337,29 @@ class SpeakerManager:
 
         # Cancel pending tasks and wait for them
         tasks_to_cancel = []
+
+        # Cancel timeout task with RecursionError protection
         if self.timeout_task and not self.timeout_task.done():
-            self.timeout_task.cancel()
-            tasks_to_cancel.append(self.timeout_task)
+            try:
+                self.timeout_task.cancel()
+                tasks_to_cancel.append(self.timeout_task)
+            except RecursionError:
+                logger.warning("⚠️ RecursionError cancelling timeout task, skipping")
+
+        # Cancel silence task with RecursionError protection
         if self.silence_task and not self.silence_task.done():
-            self.silence_task.cancel()
-            tasks_to_cancel.append(self.silence_task)
+            try:
+                self.silence_task.cancel()
+                tasks_to_cancel.append(self.silence_task)
+            except RecursionError:
+                logger.warning("⚠️ RecursionError cancelling silence task, skipping")
 
         # Wait for cancellation to complete
         if tasks_to_cancel:
-            await asyncio.gather(*tasks_to_cancel, return_exceptions=True)
+            try:
+                await asyncio.gather(*tasks_to_cancel, return_exceptions=True)
+            except RecursionError:
+                logger.warning("⚠️ RecursionError during gather, continuing cleanup")
 
         # Reset state
         self.active_speaker = None
@@ -363,12 +376,19 @@ class SpeakerManager:
             # Get running loop if available
             try:
                 loop = asyncio.get_running_loop()
-                # Schedule unlock in the running loop
-                asyncio.ensure_future(self._unlock(), loop=loop)
+                # Create and schedule unlock task
+                task = loop.create_task(self._unlock())
+                # Don't wait for completion during shutdown - it will complete on its own
+                logger.debug("🔓 Unlock task scheduled for background completion")
             except RuntimeError:
-                # No running loop - create new event loop for cleanup
-                logger.warning("⚠️ No running loop, skipping force unlock")
-                pass
+                # No running loop - just reset state directly
+                logger.warning("⚠️ No running loop, resetting state directly")
+                self.active_speaker = None
+                self.lock_start_time = None
+                self.last_audio_time = None
+                self.whisper_client = None
+                self.timeout_task = None
+                self.silence_task = None
 
     def set_voice_connection(self, voice_connection) -> None:
         """Set Discord voice connection for streaming support"""
