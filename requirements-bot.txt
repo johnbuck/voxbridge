@@ -1,6 +1,7 @@
 # Discord Bot Python Dependencies
 # Core Discord bot with voice support
 discord.py[voice]>=2.3.0
+discord-ext-voice-recv==0.5.2a179
 
 # API Server
 fastapi>=0.104.0

@@ -12,13 +12,9 @@ from unittest.mock import AsyncMock, Mock, MagicMock
 import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-# Mock discord.sinks before importing discord_bot
-# discord.sinks is not available in all discord.py versions
-from unittest.mock import MagicMock
+# Import discord and voice_recv extension
 import discord
-if not hasattr(discord, 'sinks'):
-    discord.sinks = MagicMock()
-    discord.sinks.Sink = type('Sink', (), {})
+from discord.ext import voice_recv
 
 from src.discord_bot import app
 

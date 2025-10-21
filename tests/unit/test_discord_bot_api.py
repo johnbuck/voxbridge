@@ -16,6 +16,7 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
 import src.discord_bot as discord_bot
+from discord.ext import voice_recv
 
 
 # ============================================================
@@ -51,8 +52,8 @@ def mock_voice_channel():
 
 @pytest.fixture
 def mock_voice_client():
-    """Mock Discord voice client"""
-    client = MagicMock()
+    """Mock VoiceRecvClient"""
+    client = MagicMock(spec=voice_recv.VoiceRecvClient)
     client.is_connected.return_value = True
     client.is_playing.return_value = False
     client.disconnect = AsyncMock()
@@ -346,3 +347,82 @@ def test_status_endpoint(client, mock_bot):
 
     # Verify voice info
     assert "voice" in data
+
+
+# ============================================================
+# Voice Receiving Tests
+# ============================================================
+
+@pytest.mark.unit
+def test_audio_receiver_wants_opus():
+    """Test AudioReceiver requests Opus packets"""
+    from src.discord_bot import AudioReceiver
+
+    receiver = AudioReceiver(MagicMock(), MagicMock())
+
+    # Verify wants_opus() returns True
+    assert receiver.wants_opus() is True
+
+
+@pytest.mark.unit
+def test_audio_receiver_inherits_from_audio_sink():
+    """Test AudioReceiver is a voice_recv.AudioSink"""
+    from src.discord_bot import AudioReceiver
+
+    receiver = AudioReceiver(MagicMock(), MagicMock())
+
+    # Verify it's an instance of AudioSink
+    assert isinstance(receiver, voice_recv.AudioSink)
+
+
+@pytest.mark.unit
+def test_join_voice_uses_voice_recv_client(client, mock_bot, mock_voice_channel, mock_voice_client):
+    """Test that join uses VoiceRecvClient for voice receiving"""
+    # Mock bot and channel
+    discord_bot.bot = mock_bot
+    mock_bot.get_channel.return_value = mock_voice_channel
+    mock_voice_channel.connect.return_value = mock_voice_client
+
+    # Make request
+    response = client.post("/voice/join", json={
+        "channelId": "987654321",
+        "guildId": "111222333"
+    })
+
+    # Assertions
+    assert response.status_code == 200
+
+    # Verify connect was called with cls parameter
+    mock_voice_channel.connect.assert_called_once()
+    call_kwargs = mock_voice_channel.connect.call_args[1]
+    assert 'cls' in call_kwargs
+    assert call_kwargs['cls'] == voice_recv.VoiceRecvClient
+
+    # Verify listen() was called
+    mock_voice_client.listen.assert_called_once()
+
+
+@pytest.mark.unit
+def test_audio_receiver_write_extracts_opus_packet():
+    """Test AudioReceiver.write() extracts Opus packet from VoiceData"""
+    from src.discord_bot import AudioReceiver
+
+    mock_vc = MagicMock()
+    mock_speaker_mgr = MagicMock()
+    mock_speaker_mgr.on_speaking_start = AsyncMock()
+
+    receiver = AudioReceiver(mock_vc, mock_speaker_mgr)
+
+    # Create mock user
+    mock_user = MagicMock()
+    mock_user.id = 123456789
+
+    # Create mock VoiceData
+    mock_voice_data = MagicMock(spec=voice_recv.VoiceData)
+    mock_voice_data.packet = b'\x00' * 960  # Opus packet
+
+    # Call write()
+    receiver.write(mock_user, mock_voice_data)
+
+    # Verify user buffer was created
+    assert str(mock_user.id) in receiver.user_buffers

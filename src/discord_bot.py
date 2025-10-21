@@ -19,18 +19,12 @@ from datetime import datetime
 from typing import Optional
 
 import discord
-from discord.ext import commands
+from discord.ext import commands, voice_recv
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 import httpx
 import uvicorn
 from dotenv import load_dotenv
-
-# Mock discord.sinks if not available (not in all discord.py versions)
-if not hasattr(discord, 'sinks'):
-    from unittest.mock import MagicMock
-    discord.sinks = MagicMock()
-    discord.sinks.Sink = type('Sink', (), {})
 
 from src.speaker_manager import SpeakerManager
 from src.streaming_handler import StreamingResponseHandler
@@ -110,7 +104,7 @@ async def on_error(event, *args, **kwargs):
 # VOICE CHANNEL OPERATIONS
 # ============================================================
 
-class AudioReceiver(discord.sinks.Sink):
+class AudioReceiver(voice_recv.AudioSink):
     """Custom audio sink to receive voice data"""
 
     def __init__(self, vc, speaker_mgr):
@@ -121,25 +115,21 @@ class AudioReceiver(discord.sinks.Sink):
         self.user_tasks = {}    # user_id -> streaming task
         self.active_users = set()  # Users currently being processed
 
-    def write(self, data, user):
+    def write(self, user, data: voice_recv.VoiceData):
         """
         Receive audio data from Discord
 
         Args:
-            data: Audio data dictionary with 'data' key containing Opus packet
             user: Discord user sending audio
+            data: VoiceData object containing Opus packet
         """
         if not user:
             return
 
         user_id = str(user.id)
 
-        # Extract Opus packet from data
-        # discord.py sends data as {'data': bytes, 'timestamp': int}
-        if isinstance(data, dict):
-            opus_packet = data.get('data')
-        else:
-            opus_packet = data
+        # Extract Opus packet from VoiceData object
+        opus_packet = data.packet
 
         if not opus_packet:
             return
@@ -176,6 +166,10 @@ class AudioReceiver(discord.sinks.Sink):
             self.user_buffers[user_id].put_nowait(opus_packet)
         except asyncio.QueueFull:
             logger.warning(f"⚠️ Audio buffer full for user {user_id}, dropping packet")
+
+    def wants_opus(self) -> bool:
+        """Return True to receive Opus packets (not decoded PCM)"""
+        return True
 
     def cleanup(self):
         """Cleanup audio sink"""
@@ -228,7 +222,7 @@ async def join_voice(request: JoinVoiceRequest):
 
         # Join voice channel
         logger.info("   🔌 Joining voice channel...")
-        voice_client = await channel.connect()
+        voice_client = await channel.connect(cls=voice_recv.VoiceRecvClient)
 
         logger.info("   👂 Setting up voice listeners...")
 
