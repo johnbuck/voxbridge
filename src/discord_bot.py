@@ -26,6 +26,12 @@ import httpx
 import uvicorn
 from dotenv import load_dotenv
 
+# Mock discord.sinks if not available (not in all discord.py versions)
+if not hasattr(discord, 'sinks'):
+    from unittest.mock import MagicMock
+    discord.sinks = MagicMock()
+    discord.sinks.Sink = type('Sink', (), {})
+
 from src.speaker_manager import SpeakerManager
 from src.streaming_handler import StreamingResponseHandler
 
