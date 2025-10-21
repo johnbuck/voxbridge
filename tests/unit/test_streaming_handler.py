@@ -572,3 +572,301 @@ async def test_empty_tts_response():
 
                     # No audio chunks written
                     mock_temp.write.assert_not_called()
+
+
+# ============================================================
+# Error Handling and Resilience Tests
+# ============================================================
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_chatterbox_health_check_success():
+    """Test health check succeeds when Chatterbox returns 200 OK"""
+    mock_voice_client = MagicMock()
+    handler = StreamingResponseHandler(mock_voice_client, "user_123")
+
+    # Set Chatterbox URL with /v1 suffix
+    handler.chatterbox_url = "http://chatterbox-tts:4123/v1"
+
+    with patch('httpx.AsyncClient') as MockClient:
+        mock_client = MagicMock()
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+
+        # Mock get to return response
+        mock_client.get = AsyncMock(return_value=mock_response)
+
+        # Setup AsyncClient context manager
+        MockClient.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+        MockClient.return_value.__aexit__ = AsyncMock(return_value=None)
+
+        result = await handler._check_chatterbox_health()
+
+        # Verify returns True
+        assert result is True
+
+        # Verify correct URL (strips /v1)
+        mock_client.get.assert_called_once_with("http://chatterbox-tts:4123/health")
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_chatterbox_health_check_failure():
+    """Test health check fails when Chatterbox is unavailable"""
+    mock_voice_client = MagicMock()
+    handler = StreamingResponseHandler(mock_voice_client, "user_123")
+
+    with patch('httpx.AsyncClient') as MockClient:
+        mock_client = MagicMock()
+
+        # Mock get to raise exception
+        mock_client.get = AsyncMock(side_effect=httpx.ConnectError("Connection refused"))
+
+        # Setup AsyncClient context manager
+        MockClient.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+        MockClient.return_value.__aexit__ = AsyncMock(return_value=None)
+
+        result = await handler._check_chatterbox_health()
+
+        # Verify returns False
+        assert result is False
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_health_check_failure_skips_processing():
+    """Test TTS processing is skipped when health check fails"""
+    mock_voice_client = MagicMock()
+    handler = StreamingResponseHandler(mock_voice_client, "user_123")
+
+    # Add sentences to queue
+    handler.sentence_queue = ["Test sentence."]
+
+    with patch.object(handler, '_check_chatterbox_health', return_value=False):
+        await handler._process_queue()
+
+        # Verify processing flag was set and cleared
+        assert handler.is_processing is False
+
+        # Verify queue was not processed (sentence still there)
+        assert len(handler.sentence_queue) == 1
+
+
+@pytest.mark.unit
+def test_wav_header_validation():
+    """Test WAV header validation and repair"""
+    mock_voice_client = MagicMock()
+    handler = StreamingResponseHandler(mock_voice_client, "user_123")
+
+    # Create mock WAV data with incorrect size headers
+    # RIFF header: "RIFF" + file_size(wrong) + "WAVE"
+    wav_data = bytearray(b'RIFF')
+    wav_data.extend((999999).to_bytes(4, 'little'))  # Wrong file size
+    wav_data.extend(b'WAVE')
+    wav_data.extend(b'fmt ')
+    wav_data.extend((16).to_bytes(4, 'little'))  # fmt chunk size
+    wav_data.extend(b'\x00' * 16)  # fmt chunk data
+    wav_data.extend(b'data')
+    wav_data.extend((888888).to_bytes(4, 'little'))  # Wrong data size
+    wav_data.extend(b'\x00' * 100)  # Actual data (100 bytes)
+
+    actual_file_size = len(wav_data) - 8
+    actual_data_size = 100
+
+    repaired = handler._validate_and_repair_wav(bytes(wav_data))
+
+    # Verify file size was corrected
+    repaired_file_size = int.from_bytes(repaired[4:8], 'little')
+    assert repaired_file_size == actual_file_size
+
+    # Verify data chunk size was corrected
+    data_pos = repaired.find(b'data')
+    repaired_data_size = int.from_bytes(repaired[data_pos+4:data_pos+8], 'little')
+    assert repaired_data_size == actual_data_size
+
+
+@pytest.mark.unit
+def test_wav_header_validation_with_mono_audio():
+    """Test WAV validation detects mono channel layout"""
+    mock_voice_client = MagicMock()
+    handler = StreamingResponseHandler(mock_voice_client, "user_123")
+
+    # Create WAV with mono channel (1 channel at offset 22-23)
+    wav_data = bytearray(b'RIFF')
+    wav_data.extend((100).to_bytes(4, 'little'))
+    wav_data.extend(b'WAVEfmt ')
+    wav_data.extend((16).to_bytes(4, 'little'))
+    wav_data.extend((1).to_bytes(2, 'little'))  # Format (PCM)
+    wav_data.extend((1).to_bytes(2, 'little'))  # Channels: 1 (mono)
+    wav_data.extend((48000).to_bytes(4, 'little'))  # Sample rate
+    wav_data.extend(b'\x00' * 6)  # Byte rate, block align, bits per sample
+    wav_data.extend(b'data')
+    wav_data.extend((50).to_bytes(4, 'little'))
+    wav_data.extend(b'\x00' * 50)
+
+    # Validation should work without errors
+    repaired = handler._validate_and_repair_wav(bytes(wav_data))
+
+    # Verify data was processed (size fixed)
+    assert len(repaired) == len(wav_data)
+    assert repaired[:4] == b'RIFF'
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_failed_sentences_tracking():
+    """Test failed sentences are tracked in failed_sentences list"""
+    mock_voice_client = MagicMock()
+    handler = StreamingResponseHandler(mock_voice_client, "user_123")
+
+    # Force sequential processing
+    handler.use_parallel_processing = False
+
+    # Mock health check to pass
+    handler._check_chatterbox_health = AsyncMock(return_value=True)
+
+    # Track which sentences were attempted
+    attempted = []
+
+    # Mock _synthesize_and_play to fail for specific sentences
+    async def mock_synthesize(text):
+        attempted.append(text)
+        if "fail" in text.lower():
+            raise Exception("TTS error")
+
+    handler._synthesize_and_play = mock_synthesize
+    handler.sentence_queue = ["This will fail.", "This works.", "Fail again."]
+
+    await handler._process_queue()
+
+    # Verify all sentences were attempted
+    assert len(attempted) == 3
+
+    # Verify failed sentences tracked
+    assert len(handler.failed_sentences) == 2
+    assert "This will fail." in handler.failed_sentences
+    assert "Fail again." in handler.failed_sentences
+
+    # Verify successful sentence not in failed list
+    assert "This works." not in handler.failed_sentences
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_tts_summary_logging_waits_for_completion():
+    """Test finalize waits for processing to complete before logging summary"""
+    mock_voice_client = MagicMock()
+    handler = StreamingResponseHandler(mock_voice_client, "user_123")
+
+    # Simulate processing in progress
+    handler.is_processing = True
+    handler.buffer = "Test"
+
+    # Track if we waited
+    wait_count = 0
+
+    async def mock_sleep(duration):
+        nonlocal wait_count
+        wait_count += 1
+        if wait_count >= 2:
+            # After 2 waits, mark processing complete
+            handler.is_processing = False
+
+    with patch('asyncio.sleep', side_effect=mock_sleep):
+        with patch.object(handler, '_process_queue', new_callable=AsyncMock):
+            await handler.finalize()
+
+            # Verify we waited for processing to complete
+            assert wait_count >= 2
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_retry_logic_on_chatterbox_errors():
+    """Test retry decorator retries TTS synthesis on failures"""
+    mock_voice_client = MagicMock()
+    mock_voice_client.is_connected.return_value = True
+    mock_voice_client.is_playing.return_value = False
+
+    handler = StreamingResponseHandler(mock_voice_client, "user_123")
+
+    attempt_count = 0
+
+    async def mock_aiter_bytes(chunk_size):
+        nonlocal attempt_count
+        attempt_count += 1
+
+        if attempt_count < 3:
+            # Fail first 2 attempts
+            raise httpx.TimeoutException("Timeout")
+
+        # Succeed on 3rd attempt
+        yield b'\x00' * 1024
+
+    mock_response = AsyncMock()
+    mock_response.raise_for_status = MagicMock()
+    mock_response.aiter_bytes = mock_aiter_bytes
+
+    with patch('httpx.AsyncClient') as MockClient:
+        mock_client = MagicMock()
+
+        # Create new mock_stream_ctx for each attempt
+        def create_stream_ctx():
+            ctx = MagicMock()
+            ctx.__aenter__ = AsyncMock(return_value=mock_response)
+            ctx.__aexit__ = AsyncMock(return_value=None)
+            return ctx
+
+        mock_client.stream = MagicMock(side_effect=lambda *args, **kwargs: create_stream_ctx())
+
+        MockClient.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+        MockClient.return_value.__aexit__ = AsyncMock(return_value=None)
+
+        with patch('tempfile.NamedTemporaryFile'):
+            with patch('discord.FFmpegPCMAudio'):
+                with patch('os.unlink'):
+                    # Should succeed after retries
+                    await handler._synthesize_and_play("Test retry")
+
+                    # Verify it took 3 attempts
+                    assert attempt_count == 3
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_ffmpeg_options_include_mono_conversion():
+    """Test FFmpeg is called with options for mono→stereo conversion"""
+    mock_voice_client = MagicMock()
+    mock_voice_client.is_connected.return_value = True
+    mock_voice_client.is_playing.return_value = False
+
+    handler = StreamingResponseHandler(mock_voice_client, "user_123")
+
+    fake_audio = b'\x00' * 1024
+
+    with patch('tempfile.NamedTemporaryFile') as mock_tempfile:
+        mock_temp = MagicMock()
+        mock_temp.name = "/tmp/test.wav"
+        mock_temp.write = MagicMock()
+        mock_temp.__enter__ = MagicMock(return_value=mock_temp)
+        mock_temp.__exit__ = MagicMock(return_value=False)
+        mock_tempfile.return_value = mock_temp
+
+        with patch('discord.FFmpegPCMAudio') as MockFFmpeg:
+            with patch('os.unlink'):
+                await handler._play_with_temp_file(fake_audio)
+
+                # Verify FFmpegPCMAudio called with correct options
+                MockFFmpeg.assert_called_once()
+                call_args = MockFFmpeg.call_args
+
+                # Check positional args (temp file path)
+                assert call_args[0][0] == "/tmp/test.wav"
+
+                # Check keyword args (FFmpeg options)
+                assert 'before_options' in call_args[1]
+                assert call_args[1]['before_options'] == '-loglevel error'
+
+                assert 'options' in call_args[1]
+                assert '-ac 2' in call_args[1]['options']
+                assert '-ar 48000' in call_args[1]['options']
