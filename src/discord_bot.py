@@ -107,10 +107,11 @@ async def on_error(event, *args, **kwargs):
 class AudioReceiver(voice_recv.AudioSink):
     """Custom audio sink to receive voice data"""
 
-    def __init__(self, vc, speaker_mgr):
+    def __init__(self, vc, speaker_mgr, loop):
         super().__init__()
         self.vc = vc
         self.speaker_mgr = speaker_mgr
+        self.loop = loop  # Event loop for thread-safe task scheduling
         self.user_buffers = {}  # user_id -> asyncio.Queue of audio chunks
         self.user_tasks = {}    # user_id -> streaming task
         self.active_users = set()  # Users currently being processed
@@ -153,13 +154,16 @@ class AudioReceiver(voice_recv.AudioSink):
                     logger.error(f"❌ Error in audio stream generator for {uid}: {e}")
 
             # Start processing this user's audio
+            # NOTE: write() is called from a synchronous thread, so we must use
+            # run_coroutine_threadsafe to schedule the async task on the main loop
             if user_id not in self.active_users:
                 self.active_users.add(user_id)
                 stream_gen = audio_stream_generator(user_id)
-                task = asyncio.create_task(
-                    self.speaker_mgr.on_speaking_start(user_id, stream_gen)
+                future = asyncio.run_coroutine_threadsafe(
+                    self.speaker_mgr.on_speaking_start(user_id, stream_gen),
+                    self.loop
                 )
-                self.user_tasks[user_id] = task
+                self.user_tasks[user_id] = future
 
         # Add Opus packet to user's queue
         try:
@@ -226,8 +230,9 @@ async def join_voice(request: JoinVoiceRequest):
 
         logger.info("   👂 Setting up voice listeners...")
 
-        # Set up voice receiving
-        voice_client.listen(AudioReceiver(voice_client, speaker_manager))
+        # Set up voice receiving - pass event loop for thread-safe task scheduling
+        loop = asyncio.get_running_loop()
+        voice_client.listen(AudioReceiver(voice_client, speaker_manager, loop))
 
         # Pass voice connection to speaker manager
         speaker_manager.set_voice_connection(voice_client)

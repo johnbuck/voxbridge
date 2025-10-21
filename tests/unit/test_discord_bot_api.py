@@ -358,7 +358,8 @@ def test_audio_receiver_wants_opus():
     """Test AudioReceiver requests Opus packets"""
     from src.discord_bot import AudioReceiver
 
-    receiver = AudioReceiver(MagicMock(), MagicMock())
+    mock_loop = MagicMock()
+    receiver = AudioReceiver(MagicMock(), MagicMock(), mock_loop)
 
     # Verify wants_opus() returns True
     assert receiver.wants_opus() is True
@@ -369,7 +370,8 @@ def test_audio_receiver_inherits_from_audio_sink():
     """Test AudioReceiver is a voice_recv.AudioSink"""
     from src.discord_bot import AudioReceiver
 
-    receiver = AudioReceiver(MagicMock(), MagicMock())
+    mock_loop = MagicMock()
+    receiver = AudioReceiver(MagicMock(), MagicMock(), mock_loop)
 
     # Verify it's an instance of AudioSink
     assert isinstance(receiver, voice_recv.AudioSink)
@@ -410,8 +412,9 @@ def test_audio_receiver_write_extracts_opus_packet():
     mock_vc = MagicMock()
     mock_speaker_mgr = MagicMock()
     mock_speaker_mgr.on_speaking_start = AsyncMock()
+    mock_loop = MagicMock()
 
-    receiver = AudioReceiver(mock_vc, mock_speaker_mgr)
+    receiver = AudioReceiver(mock_vc, mock_speaker_mgr, mock_loop)
 
     # Create mock user
     mock_user = MagicMock()
