@@ -440,26 +440,35 @@ class SpeakerManager:
         # Cancel timeout task with RecursionError protection
         if self.timeout_task and not self.timeout_task.done():
             try:
-                self.timeout_task.cancel()
-                tasks_to_cancel.append(self.timeout_task)
-            except (RecursionError, Exception) as e:
-                logger.warning(f"⚠️ Error cancelling timeout task: {type(e).__name__}")
+                cancelled = self.timeout_task.cancel(msg="Speaker unlocked")
+                if cancelled:
+                    tasks_to_cancel.append(self.timeout_task)
+            except RecursionError:
+                logger.warning(f"⚠️ RecursionError cancelling timeout task, skipping")
+            except Exception as e:
+                logger.warning(f"⚠️ Error cancelling timeout task: {type(e).__name__}: {e}")
 
         # Cancel silence task with RecursionError protection
         if self.silence_task and not self.silence_task.done():
             try:
-                self.silence_task.cancel()
-                tasks_to_cancel.append(self.silence_task)
-            except (RecursionError, Exception) as e:
-                logger.warning(f"⚠️ Error cancelling silence task: {type(e).__name__}")
+                # Use suppress_exceptions flag to avoid RecursionError during deep cancellation
+                cancelled = self.silence_task.cancel(msg="Speaker unlocked")
+                if cancelled:
+                    tasks_to_cancel.append(self.silence_task)
+            except RecursionError:
+                # Known issue with deeply nested asyncio tasks
+                logger.warning(f"⚠️ RecursionError cancelling silence task, skipping")
+            except Exception as e:
+                logger.warning(f"⚠️ Error cancelling silence task: {type(e).__name__}: {e}")
 
-        # Clear task references
+        # Clear task references immediately to prevent further access
         self.timeout_task = None
         self.silence_task = None
 
-        # Note: We don't wait for cancellation to complete because it can cause RecursionError
+        # Note: We don't wait for cancellation to complete to avoid blocking unlock
         # The tasks will be cancelled asynchronously in the background
-        logger.info(f"✅ Cancelled {len(tasks_to_cancel)} task(s) - continuing without waiting")
+        if tasks_to_cancel:
+            logger.info(f"✅ Requested cancellation of {len(tasks_to_cancel)} task(s)")
 
         # Cleanup audio receiver for this user
         logger.info(f"🔍 Cleanup check - audio_receiver: {self.audio_receiver is not None}, speaker_to_cleanup: {speaker_to_cleanup}")
