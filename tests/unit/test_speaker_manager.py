@@ -980,3 +980,171 @@ async def test_multiple_simultaneous_speaker_requests():
         result = await manager.on_speaking_start(f"user_{i}", mock_audio_stream())
         assert result is False
         assert manager.active_speaker == "user_123"  # Still first speaker
+
+
+# ============================================================
+# TTS Options via HTTP Headers Tests
+# ============================================================
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_n8n_plain_text_with_tts_options_header():
+    """Test extracting TTS options from X-TTS-Options header with plain text response"""
+    manager = SpeakerManager()
+    manager.n8n_webhook_url = "http://localhost:8888/webhook/test"
+    manager.use_streaming = True
+    manager.active_speaker = "user_123"
+
+    # Mock voice connection
+    mock_voice = MagicMock()
+    manager.voice_connection = mock_voice
+
+    # Mock httpx response with plain text AND X-TTS-Options header
+    mock_response = AsyncMock()
+    mock_response.raise_for_status = MagicMock()
+    mock_response.headers = {
+        'content-type': 'text/plain; charset=utf-8',
+        'x-tts-options': '{"voiceMode":"clone","referenceAudioFilename":"voice.wav","temperature":0.8,"exaggeration":1.2,"cfgWeight":3.0}'
+    }
+
+    # Plain text response as chunks
+    async def mock_aiter_text():
+        yield "Hello, "
+        yield "this is "
+        yield "streamed text!"
+
+    mock_response.aiter_text = mock_aiter_text
+
+    # Mock client stream context manager
+    mock_stream_ctx = AsyncMock()
+    mock_stream_ctx.__aenter__ = AsyncMock(return_value=mock_response)
+    mock_stream_ctx.__aexit__ = AsyncMock(return_value=None)
+
+    mock_client = AsyncMock()
+    mock_client.stream = MagicMock(return_value=mock_stream_ctx)
+
+    with patch('src.streaming_handler.StreamingResponseHandler') as MockHandler:
+        mock_handler = AsyncMock()
+        MockHandler.return_value = mock_handler
+
+        await manager._handle_streaming_response(mock_client, {"text": "test"})
+
+        # Verify StreamingResponseHandler was created with parsed options from header
+        MockHandler.assert_called_once()
+        call_args = MockHandler.call_args
+        assert call_args[0][0] == mock_voice
+        assert call_args[0][1] == "user_123"
+
+        # Verify TTS options were extracted from header
+        options = call_args[0][2]
+        assert options["voiceMode"] == "clone"
+        assert options["referenceAudioFilename"] == "voice.wav"
+        assert options["temperature"] == 0.8
+        assert options["exaggeration"] == 1.2
+        assert options["cfgWeight"] == 3.0
+
+        # Verify all chunks were sent
+        assert mock_handler.on_chunk.call_count == 3
+        mock_handler.finalize.assert_called_once()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_n8n_plain_text_without_tts_options_header():
+    """Test plain text response works without X-TTS-Options header (backward compatible)"""
+    manager = SpeakerManager()
+    manager.n8n_webhook_url = "http://localhost:8888/webhook/test"
+    manager.use_streaming = True
+    manager.active_speaker = "user_123"
+
+    # Mock voice connection
+    mock_voice = MagicMock()
+    manager.voice_connection = mock_voice
+
+    # Mock httpx response with plain text, NO X-TTS-Options header
+    mock_response = AsyncMock()
+    mock_response.raise_for_status = MagicMock()
+    mock_response.headers = {'content-type': 'text/plain; charset=utf-8'}
+
+    # Plain text response
+    async def mock_aiter_text():
+        yield "Default options test"
+
+    mock_response.aiter_text = mock_aiter_text
+
+    # Mock client stream context manager
+    mock_stream_ctx = AsyncMock()
+    mock_stream_ctx.__aenter__ = AsyncMock(return_value=mock_response)
+    mock_stream_ctx.__aexit__ = AsyncMock(return_value=None)
+
+    mock_client = AsyncMock()
+    mock_client.stream = MagicMock(return_value=mock_stream_ctx)
+
+    with patch('src.streaming_handler.StreamingResponseHandler') as MockHandler:
+        mock_handler = AsyncMock()
+        MockHandler.return_value = mock_handler
+
+        await manager._handle_streaming_response(mock_client, {"text": "test"})
+
+        # Verify StreamingResponseHandler was created with empty options dict
+        MockHandler.assert_called_once()
+        call_args = MockHandler.call_args
+        assert call_args[0][0] == mock_voice
+        assert call_args[0][1] == "user_123"
+        assert call_args[0][2] == {}  # Empty options dict when no header present
+
+        # Verify content was sent
+        mock_handler.on_chunk.assert_called_once_with("Default options test")
+        mock_handler.finalize.assert_called_once()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_n8n_plain_text_with_malformed_tts_options_header():
+    """Test plain text response gracefully handles malformed X-TTS-Options JSON"""
+    manager = SpeakerManager()
+    manager.n8n_webhook_url = "http://localhost:8888/webhook/test"
+    manager.use_streaming = True
+    manager.active_speaker = "user_123"
+
+    # Mock voice connection
+    mock_voice = MagicMock()
+    manager.voice_connection = mock_voice
+
+    # Mock httpx response with malformed JSON in X-TTS-Options header
+    mock_response = AsyncMock()
+    mock_response.raise_for_status = MagicMock()
+    mock_response.headers = {
+        'content-type': 'text/plain; charset=utf-8',
+        'x-tts-options': '{invalid json here}'  # Malformed JSON
+    }
+
+    # Plain text response
+    async def mock_aiter_text():
+        yield "Malformed header test"
+
+    mock_response.aiter_text = mock_aiter_text
+
+    # Mock client stream context manager
+    mock_stream_ctx = AsyncMock()
+    mock_stream_ctx.__aenter__ = AsyncMock(return_value=mock_response)
+    mock_stream_ctx.__aexit__ = AsyncMock(return_value=None)
+
+    mock_client = AsyncMock()
+    mock_client.stream = MagicMock(return_value=mock_stream_ctx)
+
+    with patch('src.streaming_handler.StreamingResponseHandler') as MockHandler:
+        mock_handler = AsyncMock()
+        MockHandler.return_value = mock_handler
+
+        # Should not raise exception - should log warning and continue
+        await manager._handle_streaming_response(mock_client, {"text": "test"})
+
+        # Verify StreamingResponseHandler was created with empty options (fallback)
+        MockHandler.assert_called_once()
+        call_args = MockHandler.call_args
+        assert call_args[0][2] == {}  # Empty dict on parse failure
+
+        # Verify content still processed
+        mock_handler.on_chunk.assert_called_once_with("Malformed header test")
+        mock_handler.finalize.assert_called_once()

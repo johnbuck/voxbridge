@@ -346,6 +346,16 @@ class SpeakerManager:
                 elif 'text/plain' in content_type:
                     logger.info("📝 Processing text/plain response (chunked streaming)")
 
+                    # Extract TTS options from custom header (if present)
+                    options = {}
+                    if 'x-tts-options' in response.headers:
+                        try:
+                            options = json.loads(response.headers['x-tts-options'])
+                            logger.info(f"⚙️ Parsed TTS options from X-TTS-Options header: {options}")
+                        except json.JSONDecodeError as e:
+                            logger.warning(f"⚠️ Failed to parse X-TTS-Options header: {e}")
+                            logger.warning(f"   Header value: {response.headers.get('x-tts-options', 'N/A')}")
+
                     # Create streaming handler
                     if not self.voice_connection:
                         logger.warning("⚠️ No voice connection for response playback")
@@ -354,7 +364,7 @@ class SpeakerManager:
                     handler = StreamingResponseHandler(
                         self.voice_connection,
                         self.active_speaker,
-                        {}  # No options in plain text format
+                        options  # Options from header or empty dict
                     )
 
                     # Process text chunks as they arrive (supports true streaming)

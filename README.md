@@ -522,12 +522,75 @@ Configure your AI agent node to process the transcript:
 - **Response Body:** Your response (see formats below)
 - **Options → Response Headers:**
   ```
-  Content-Type: application/json; charset=utf-8
+  Content-Type: text/plain; charset=utf-8
   Transfer-Encoding: chunked
   ```
 
-**Response Format with TTS Options:**
+**Response Format Options:**
 
+There are two ways to pass TTS options to VoxBridge:
+
+##### Option A: HTTP Headers (RECOMMENDED for streaming)
+Pass TTS options via `X-TTS-Options` header while keeping response body as plain text for true streaming:
+
+**Headers:**
+```json
+{
+  "Content-Type": "text/plain; charset=utf-8",
+  "Transfer-Encoding": "chunked",
+  "X-TTS-Options": "{\"voiceMode\":\"clone\",\"referenceAudioFilename\":\"voice.wav\",\"temperature\":0.8,\"exaggeration\":1.2,\"cfgWeight\":3.0,\"seed\":42}"
+}
+```
+
+**Response Body:**
+```
+{{ $json.output }}
+```
+
+**Advantages:**
+- ✅ True streaming - chunks flow immediately
+- ✅ Per-request voice options - different agents use different voices
+- ✅ Clean separation - metadata in headers, content in body
+- ✅ Backward compatible - works without header (uses defaults)
+
+**Available TTS Options:**
+- `voiceMode`: `"clone"` or `"preset"`
+- `referenceAudioFilename`: Voice file to clone (e.g., `"voice.wav"`)
+- `temperature`: Speech variation (0.0-1.0, default 0.7)
+- `exaggeration`: Emotion intensity (0.0-2.0, default 1.0)
+- `cfgWeight`: Classifier-free guidance (1.0-10.0, default 3.0)
+- `seed`: Random seed for reproducibility (integer)
+- `outputFormat`: `"wav"`, `"mp3"`, `"flac"` (default `"wav"`)
+- `chunkSize`: Streaming chunk size (default 50)
+- `streamingStrategy`: `"sentence"`, `"clause"`, `"word"` (default `"sentence"`)
+
+**Example - Setting X-TTS-Options in n8n:**
+In the "Respond to Webhook" node, add to "Response Headers":
+```
+X-TTS-Options
+```
+Value:
+```
+{{ JSON.stringify({
+  "voiceMode": "clone",
+  "referenceAudioFilename": "auren_voice.wav",
+  "temperature": 0.75,
+  "exaggeration": 1.1,
+  "cfgWeight": 3.5
+}) }}
+```
+
+##### Option B: JSON Format (Legacy, non-streaming)
+Pass TTS options in the response body as JSON:
+
+**Headers:**
+```json
+{
+  "Content-Type": "application/json; charset=utf-8"
+}
+```
+
+**Response Body:**
 ```json
 {
   "output": {
@@ -544,7 +607,9 @@ Configure your AI agent node to process the transcript:
 }
 ```
 
-**Simplified Format (Plain Text):**
+**Note:** This format buffers the entire response before processing, losing streaming benefits.
+
+**Simplified Format (Plain Text without options):**
 
 If you don't need TTS options:
 ```
