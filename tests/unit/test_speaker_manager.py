@@ -29,8 +29,13 @@ async def test_speaker_lock_acquisition():
     async def mock_audio_stream():
         yield b'\x00' * 960
 
+    # Helper to close coroutines and prevent 'never awaited' warnings
+    def close_coro(coro):
+        coro.close()
+        return MagicMock()
+
     with patch.object(manager, '_start_transcription', new_callable=AsyncMock) as mock_start:
-        with patch('asyncio.create_task') as mock_create_task:
+        with patch('asyncio.create_task', side_effect=close_coro) as mock_create_task:
             audio_gen = mock_audio_stream()
             result = await manager.on_speaking_start("user_123", audio_gen)
 
@@ -118,11 +123,16 @@ async def test_start_transcription_creates_whisper_client():
     async def mock_audio_stream():
         yield b'\x00' * 960
 
+    # Helper to close coroutines and prevent 'never awaited' warnings
+    def close_coro(coro):
+        coro.close()
+        return MagicMock()
+
     with patch('src.speaker_manager.WhisperClient') as MockWhisperClient:
         mock_client = AsyncMock()
         MockWhisperClient.return_value = mock_client
 
-        with patch('asyncio.create_task'):
+        with patch('asyncio.create_task', side_effect=close_coro):
             await manager._start_transcription("user_123", mock_audio_stream())
 
             # Assertions
@@ -239,6 +249,282 @@ async def test_send_to_n8n_retry_on_failure():
 
         # Verify 3 attempts were made
         assert mock_client.post.call_count == 3
+
+
+# ============================================================
+# n8n Response Format Tests
+# ============================================================
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_n8n_sse_streaming_response():
+    """Test handling n8n SSE streaming response (text/event-stream)"""
+    manager = SpeakerManager()
+    manager.n8n_webhook_url = "http://localhost:8888/webhook/test"
+    manager.use_streaming = True
+    manager.active_speaker = "user_123"
+
+    # Mock voice connection
+    mock_voice = MagicMock()
+    manager.voice_connection = mock_voice
+
+    # Mock httpx streaming response with SSE format
+    mock_response = AsyncMock()
+    mock_response.raise_for_status = MagicMock()
+    mock_response.headers = {'content-type': 'text/event-stream'}
+
+    # SSE data lines
+    async def mock_aiter_lines():
+        yield "data: Hello"
+        yield "data: world"
+        yield "data: [DONE]"
+
+    mock_response.aiter_lines = mock_aiter_lines
+
+    # Mock client stream context manager
+    mock_stream_ctx = AsyncMock()
+    mock_stream_ctx.__aenter__ = AsyncMock(return_value=mock_response)
+    mock_stream_ctx.__aexit__ = AsyncMock(return_value=None)
+
+    mock_client = AsyncMock()
+    mock_client.stream = MagicMock(return_value=mock_stream_ctx)
+
+    with patch('src.streaming_handler.StreamingResponseHandler') as MockHandler:
+        mock_handler = AsyncMock()
+        MockHandler.return_value = mock_handler
+
+        await manager._handle_streaming_response(mock_client, {"text": "test"})
+
+        # Verify StreamingResponseHandler was created
+        MockHandler.assert_called_once()
+
+        # Verify chunks were processed (2 data chunks, [DONE] is ignored)
+        assert mock_handler.on_chunk.call_count == 2
+        mock_handler.finalize.assert_called_once()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_n8n_json_response():
+    """Test handling n8n JSON response (application/json)"""
+    manager = SpeakerManager()
+    manager.n8n_webhook_url = "http://localhost:8888/webhook/test"
+    manager.use_streaming = True
+    manager.active_speaker = "user_123"
+
+    # Mock voice connection
+    mock_voice = MagicMock()
+    manager.voice_connection = mock_voice
+
+    # Mock httpx response with JSON format
+    mock_response = AsyncMock()
+    mock_response.raise_for_status = MagicMock()
+    mock_response.headers = {'content-type': 'application/json'}
+
+    # JSON response body
+    json_body = b'{"output": {"content": "Hello world"}, "options": {"speedFactor": 1.2}}'
+    mock_response.aread = AsyncMock(return_value=json_body)
+
+    # Mock client stream context manager
+    mock_stream_ctx = AsyncMock()
+    mock_stream_ctx.__aenter__ = AsyncMock(return_value=mock_response)
+    mock_stream_ctx.__aexit__ = AsyncMock(return_value=None)
+
+    mock_client = AsyncMock()
+    mock_client.stream = MagicMock(return_value=mock_stream_ctx)
+
+    with patch('src.streaming_handler.StreamingResponseHandler') as MockHandler:
+        mock_handler = AsyncMock()
+        MockHandler.return_value = mock_handler
+
+        await manager._handle_streaming_response(mock_client, {"text": "test"})
+
+        # Verify StreamingResponseHandler was created with options
+        MockHandler.assert_called_once()
+        call_args = MockHandler.call_args
+        assert call_args[0][0] == mock_voice
+        assert call_args[0][1] == "user_123"
+        assert call_args[0][2] == {"speedFactor": 1.2}
+
+        # Verify content was sent as single chunk
+        mock_handler.on_chunk.assert_called_once_with("Hello world")
+        mock_handler.finalize.assert_called_once()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_n8n_plain_text_single_chunk():
+    """Test handling n8n plain text response (text/plain) - single chunk"""
+    manager = SpeakerManager()
+    manager.n8n_webhook_url = "http://localhost:8888/webhook/test"
+    manager.use_streaming = True
+    manager.active_speaker = "user_123"
+
+    # Mock voice connection
+    mock_voice = MagicMock()
+    manager.voice_connection = mock_voice
+
+    # Mock httpx response with plain text
+    mock_response = AsyncMock()
+    mock_response.raise_for_status = MagicMock()
+    mock_response.headers = {'content-type': 'text/plain; charset=utf-8'}
+
+    # Plain text response as single chunk
+    async def mock_aiter_text():
+        yield "I'm ready when you are! What kind of TTRPG guidance are you looking for?"
+
+    mock_response.aiter_text = mock_aiter_text
+
+    # Mock client stream context manager
+    mock_stream_ctx = AsyncMock()
+    mock_stream_ctx.__aenter__ = AsyncMock(return_value=mock_response)
+    mock_stream_ctx.__aexit__ = AsyncMock(return_value=None)
+
+    mock_client = AsyncMock()
+    mock_client.stream = MagicMock(return_value=mock_stream_ctx)
+
+    with patch('src.streaming_handler.StreamingResponseHandler') as MockHandler:
+        mock_handler = AsyncMock()
+        MockHandler.return_value = mock_handler
+
+        await manager._handle_streaming_response(mock_client, {"text": "test"})
+
+        # Verify StreamingResponseHandler was created
+        MockHandler.assert_called_once()
+
+        # Verify single chunk was processed
+        assert mock_handler.on_chunk.call_count == 1
+        call_args = mock_handler.on_chunk.call_args[0]
+        assert "TTRPG" in call_args[0]
+        mock_handler.finalize.assert_called_once()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_n8n_plain_text_multi_chunk():
+    """Test handling n8n plain text chunked streaming (text/plain) - multiple chunks"""
+    manager = SpeakerManager()
+    manager.n8n_webhook_url = "http://localhost:8888/webhook/test"
+    manager.use_streaming = True
+    manager.active_speaker = "user_123"
+
+    # Mock voice connection
+    mock_voice = MagicMock()
+    manager.voice_connection = mock_voice
+
+    # Mock httpx response with chunked plain text
+    mock_response = AsyncMock()
+    mock_response.raise_for_status = MagicMock()
+    mock_response.headers = {'content-type': 'text/plain'}
+
+    # Plain text response as multiple chunks (simulating true streaming)
+    async def mock_aiter_text():
+        yield "Hello, "
+        yield "I'm here "
+        yield "to help you "
+        yield "with your questions."
+
+    mock_response.aiter_text = mock_aiter_text
+
+    # Mock client stream context manager
+    mock_stream_ctx = AsyncMock()
+    mock_stream_ctx.__aenter__ = AsyncMock(return_value=mock_response)
+    mock_stream_ctx.__aexit__ = AsyncMock(return_value=None)
+
+    mock_client = AsyncMock()
+    mock_client.stream = MagicMock(return_value=mock_stream_ctx)
+
+    with patch('src.streaming_handler.StreamingResponseHandler') as MockHandler:
+        mock_handler = AsyncMock()
+        MockHandler.return_value = mock_handler
+
+        await manager._handle_streaming_response(mock_client, {"text": "test"})
+
+        # Verify StreamingResponseHandler was created
+        MockHandler.assert_called_once()
+
+        # Verify all 4 chunks were processed
+        assert mock_handler.on_chunk.call_count == 4
+        mock_handler.finalize.assert_called_once()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_n8n_empty_plain_text_response():
+    """Test handling empty plain text response gracefully"""
+    manager = SpeakerManager()
+    manager.n8n_webhook_url = "http://localhost:8888/webhook/test"
+    manager.use_streaming = True
+    manager.active_speaker = "user_123"
+
+    # Mock voice connection
+    mock_voice = MagicMock()
+    manager.voice_connection = mock_voice
+
+    # Mock httpx response with empty text
+    mock_response = AsyncMock()
+    mock_response.raise_for_status = MagicMock()
+    mock_response.headers = {'content-type': 'text/plain'}
+
+    # Empty text response
+    async def mock_aiter_text():
+        yield ""
+
+    mock_response.aiter_text = mock_aiter_text
+
+    # Mock client stream context manager
+    mock_stream_ctx = AsyncMock()
+    mock_stream_ctx.__aenter__ = AsyncMock(return_value=mock_response)
+    mock_stream_ctx.__aexit__ = AsyncMock(return_value=None)
+
+    mock_client = AsyncMock()
+    mock_client.stream = MagicMock(return_value=mock_stream_ctx)
+
+    with patch('src.streaming_handler.StreamingResponseHandler') as MockHandler:
+        mock_handler = AsyncMock()
+        MockHandler.return_value = mock_handler
+
+        # Should not raise exception
+        await manager._handle_streaming_response(mock_client, {"text": "test"})
+
+        # Handler should be created but no chunks processed (empty string filtered)
+        MockHandler.assert_called_once()
+        assert mock_handler.on_chunk.call_count == 0
+        mock_handler.finalize.assert_called_once()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_n8n_malformed_json_response():
+    """Test handling malformed JSON response"""
+    manager = SpeakerManager()
+    manager.n8n_webhook_url = "http://localhost:8888/webhook/test"
+    manager.use_streaming = True
+    manager.active_speaker = "user_123"
+
+    # Mock voice connection
+    mock_voice = MagicMock()
+    manager.voice_connection = mock_voice
+
+    # Mock httpx response with malformed JSON
+    mock_response = AsyncMock()
+    mock_response.raise_for_status = MagicMock()
+    mock_response.headers = {'content-type': 'application/json'}
+
+    # Invalid JSON
+    json_body = b'not valid json {'
+    mock_response.aread = AsyncMock(return_value=json_body)
+
+    # Mock client stream context manager
+    mock_stream_ctx = AsyncMock()
+    mock_stream_ctx.__aenter__ = AsyncMock(return_value=mock_response)
+    mock_stream_ctx.__aexit__ = AsyncMock(return_value=None)
+
+    mock_client = AsyncMock()
+    mock_client.stream = MagicMock(return_value=mock_stream_ctx)
+
+    # Should not raise exception, just log error
+    await manager._handle_streaming_response(mock_client, {"text": "test"})
 
 
 # ============================================================
@@ -462,9 +748,14 @@ async def test_multiple_simultaneous_speaker_requests():
     async def mock_audio_stream():
         yield b'\x00' * 960
 
+    # Helper to close coroutines and prevent 'never awaited' warnings
+    def close_coro(coro):
+        coro.close()
+        return MagicMock()
+
     # First speaker acquires lock
     with patch.object(manager, '_start_transcription', new_callable=AsyncMock):
-        with patch('asyncio.create_task'):
+        with patch('asyncio.create_task', side_effect=close_coro):
             result1 = await manager.on_speaking_start("user_123", mock_audio_stream())
             assert result1 is True
             assert manager.active_speaker == "user_123"

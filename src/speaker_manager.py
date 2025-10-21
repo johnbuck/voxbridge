@@ -338,6 +338,42 @@ class SpeakerManager:
                     # Finalize any remaining buffered text
                     await handler.finalize()
 
+                # Plain text response (text/plain) - n8n with streaming enabled
+                elif 'text/plain' in content_type:
+                    logger.info("📝 Processing text/plain response (chunked streaming)")
+
+                    # Create streaming handler
+                    if not self.voice_connection:
+                        logger.warning("⚠️ No voice connection for response playback")
+                        return
+
+                    handler = StreamingResponseHandler(
+                        self.voice_connection,
+                        self.active_speaker,
+                        {}  # No options in plain text format
+                    )
+
+                    # Process text chunks as they arrive (supports true streaming)
+                    chunks_received = 0
+                    total_text = ""
+
+                    try:
+                        async for chunk in response.aiter_text():
+                            if chunk.strip():
+                                chunks_received += 1
+                                total_text += chunk
+                                logger.info(f"📨 Chunk {chunks_received} ({len(chunk)} chars): {chunk[:100]}...")
+                                # Send chunk immediately to TTS
+                                await handler.on_chunk(chunk)
+
+                        logger.info(f"✅ Received {chunks_received} chunk(s), total {len(total_text)} chars")
+
+                        # Finalize any remaining buffered text
+                        await handler.finalize()
+
+                    except Exception as e:
+                        logger.error(f"❌ Error processing text/plain chunks: {e}")
+
                 # JSON response format (application/json) - FALLBACK
                 else:
                     logger.info("📦 Processing JSON response (non-streaming)")
