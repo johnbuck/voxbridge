@@ -291,6 +291,7 @@ class SpeakerManager:
     async def _handle_streaming_response(self, client: httpx.AsyncClient, payload: dict) -> None:
         """
         Handle streaming response from n8n webhook
+        Supports both SSE (Server-Sent Events) and JSON responses
 
         Args:
             client: HTTP client
@@ -299,6 +300,7 @@ class SpeakerManager:
         try:
             # Import here to avoid circular dependency
             from src.streaming_handler import StreamingResponseHandler
+            import json
 
             logger.info("🌊 Starting streaming response handler")
 
@@ -306,27 +308,75 @@ class SpeakerManager:
             async with client.stream('POST', self.n8n_webhook_url, json=payload) as response:
                 response.raise_for_status()
 
-                # Create streaming handler
-                if self.voice_connection and self.streaming_handler:
-                    handler = self.streaming_handler
-                elif self.voice_connection:
-                    handler = StreamingResponseHandler(
-                        self.voice_connection,
-                        self.active_speaker
-                    )
+                # Check Content-Type to determine response format
+                content_type = response.headers.get('content-type', '')
+                logger.info(f"📋 Response Content-Type: {content_type}")
+
+                # SSE streaming format (text/event-stream)
+                if 'text/event-stream' in content_type:
+                    logger.info("🌊 Processing SSE streaming response")
+
+                    # Create streaming handler
+                    if self.voice_connection and self.streaming_handler:
+                        handler = self.streaming_handler
+                    elif self.voice_connection:
+                        handler = StreamingResponseHandler(
+                            self.voice_connection,
+                            self.active_speaker
+                        )
+                    else:
+                        logger.warning("⚠️ No voice connection for streaming response")
+                        return
+
+                    # Process SSE streaming chunks
+                    async for line in response.aiter_lines():
+                        if line.startswith('data: '):
+                            chunk_data = line[6:].strip()  # Remove 'data: ' prefix
+                            if chunk_data and chunk_data != '[DONE]':
+                                await handler.on_chunk(chunk_data)
+
+                    # Finalize any remaining buffered text
+                    await handler.finalize()
+
+                # JSON response format (application/json) - FALLBACK
                 else:
-                    logger.warning("⚠️ No voice connection for streaming response")
-                    return
+                    logger.info("📦 Processing JSON response (non-streaming)")
 
-                # Process streaming chunks
-                async for line in response.aiter_lines():
-                    if line.startswith('data: '):
-                        chunk_data = line[6:].strip()  # Remove 'data: ' prefix
-                        if chunk_data and chunk_data != '[DONE]':
-                            await handler.on_chunk(chunk_data)
+                    # Read full response body
+                    body = await response.aread()
+                    logger.info(f"📨 Response body (first 200 chars): {body[:200]}")
 
-                # Finalize any remaining buffered text
-                await handler.finalize()
+                    try:
+                        data = json.loads(body)
+                        logger.info(f"📋 Parsed JSON: {data}")
+
+                        # Extract response text and options
+                        output = data.get('output', {})
+                        content = output.get('content', '')
+                        options = data.get('options', {})
+
+                        if content:
+                            logger.info(f"💬 Got response text: \"{content}\"")
+                            logger.info(f"⚙️ Options: {options}")
+
+                            # Create handler and process as single chunk
+                            if self.voice_connection:
+                                handler = StreamingResponseHandler(
+                                    self.voice_connection,
+                                    self.active_speaker,
+                                    options
+                                )
+                                # Send entire response as one chunk
+                                await handler.on_chunk(content)
+                                await handler.finalize()
+                            else:
+                                logger.warning("⚠️ No voice connection for response playback")
+                        else:
+                            logger.warning("⚠️ No content in response")
+
+                    except json.JSONDecodeError as e:
+                        logger.error(f"❌ Failed to parse JSON response: {e}")
+                        logger.error(f"   Raw body: {body}")
 
         except Exception as e:
             logger.error(f"❌ Error handling streaming response: {e}")
