@@ -422,7 +422,7 @@ def test_audio_receiver_write_extracts_opus_packet():
 
     # Create mock VoiceData
     mock_voice_data = MagicMock(spec=voice_recv.VoiceData)
-    mock_voice_data.packet = b'\x00' * 960  # Opus packet
+    mock_voice_data.opus = b'\x00' * 960  # Opus audio bytes
 
     # Call write()
     receiver.write(mock_user, mock_voice_data)

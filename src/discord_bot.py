@@ -129,8 +129,8 @@ class AudioReceiver(voice_recv.AudioSink):
 
         user_id = str(user.id)
 
-        # Extract Opus packet from VoiceData object
-        opus_packet = data.packet
+        # Extract Opus audio bytes from VoiceData object
+        opus_packet = data.opus
 
         if not opus_packet:
             return
