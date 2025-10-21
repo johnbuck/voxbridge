@@ -50,23 +50,33 @@ services:
     environment:
       # Discord
       - DISCORD_TOKEN=${DISCORD_TOKEN}
-      
+
       # WhisperX Configuration - Connect to whisperx container
       - WHISPER_SERVER_URL=ws://whisperx:4901
-      
+
       # Speaker Management
       - SILENCE_THRESHOLD_MS=${SILENCE_THRESHOLD_MS:-800}
       - MAX_SPEAKING_TIME_MS=${MAX_SPEAKING_TIME_MS:-45000}
-      
+
       # Chatterbox TTS
       - CHATTERBOX_URL=${CHATTERBOX_URL:-http://chatterbox:4800}
       - CHATTERBOX_VOICE_ID=${CHATTERBOX_VOICE_ID}
-      
+
       # n8n Integration
       - N8N_WEBHOOK_URL=${N8N_WEBHOOK_URL}
       - N8N_WEBHOOK_TEST_URL=${N8N_WEBHOOK_TEST_URL}
       - N8N_TEST_MODE=${N8N_TEST_MODE:-false}
-      
+
+      # Streaming Configuration
+      - USE_STREAMING=${USE_STREAMING:-true}
+
+      # Latency Optimization Features
+      - USE_CLAUSE_SPLITTING=${USE_CLAUSE_SPLITTING:-true}
+      - USE_PARALLEL_TTS=${USE_PARALLEL_TTS:-false}
+      - MIN_CLAUSE_LENGTH=${MIN_CLAUSE_LENGTH:-10}
+      - MIN_SENTENCE_LENGTH=${MIN_SENTENCE_LENGTH:-3}
+      - DISCORD_AUDIO_QUEUE_SIZE=${DISCORD_AUDIO_QUEUE_SIZE:-100}
+
       # Server Config
       - PORT=4900
     depends_on:
