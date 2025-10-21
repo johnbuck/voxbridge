@@ -168,6 +168,12 @@ class AudioReceiver(voice_recv.AudioSink):
         # Add Opus packet to user's queue
         try:
             self.user_buffers[user_id].put_nowait(opus_packet)
+
+            # Notify speaker manager of audio activity (for silence detection)
+            asyncio.run_coroutine_threadsafe(
+                self.speaker_mgr.on_audio_data(user_id),
+                self.loop
+            )
         except asyncio.QueueFull:
             logger.warning(f"⚠️ Audio buffer full for user {user_id}, dropping packet")
 

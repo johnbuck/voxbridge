@@ -412,7 +412,13 @@ def test_audio_receiver_write_extracts_opus_packet():
     mock_vc = MagicMock()
     mock_speaker_mgr = MagicMock()
     mock_speaker_mgr.on_speaking_start = AsyncMock()
+    mock_speaker_mgr.on_audio_data = AsyncMock()  # Added for new silence detection
     mock_loop = MagicMock()
+
+    # Mock run_coroutine_threadsafe to handle coroutines
+    def mock_run_coroutine(coro, loop):
+        coro.close()
+        return MagicMock()
 
     receiver = AudioReceiver(mock_vc, mock_speaker_mgr, mock_loop)
 
@@ -424,8 +430,93 @@ def test_audio_receiver_write_extracts_opus_packet():
     mock_voice_data = MagicMock(spec=voice_recv.VoiceData)
     mock_voice_data.opus = b'\x00' * 960  # Opus audio bytes
 
-    # Call write()
-    receiver.write(mock_user, mock_voice_data)
+    with patch('asyncio.run_coroutine_threadsafe', side_effect=mock_run_coroutine):
+        # Call write()
+        receiver.write(mock_user, mock_voice_data)
 
     # Verify user buffer was created
     assert str(mock_user.id) in receiver.user_buffers
+
+
+@pytest.mark.unit
+def test_audio_receiver_calls_on_audio_data():
+    """Test AudioReceiver.write() calls on_audio_data() for silence detection"""
+    from src.discord_bot import AudioReceiver
+
+    mock_vc = MagicMock()
+    mock_speaker_mgr = MagicMock()
+    mock_speaker_mgr.on_speaking_start = AsyncMock()
+    mock_speaker_mgr.on_audio_data = AsyncMock()
+    mock_loop = MagicMock()
+
+    # Mock run_coroutine_threadsafe to track calls
+    call_tracker = []
+    def mock_run_coroutine(coro, loop):
+        call_tracker.append(coro)
+        # Close coroutine to prevent warnings
+        coro.close()
+        return MagicMock()
+
+    receiver = AudioReceiver(mock_vc, mock_speaker_mgr, mock_loop)
+
+    # Create mock user
+    mock_user = MagicMock()
+    mock_user.id = 123456789
+
+    # Create mock VoiceData
+    mock_voice_data = MagicMock(spec=voice_recv.VoiceData)
+    mock_voice_data.opus = b'\x00' * 960
+
+    with patch('asyncio.run_coroutine_threadsafe', side_effect=mock_run_coroutine):
+        # First call - creates buffer and starts speaking
+        receiver.write(mock_user, mock_voice_data)
+
+        # Second call - should call on_audio_data
+        receiver.write(mock_user, mock_voice_data)
+
+        # Third call - should also call on_audio_data
+        receiver.write(mock_user, mock_voice_data)
+
+    # Verify on_audio_data was scheduled at least twice (after first packet)
+    # First call schedules on_speaking_start, subsequent calls schedule on_audio_data
+    assert len(call_tracker) >= 3  # 1 on_speaking_start + 2 on_audio_data
+
+
+@pytest.mark.unit
+def test_audio_receiver_updates_silence_detection_on_each_packet():
+    """Test that each audio packet resets silence detection timer"""
+    from src.discord_bot import AudioReceiver
+
+    mock_vc = MagicMock()
+    mock_speaker_mgr = MagicMock()
+    mock_speaker_mgr.on_speaking_start = AsyncMock()
+    mock_speaker_mgr.on_audio_data = AsyncMock()
+    mock_loop = MagicMock()
+
+    receiver = AudioReceiver(mock_vc, mock_speaker_mgr, mock_loop)
+
+    # Create mock user
+    mock_user = MagicMock()
+    mock_user.id = 123456789
+
+    # Create mock VoiceData
+    mock_voice_data = MagicMock(spec=voice_recv.VoiceData)
+    mock_voice_data.opus = b'\x00' * 960
+
+    # Mock run_coroutine_threadsafe
+    coroutines_scheduled = []
+    def track_coro(coro, loop):
+        coroutines_scheduled.append(coro)
+        coro.close()
+        return MagicMock()
+
+    with patch('asyncio.run_coroutine_threadsafe', side_effect=track_coro):
+        # First packet - starts speaking AND calls on_audio_data
+        receiver.write(mock_user, mock_voice_data)
+
+        # Simulate 5 more audio packets arriving
+        for i in range(5):
+            receiver.write(mock_user, mock_voice_data)
+
+    # Should have scheduled: 1 on_speaking_start + 6 on_audio_data calls (including first packet)
+    assert len(coroutines_scheduled) == 7

@@ -72,6 +72,30 @@ async def test_speaker_lock_rejection_when_locked():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_silence_detection_starts_immediately():
+    """Test silence detection starts when speaking begins (not just on speaking_end)"""
+    manager = SpeakerManager()
+    manager.silence_threshold_ms = 100  # Fast for testing
+
+    async def mock_audio_stream():
+        yield b'\x00' * 960
+
+    # Helper to close coroutines
+    def close_coro(coro):
+        coro.close()
+        return MagicMock()
+
+    with patch.object(manager, '_start_transcription', new_callable=AsyncMock):
+        with patch('asyncio.create_task', side_effect=close_coro) as mock_create_task:
+            await manager.on_speaking_start("user_123", mock_audio_stream())
+
+            # Verify _start_silence_detection was called
+            # Should have 2 calls: one for timeout_monitor, one for silence_monitor
+            assert mock_create_task.call_count == 2
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_speaker_lock_release_after_silence():
     """Test lock is released after silence threshold"""
     manager = SpeakerManager()
@@ -612,6 +636,47 @@ async def test_cleanup_closes_whisper_client():
 # ============================================================
 # Additional Behavior Tests
 # ============================================================
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_silence_detection_full_flow():
+    """Integration test: Verify audio packets reset silence timer and finalize after silence"""
+    manager = SpeakerManager()
+    manager.silence_threshold_ms = 200  # 200ms for testing
+    manager.active_speaker = "user_123"
+    manager.lock_start_time = time.time()
+    manager.last_audio_time = time.time()
+
+    # Mock WhisperClient
+    mock_client = AsyncMock()
+    mock_client.finalize = AsyncMock(return_value="test transcript")
+    mock_client.close = AsyncMock()
+    manager.whisper_client = mock_client
+
+    # Mock n8n webhook to avoid network calls
+    with patch.object(manager, '_send_to_n8n', new_callable=AsyncMock):
+        # Mock asyncio.gather to avoid RecursionError in cleanup
+        with patch('asyncio.gather', new_callable=AsyncMock):
+            # Start silence detection
+            await manager._start_silence_detection()
+
+            # Simulate audio packet arriving - should reset timer
+            await manager.on_audio_data("user_123")
+
+            # Wait less than threshold - should NOT finalize
+            await asyncio.sleep(0.1)  # 100ms < 200ms threshold
+            assert manager.active_speaker == "user_123"  # Still locked
+
+            # Simulate another audio packet
+            await manager.on_audio_data("user_123")
+
+            # Wait for silence threshold to pass with no more packets
+            await asyncio.sleep(0.35)  # 350ms > 200ms threshold + some buffer
+
+            # Should have finalized
+            assert manager.active_speaker is None  # Lock released
+            mock_client.finalize.assert_called_once()
+
 
 @pytest.mark.unit
 @pytest.mark.asyncio

@@ -97,8 +97,11 @@ class SpeakerManager:
         # Start Whisper transcription stream
         await self._start_transcription(user_id, audio_stream)
 
-        # Set timeout timer
+        # Start timeout timer (max speaking time)
         self.timeout_task = asyncio.create_task(self._timeout_monitor())
+
+        # Start silence detection immediately
+        await self._start_silence_detection()
 
         return True
 
