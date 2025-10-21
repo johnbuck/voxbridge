@@ -93,7 +93,11 @@ class SpeakerManager:
         self.lock_start_time = time.time()
         self.last_audio_time = time.time()
 
+        # Latency tracking - record when user starts speaking
+        self.t_user_speech_start = time.time()
+
         logger.info(f"🎤 {user_id} is now speaking (locked)")
+        logger.info(f"⏱️ [LATENCY] User speech start: t=0ms")
 
         # Start Whisper transcription stream
         await self._start_transcription(user_id, audio_stream)
@@ -142,11 +146,17 @@ class SpeakerManager:
     async def _start_transcription(self, user_id: str, audio_stream) -> None:
         """Start WhisperX transcription for this speaker"""
         try:
+            t_start = time.time()
             logger.info(f"🎙️ Starting transcription for {user_id}")
 
             # Create new WhisperClient
             self.whisper_client = WhisperClient()
             await self.whisper_client.connect(user_id)
+
+            # Log transcription startup latency
+            elapsed_ms = int((time.time() - self.t_user_speech_start) * 1000)
+            connect_ms = int((time.time() - t_start) * 1000)
+            logger.info(f"⏱️ [LATENCY] Transcription connected: {connect_ms}ms (total: {elapsed_ms}ms)")
 
             # Stream audio data to WhisperX
             asyncio.create_task(self._stream_audio(audio_stream))
@@ -228,10 +238,17 @@ class SpeakerManager:
             return
 
         try:
+            t_finalize_start = time.time()
             logger.info(f"🏁 Finalizing transcription (reason: {reason})")
 
             # Request finalization from WhisperX
             transcript = await self.whisper_client.finalize()
+
+            # Log transcription completion latency
+            elapsed_ms = int((time.time() - self.t_user_speech_start) * 1000)
+            finalize_ms = int((time.time() - t_finalize_start) * 1000)
+            logger.info(f"⏱️ [LATENCY] Transcription finalized: {finalize_ms}ms (total: {elapsed_ms}ms)")
+            logger.info(f"📝 Transcript: \"{transcript}\"")
 
             # Close WhisperX connection
             await self.whisper_client.close()
@@ -240,7 +257,7 @@ class SpeakerManager:
             if transcript and self.n8n_webhook_url:
                 await self._send_to_n8n(transcript)
             elif transcript:
-                logger.info(f"📝 Transcript (no webhook): \"{transcript}\"")
+                logger.info(f"📝 No webhook configured - skipping")
             else:
                 logger.info("📝 Empty transcript - skipping webhook")
 
@@ -267,7 +284,10 @@ class SpeakerManager:
             return
 
         try:
+            t_n8n_start = time.time()
+            elapsed_ms = int((time.time() - self.t_user_speech_start) * 1000)
             logger.info(f"📤 Sending to n8n: \"{transcript}\"")
+            logger.info(f"⏱️ [LATENCY] n8n webhook request start (total: {elapsed_ms}ms)")
 
             payload = {
                 'text': transcript,
@@ -280,19 +300,24 @@ class SpeakerManager:
                 if self.use_streaming:
                     # Streaming mode - handle Server-Sent Events
                     logger.info("🌊 Sending with streaming enabled")
-                    await self._handle_streaming_response(client, payload)
+                    await self._handle_streaming_response(client, payload, t_n8n_start)
                 else:
                     # Non-streaming mode - simple POST
                     logger.info("📨 Sending non-streaming request")
                     response = await client.post(self.n8n_webhook_url, json=payload)
                     response.raise_for_status()
+
+                    # Log n8n response latency
+                    n8n_ms = int((time.time() - t_n8n_start) * 1000)
+                    total_ms = int((time.time() - self.t_user_speech_start) * 1000)
+                    logger.info(f"⏱️ [LATENCY] n8n response received: {n8n_ms}ms (total: {total_ms}ms)")
                     logger.info(f"✅ n8n response: {response.status_code}")
 
         except Exception as e:
             logger.error(f"❌ Error sending to n8n: {e}")
             raise  # Re-raise to allow retry decorator to work
 
-    async def _handle_streaming_response(self, client: httpx.AsyncClient, payload: dict) -> None:
+    async def _handle_streaming_response(self, client: httpx.AsyncClient, payload: dict, t_n8n_start: float) -> None:
         """
         Handle streaming response from n8n webhook
         Supports both SSE (Server-Sent Events) and JSON responses
@@ -300,6 +325,7 @@ class SpeakerManager:
         Args:
             client: HTTP client
             payload: Request payload
+            t_n8n_start: Timestamp when n8n webhook request started
         """
         try:
             # Import here to avoid circular dependency
@@ -311,6 +337,11 @@ class SpeakerManager:
             # Send request with streaming
             async with client.stream('POST', self.n8n_webhook_url, json=payload) as response:
                 response.raise_for_status()
+
+                # Log first response byte latency
+                n8n_ms = int((time.time() - t_n8n_start) * 1000)
+                total_ms = int((time.time() - self.t_user_speech_start) * 1000)
+                logger.info(f"⏱️ [LATENCY] n8n first byte received: {n8n_ms}ms (total: {total_ms}ms)")
 
                 # Check Content-Type to determine response format
                 content_type = response.headers.get('content-type', '')
@@ -326,7 +357,9 @@ class SpeakerManager:
                     elif self.voice_connection:
                         handler = StreamingResponseHandler(
                             self.voice_connection,
-                            self.active_speaker
+                            self.active_speaker,
+                            options={},
+                            t_user_speech_start=self.t_user_speech_start
                         )
                     else:
                         logger.warning("⚠️ No voice connection for streaming response")
@@ -364,7 +397,8 @@ class SpeakerManager:
                     handler = StreamingResponseHandler(
                         self.voice_connection,
                         self.active_speaker,
-                        options  # Options from header or empty dict
+                        options,  # Options from header or empty dict
+                        t_user_speech_start=self.t_user_speech_start
                     )
 
                     # Process text chunks as they arrive (supports true streaming)

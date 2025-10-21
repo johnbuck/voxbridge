@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 class StreamingResponseHandler:
     """Handles streaming text-to-speech responses from n8n"""
 
-    def __init__(self, voice_client, user_id: str, options: dict = None):
+    def __init__(self, voice_client, user_id: str, options: dict = None, t_user_speech_start: float = None):
         """
         Initialize streaming response handler
 
@@ -44,6 +44,7 @@ class StreamingResponseHandler:
             voice_client: Discord voice client for audio playback
             user_id: Discord user ID
             options: TTS options from n8n (optional)
+            t_user_speech_start: Timestamp when user started speaking (for latency tracking)
         """
         self.voice_client = voice_client
         self.user_id = user_id
@@ -51,6 +52,12 @@ class StreamingResponseHandler:
         self.sentence_queue = []
         self.is_processing = False
         self.options = options or {}
+
+        # Latency tracking
+        self.t_user_speech_start = t_user_speech_start or time.time()
+        self.t_first_chunk_received = None
+        self.t_first_audio_start = None
+        self.t_last_audio_end = None
 
         # Track failed sentences for error reporting
         self.failed_sentences = []
@@ -91,6 +98,12 @@ class StreamingResponseHandler:
         """
         if not text_chunk:
             return
+
+        # Log first chunk latency
+        if self.t_first_chunk_received is None:
+            self.t_first_chunk_received = time.time()
+            elapsed_ms = int((self.t_first_chunk_received - self.t_user_speech_start) * 1000)
+            logger.info(f"⏱️ [LATENCY] First text chunk received: (total: {elapsed_ms}ms)")
 
         logger.info(f"📨 Received chunk: \"{text_chunk}\"")
         self.buffer += text_chunk
@@ -222,7 +235,8 @@ class StreamingResponseHandler:
             audio_data = await self._synthesize_to_stream(sentence)
 
             t_gen = time.time() - t_start
-            logger.info(f"   ⏱️ Generation time: {t_gen:.2f}s")
+            elapsed_ms = int((time.time() - self.t_user_speech_start) * 1000)
+            logger.info(f"⏱️ [LATENCY] TTS generated: {int(t_gen * 1000)}ms (total: {elapsed_ms}ms)")
 
             # Add to playback queue
             await self.playback_queue.put((sentence, audio_data))
@@ -464,17 +478,32 @@ class StreamingResponseHandler:
 
         try:
             t_start = time.time()
-            logger.info(f"🔊 Playing audio ({len(audio_data)} bytes)")
+            t_wait_start = time.time()
 
             # Wait for current audio to finish if playing
             while self.voice_client.is_playing():
                 await asyncio.sleep(0.05)
 
+            t_wait = time.time() - t_wait_start
+            if t_wait > 0.1:  # Only log if significant wait time
+                logger.info(f"⏳ Waited {int(t_wait * 1000)}ms for previous audio")
+
+            # Log first audio playback start
+            if self.t_first_audio_start is None:
+                self.t_first_audio_start = time.time()
+                elapsed_ms = int((self.t_first_audio_start - self.t_user_speech_start) * 1000)
+                logger.info(f"⏱️ [LATENCY] First audio playback start: (total: {elapsed_ms}ms)")
+
+            logger.info(f"🔊 Playing audio ({len(audio_data)} bytes)")
+
             # Use temp file method (reliable, minimal latency cost)
             await self._play_with_temp_file(audio_data)
 
-            t_playback = time.time() - t_start
-            logger.info(f"✅ Audio playback complete ({t_playback:.2f}s)")
+            # Track last audio end time
+            self.t_last_audio_end = time.time()
+            t_playback = self.t_last_audio_end - t_start
+            elapsed_ms = int((self.t_last_audio_end - self.t_user_speech_start) * 1000)
+            logger.info(f"⏱️ [LATENCY] Audio playback complete: {int(t_playback * 1000)}ms (total: {elapsed_ms}ms)")
 
         except Exception as e:
             logger.error(f"❌ Error playing audio: {e}")
@@ -534,6 +563,22 @@ class StreamingResponseHandler:
         # Wait for any ongoing processing to complete before logging summary
         while self.is_processing:
             await asyncio.sleep(0.1)
+
+        # Log final pipeline latency summary
+        if self.t_last_audio_end:
+            total_latency_ms = int((self.t_last_audio_end - self.t_user_speech_start) * 1000)
+            logger.info(f"⏱️ [LATENCY] ============================================")
+            logger.info(f"⏱️ [LATENCY] PIPELINE COMPLETE - Total: {total_latency_ms}ms")
+
+            if self.t_first_chunk_received:
+                chunk_latency = int((self.t_first_chunk_received - self.t_user_speech_start) * 1000)
+                logger.info(f"⏱️ [LATENCY]   - Speech → First text chunk: {chunk_latency}ms")
+
+            if self.t_first_audio_start:
+                audio_latency = int((self.t_first_audio_start - self.t_user_speech_start) * 1000)
+                logger.info(f"⏱️ [LATENCY]   - Speech → First audio start: {audio_latency}ms")
+
+            logger.info(f"⏱️ [LATENCY] ============================================")
 
         # Log summary of any TTS failures (after all processing complete)
         if self.failed_sentences:

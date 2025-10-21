@@ -14,6 +14,7 @@ import websockets
 import json
 import logging
 import os
+import time
 from typing import Optional, Callable
 
 logger = logging.getLogger(__name__)
@@ -185,6 +186,7 @@ class WhisperClient:
             return self.transcript_buffer
 
         try:
+            t_finalize_start = time.time()
             logger.info(f"🏁 Requesting finalization for user {self.user_id}")
 
             # Create future to wait for final result
@@ -197,6 +199,11 @@ class WhisperClient:
             # Wait for final result (with timeout)
             try:
                 result = await asyncio.wait_for(self.finalize_future, timeout=10.0)
+
+                # Log finalization latency
+                finalize_ms = int((time.time() - t_finalize_start) * 1000)
+                logger.info(f"⏱️ [LATENCY] WhisperX finalize response: {finalize_ms}ms")
+
                 return result
             except asyncio.TimeoutError:
                 logger.warning("⏱️ Finalize timeout - returning buffered transcript")
