@@ -52,6 +52,9 @@ class StreamingResponseHandler:
         self.is_processing = False
         self.options = options or {}
 
+        # Track failed sentences for error reporting
+        self.failed_sentences = []
+
         # Parallel processing queue
         self.generation_tasks = []
         self.playback_queue = asyncio.Queue()
@@ -73,13 +76,11 @@ class StreamingResponseHandler:
 
         # Parallel processing configuration
         self.use_parallel_processing = os.getenv('USE_PARALLEL_TTS', 'true').lower() == 'true'
-        self.use_ffmpeg_streaming = os.getenv('USE_FFMPEG_STREAMING', 'true').lower() == 'true'
 
         logger.info(f"📋 StreamingResponseHandler initialized for user {user_id}")
         logger.info(f"   Options: {self.options}")
         logger.info(f"   Clause splitting: {use_clause_splitting}")
         logger.info(f"   Parallel TTS: {self.use_parallel_processing}")
-        logger.info(f"   FFmpeg streaming: {self.use_ffmpeg_streaming}")
 
     async def on_chunk(self, text_chunk: str) -> None:
         """
@@ -135,6 +136,12 @@ class StreamingResponseHandler:
         """Process sentence queue with optional parallel processing"""
         self.is_processing = True
 
+        # Check Chatterbox health before processing
+        if not await self._check_chatterbox_health():
+            logger.error("❌ Chatterbox TTS is not responding, skipping TTS processing")
+            self.is_processing = False
+            return
+
         if self.use_parallel_processing:
             # Parallel mode: Generate and play concurrently
             await self._process_queue_parallel()
@@ -145,7 +152,7 @@ class StreamingResponseHandler:
         self.is_processing = False
 
     async def _process_queue_sequential(self) -> None:
-        """Process sentence queue sequentially (legacy behavior)"""
+        """Process sentence queue sequentially with graceful error recovery"""
         while self.sentence_queue:
             sentence = self.sentence_queue.pop(0)
             logger.info(f"🎵 Processing (sequential): \"{sentence}\"")
@@ -153,7 +160,12 @@ class StreamingResponseHandler:
             try:
                 await self._synthesize_and_play(sentence)
             except Exception as e:
-                logger.error(f"❌ Error processing sentence: {e}")
+                logger.error(f"❌ TTS failed after retries for: \"{sentence[:50]}...\"")
+                logger.error(f"   Error: {type(e).__name__}: {e}")
+                # Track failed sentence
+                self.failed_sentences.append(sentence)
+                # Continue to next sentence instead of crashing
+                logger.info(f"   ⏭️ Skipping failed sentence, continuing with queue")
 
     async def _process_queue_parallel(self) -> None:
         """Process sentence queue with parallel generation and playback"""
@@ -198,7 +210,7 @@ class StreamingResponseHandler:
 
     async def _generate_audio(self, sentence: str) -> None:
         """
-        Generate audio for a sentence and add to playback queue
+        Generate audio for a sentence and add to playback queue (parallel mode)
 
         Args:
             sentence: Text to synthesize
@@ -216,46 +228,165 @@ class StreamingResponseHandler:
             await self.playback_queue.put((sentence, audio_data))
 
         except Exception as e:
-            logger.error(f"❌ Error generating audio for \"{sentence}\": {e}")
+            logger.error(f"❌ TTS failed after retries for: \"{sentence[:50]}...\"")
+            logger.error(f"   Error: {type(e).__name__}: {e}")
+            # Track failed sentence
+            self.failed_sentences.append(sentence)
+            # Continue processing - don't crash the whole queue
 
+    async def _check_chatterbox_health(self) -> bool:
+        """
+        Check if Chatterbox TTS server is responding
+
+        Returns:
+            True if healthy, False otherwise
+        """
+        try:
+            # Health endpoint is at root level, not under /v1
+            # If base URL ends with /v1, strip it for health check
+            if self.chatterbox_url.endswith('/v1'):
+                base_url = self.chatterbox_url[:-3]  # Remove /v1
+            else:
+                base_url = self.chatterbox_url
+
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                response = await client.get(f"{base_url}/health")
+                return response.status_code == 200
+        except Exception as e:
+            logger.warning(f"⚠️ Chatterbox health check failed: {e}")
+            return False
+
+    def _validate_and_repair_wav(self, audio_data: bytes) -> bytes:
+        """
+        Validate and repair WAV file headers
+
+        Args:
+            audio_data: Raw WAV data
+
+        Returns:
+            Repaired WAV data with corrected headers
+        """
+        # Check minimum size for valid WAV (44 bytes for header)
+        if len(audio_data) < 44:
+            logger.warning(f"⚠️ WAV data too small ({len(audio_data)} bytes), using as-is")
+            return audio_data
+
+        # Check RIFF header
+        if audio_data[:4] != b'RIFF':
+            logger.warning("⚠️ Invalid WAV header (missing RIFF), using as-is")
+            return audio_data
+
+        # Read current file size from header
+        current_file_size = int.from_bytes(audio_data[4:8], 'little')
+        logger.debug(f"🔍 WAV validation - Total: {len(audio_data)} bytes, Header file size: {current_file_size}")
+
+        # Make mutable copy
+        audio_data = bytearray(audio_data)
+
+        # Fix file size field (bytes 4-7) - should be file_size - 8
+        actual_file_size = len(audio_data) - 8
+        if current_file_size != actual_file_size:
+            logger.debug(f"   🔧 Fixing file size: {current_file_size} -> {actual_file_size}")
+            audio_data[4:8] = actual_file_size.to_bytes(4, 'little')
+
+        # Check for 'data' chunk and fix its size
+        try:
+            # Find 'data' chunk (usually at offset 36 but can vary)
+            data_pos = audio_data.find(b'data')
+            if data_pos != -1 and data_pos + 8 <= len(audio_data):
+                # Read current data chunk size
+                current_data_size = int.from_bytes(audio_data[data_pos+4:data_pos+8], 'little')
+
+                # Size of data chunk = total size - (data chunk start + 8)
+                actual_data_size = len(audio_data) - (data_pos + 8)
+
+                if current_data_size != actual_data_size:
+                    logger.debug(f"   🔧 Fixing data chunk size at offset {data_pos}: {current_data_size} -> {actual_data_size}")
+                    audio_data[data_pos+4:data_pos+8] = actual_data_size.to_bytes(4, 'little')
+
+                # Read channel count from fmt chunk (at offset 22)
+                if len(audio_data) >= 24:
+                    channels = int.from_bytes(audio_data[22:24], 'little')
+                    logger.debug(f"   📊 Audio format: {channels} channel(s)")
+
+                logger.debug(f"   ✅ WAV headers repaired")
+        except Exception as e:
+            logger.warning(f"⚠️ Could not repair data chunk: {e}")
+
+        return bytes(audio_data)
+
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=1, max=10),
+        retry=retry_if_exception_type((
+            httpx.HTTPStatusError,
+            httpx.RemoteProtocolError,
+            httpx.ReadTimeout,
+            httpx.TimeoutException,
+            httpx.NetworkError
+        )),
+        reraise=True
+    )
     async def _synthesize_to_stream(self, text: str) -> bytes:
         """
-        Synthesize text to audio and return as bytes
+        Synthesize text to audio and return as bytes with retry logic
 
         Args:
             text: Text to synthesize
 
         Returns:
             Audio data as bytes
+
+        Raises:
+            httpx.HTTPStatusError: After 3 failed attempts (500 errors, etc)
+            httpx.RemoteProtocolError: After 3 failed attempts (connection drops)
+            httpx.ReadTimeout: After 3 failed attempts (timeouts)
         """
         t_start = time.time()
 
         # Build TTS request
         tts_data = self._build_tts_request(text)
 
-        # Stream TTS from Chatterbox server with smaller chunks for faster response
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            async with client.stream(
-                'POST',
-                f"{self.chatterbox_url}/audio/speech/stream/upload",
-                data=tts_data,
-                headers={'Content-Type': 'application/x-www-form-urlencoded'}
-            ) as response:
-                response.raise_for_status()
+        try:
+            # Stream TTS from Chatterbox server with smaller chunks for faster response
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                async with client.stream(
+                    'POST',
+                    f"{self.chatterbox_url}/audio/speech/stream/upload",
+                    data=tts_data,
+                    headers={'Content-Type': 'application/x-www-form-urlencoded'}
+                ) as response:
+                    response.raise_for_status()
 
-                # Collect audio chunks with smaller chunk size for lower latency
-                audio_data = bytearray()
-                chunk_size = 2048  # Reduced from 8192 for faster first-byte
-                total_bytes = 0
+                    # Collect audio chunks with smaller chunk size for lower latency
+                    audio_data = bytearray()
+                    chunk_size = 2048  # Reduced from 8192 for faster first-byte
+                    total_bytes = 0
 
-                async for chunk in response.aiter_bytes(chunk_size=chunk_size):
-                    audio_data.extend(chunk)
-                    total_bytes += len(chunk)
+                    async for chunk in response.aiter_bytes(chunk_size=chunk_size):
+                        audio_data.extend(chunk)
+                        total_bytes += len(chunk)
 
-                t_download = time.time() - t_start
-                logger.info(f"   ✅ TTS stream complete ({total_bytes} bytes, {t_download:.2f}s)")
+                    t_download = time.time() - t_start
+                    logger.info(f"   ✅ TTS stream complete ({total_bytes} bytes, {t_download:.2f}s)")
 
-                return bytes(audio_data)
+                    # Validate and repair WAV headers to prevent FFmpeg warnings
+                    audio_data = self._validate_and_repair_wav(bytes(audio_data))
+
+                    return audio_data
+
+        except httpx.HTTPStatusError as e:
+            logger.error(f"   ❌ Chatterbox HTTP error {e.response.status_code}: {e.response.text[:200]}")
+            logger.error(f"   📝 Failed text: \"{text[:100]}...\"")
+            raise
+        except httpx.RemoteProtocolError as e:
+            logger.error(f"   ❌ Connection error: {e}")
+            logger.error(f"   📝 Failed text: \"{text[:100]}...\"")
+            raise
+        except Exception as e:
+            logger.error(f"   ❌ Unexpected TTS error: {type(e).__name__}: {e}")
+            logger.error(f"   📝 Failed text: \"{text[:100]}...\"")
+            raise
 
     def _build_tts_request(self, text: str) -> dict:
         """Build TTS request data from text and options"""
@@ -322,7 +453,7 @@ class StreamingResponseHandler:
 
     async def _play_audio_stream(self, audio_data: bytes) -> None:
         """
-        Play audio from in-memory bytes using FFmpeg streaming
+        Play audio from in-memory bytes using temporary file
 
         Args:
             audio_data: Audio data as bytes (WAV format)
@@ -337,14 +468,10 @@ class StreamingResponseHandler:
 
             # Wait for current audio to finish if playing
             while self.voice_client.is_playing():
-                await asyncio.sleep(0.05)  # Reduced from 0.1 for faster response
+                await asyncio.sleep(0.05)
 
-            if self.use_ffmpeg_streaming:
-                # FFmpeg pipe streaming - plays as soon as first chunks arrive
-                await self._play_with_ffmpeg_pipe(audio_data)
-            else:
-                # Legacy temp file method
-                await self._play_with_temp_file(audio_data)
+            # Use temp file method (reliable, minimal latency cost)
+            await self._play_with_temp_file(audio_data)
 
             t_playback = time.time() - t_start
             logger.info(f"✅ Audio playback complete ({t_playback:.2f}s)")
@@ -352,58 +479,6 @@ class StreamingResponseHandler:
         except Exception as e:
             logger.error(f"❌ Error playing audio: {e}")
             raise
-
-    async def _play_with_ffmpeg_pipe(self, audio_data: bytes) -> None:
-        """
-        Play audio using FFmpeg subprocess with stdin pipe for lowest latency
-
-        Args:
-            audio_data: Audio data as bytes
-        """
-        # FFmpeg command to read from stdin and output Discord-compatible PCM
-        # Discord expects: 48kHz, stereo, s16le (signed 16-bit little-endian)
-        ffmpeg_args = [
-            'ffmpeg',
-            '-i', 'pipe:0',  # Read from stdin
-            '-f', 's16le',
-            '-ar', '48000',
-            '-ac', '2',
-            'pipe:1'  # Write to stdout
-        ]
-
-        # Create FFmpeg process
-        process = subprocess.Popen(
-            ffmpeg_args,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL
-        )
-
-        # Feed audio data to FFmpeg stdin in a separate task
-        async def feed_stdin():
-            try:
-                process.stdin.write(audio_data)
-                process.stdin.close()
-            except Exception as e:
-                logger.warning(f"⚠️ Error feeding stdin: {e}")
-
-        asyncio.create_task(feed_stdin())
-
-        # Create Discord audio source from FFmpeg stdout
-        audio_source = discord.FFmpegPCMAudio(process.stdout, pipe=True)
-
-        # Play audio
-        self.voice_client.play(audio_source)
-
-        # Wait for playback to finish
-        while self.voice_client.is_playing():
-            await asyncio.sleep(0.05)
-
-        # Clean up process
-        try:
-            process.wait(timeout=1)
-        except subprocess.TimeoutExpired:
-            process.kill()
 
     async def _play_with_temp_file(self, audio_data: bytes) -> None:
         """
@@ -419,11 +494,14 @@ class StreamingResponseHandler:
             temp_file.write(audio_data)
 
         try:
-            # Create FFmpeg audio source from file with proper resampling
-            ffmpeg_options = {
-                'options': '-ar 48000 -ac 2'
-            }
-            audio_source = discord.FFmpegPCMAudio(temp_path, **ffmpeg_options)
+            # Create FFmpeg audio source from file
+            # Explicitly handle mono/stereo conversion to avoid FFmpeg warnings
+            # -loglevel error: suppress warnings from input processing
+            # -ac 2: explicitly convert mono to stereo (simpler than aformat)
+            # -ar 48000: resample to 48kHz (Discord requirement)
+            before_options = '-loglevel error'
+            options = '-vn -ac 2 -ar 48000'
+            audio_source = discord.FFmpegPCMAudio(temp_path, before_options=before_options, options=options)
 
             # Play audio
             self.voice_client.play(audio_source)
@@ -452,3 +530,15 @@ class StreamingResponseHandler:
                 # Process final queue if not already processing
                 if not self.is_processing:
                     await self._process_queue()
+
+        # Wait for any ongoing processing to complete before logging summary
+        while self.is_processing:
+            await asyncio.sleep(0.1)
+
+        # Log summary of any TTS failures (after all processing complete)
+        if self.failed_sentences:
+            logger.warning(f"⚠️ TTS Summary: {len(self.failed_sentences)} sentence(s) failed")
+            for i, sentence in enumerate(self.failed_sentences, 1):
+                logger.warning(f"   {i}. \"{sentence[:50]}...\"")
+        else:
+            logger.info(f"✅ TTS Summary: All sentences processed successfully")
