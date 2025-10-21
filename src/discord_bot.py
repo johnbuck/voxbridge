@@ -414,7 +414,10 @@ async def play_audio_in_voice(temp_path: str):
 
     try:
         # Create FFmpeg audio source from file
-        audio_source = discord.FFmpegPCMAudio(temp_path)
+        # Explicitly handle mono/stereo conversion to avoid FFmpeg warnings
+        before_options = '-loglevel error'
+        options = '-vn -ac 2 -ar 48000'
+        audio_source = discord.FFmpegPCMAudio(temp_path, before_options=before_options, options=options)
 
         # Wait for current audio to finish if playing
         while voice_client.is_playing():
