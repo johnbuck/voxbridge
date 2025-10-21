@@ -43,6 +43,7 @@ class SpeakerManager:
         self.last_audio_time: Optional[float] = None
         self.voice_connection = None
         self.streaming_handler = None
+        self.audio_receiver = None
 
         # Configuration
         self.silence_threshold_ms = int(os.getenv('SILENCE_THRESHOLD_MS', '800'))
@@ -100,8 +101,8 @@ class SpeakerManager:
         # Start timeout timer (max speaking time)
         self.timeout_task = asyncio.create_task(self._timeout_monitor())
 
-        # Start silence detection immediately
-        await self._start_silence_detection()
+        # Start silence detection immediately (no await needed - just creates task)
+        self._start_silence_detection()
 
         return True
 
@@ -118,8 +119,8 @@ class SpeakerManager:
 
         logger.info(f"🔇 {user_id} stopped speaking - waiting for silence confirmation")
 
-        # Start silence detection timer
-        await self._start_silence_detection()
+        # Start silence detection timer (no await needed - just creates task)
+        self._start_silence_detection()
 
     async def on_audio_data(self, user_id: str) -> None:
         """
@@ -133,10 +134,10 @@ class SpeakerManager:
 
         self.last_audio_time = time.time()
 
-        # Reset silence timer if it's running
+        # Reset silence timer if it's running (no await needed - just creates task)
         if self.silence_task and not self.silence_task.done():
             self.silence_task.cancel()
-            await self._start_silence_detection()
+            self._start_silence_detection()
 
     async def _start_transcription(self, user_id: str, audio_stream) -> None:
         """Start WhisperX transcription for this speaker"""
@@ -180,8 +181,8 @@ class SpeakerManager:
         except Exception as e:
             logger.error(f"❌ Error streaming audio: {e}")
 
-    async def _start_silence_detection(self) -> None:
-        """Start silence detection timer"""
+    def _start_silence_detection(self) -> None:
+        """Start silence detection timer (not async - just creates a task)"""
         if self.silence_task and not self.silence_task.done():
             self.silence_task.cancel()
 
@@ -424,7 +425,16 @@ class SpeakerManager:
         """Release speaker lock and clean up"""
         logger.info(f"🔓 Unlocking speaker: {self.active_speaker}")
 
-        # Cancel pending tasks and wait for them
+        # Store speaker ID before cleanup
+        speaker_to_cleanup = self.active_speaker
+
+        # Reset state FIRST to ensure lock is released even if cleanup fails
+        self.active_speaker = None
+        self.lock_start_time = None
+        self.last_audio_time = None
+        self.whisper_client = None
+
+        # Cancel pending tasks (best effort - don't block unlock)
         tasks_to_cancel = []
 
         # Cancel timeout task with RecursionError protection
@@ -432,31 +442,40 @@ class SpeakerManager:
             try:
                 self.timeout_task.cancel()
                 tasks_to_cancel.append(self.timeout_task)
-            except RecursionError:
-                logger.warning("⚠️ RecursionError cancelling timeout task, skipping")
+            except (RecursionError, Exception) as e:
+                logger.warning(f"⚠️ Error cancelling timeout task: {type(e).__name__}")
 
         # Cancel silence task with RecursionError protection
         if self.silence_task and not self.silence_task.done():
             try:
                 self.silence_task.cancel()
                 tasks_to_cancel.append(self.silence_task)
-            except RecursionError:
-                logger.warning("⚠️ RecursionError cancelling silence task, skipping")
+            except (RecursionError, Exception) as e:
+                logger.warning(f"⚠️ Error cancelling silence task: {type(e).__name__}")
 
-        # Wait for cancellation to complete
-        if tasks_to_cancel:
-            try:
-                await asyncio.gather(*tasks_to_cancel, return_exceptions=True)
-            except RecursionError:
-                logger.warning("⚠️ RecursionError during gather, continuing cleanup")
-
-        # Reset state
-        self.active_speaker = None
-        self.lock_start_time = None
-        self.last_audio_time = None
-        self.whisper_client = None
+        # Clear task references
         self.timeout_task = None
         self.silence_task = None
+
+        # Note: We don't wait for cancellation to complete because it can cause RecursionError
+        # The tasks will be cancelled asynchronously in the background
+        logger.info(f"✅ Cancelled {len(tasks_to_cancel)} task(s) - continuing without waiting")
+
+        # Cleanup audio receiver for this user
+        logger.info(f"🔍 Cleanup check - audio_receiver: {self.audio_receiver is not None}, speaker_to_cleanup: {speaker_to_cleanup}")
+
+        if self.audio_receiver and speaker_to_cleanup:
+            try:
+                logger.info(f"🧹 Calling cleanup_user for {speaker_to_cleanup}")
+                self.audio_receiver.cleanup_user(speaker_to_cleanup)
+                logger.info(f"✅ cleanup_user completed for {speaker_to_cleanup}")
+            except Exception as e:
+                logger.error(f"❌ Error cleaning up audio receiver: {e}", exc_info=True)
+        else:
+            if not self.audio_receiver:
+                logger.warning(f"⚠️ Cannot cleanup: audio_receiver is None")
+            if not speaker_to_cleanup:
+                logger.warning(f"⚠️ Cannot cleanup: speaker_to_cleanup is None")
 
     def force_unlock(self) -> None:
         """Force unlock speaker (for shutdown) - sync wrapper"""
@@ -488,6 +507,11 @@ class SpeakerManager:
         """Set streaming response handler"""
         self.streaming_handler = handler
         logger.info("🌊 Streaming handler configured")
+
+    def set_audio_receiver(self, audio_receiver) -> None:
+        """Set audio receiver for cleanup callbacks"""
+        self.audio_receiver = audio_receiver
+        logger.info("🎙️ Audio receiver configured for cleanup")
 
     def get_status(self) -> dict:
         """Get current speaker manager status"""

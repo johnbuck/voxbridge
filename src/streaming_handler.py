@@ -215,8 +215,12 @@ class StreamingResponseHandler:
         try:
             logger.info("🔊 Playing audio in voice channel")
 
-            # Create FFmpeg audio source from file
-            audio_source = discord.FFmpegPCMAudio(temp_path)
+            # Create FFmpeg audio source from file with proper resampling
+            # Discord expects 48kHz stereo or mono, Chatterbox outputs 24kHz
+            ffmpeg_options = {
+                'options': '-ar 48000 -ac 2'  # Resample to 48kHz stereo
+            }
+            audio_source = discord.FFmpegPCMAudio(temp_path, **ffmpeg_options)
 
             # Play audio
             if self.voice_client and self.voice_client.is_connected():

@@ -568,17 +568,14 @@ async def test_cleanup_cancels_timeout_task():
     mock_task.cancel = MagicMock()
     manager.timeout_task = mock_task
 
-    # Mock asyncio.gather to avoid waiting
-    with patch('asyncio.gather', new_callable=AsyncMock) as mock_gather:
-        await manager._unlock()
+    await manager._unlock()
 
-        # Verify task was cancelled (check before it's set to None)
-        mock_task.cancel.assert_called_once()
-        mock_gather.assert_called_once()
+    # Verify task was cancelled (check before it's set to None)
+    mock_task.cancel.assert_called_once()
 
-        # Verify state reset
-        assert manager.active_speaker is None
-        assert manager.timeout_task is None
+    # Verify state reset
+    assert manager.active_speaker is None
+    assert manager.timeout_task is None
 
 
 @pytest.mark.unit
@@ -594,15 +591,13 @@ async def test_cleanup_cancels_silence_task():
     mock_task.cancel = MagicMock()
     manager.silence_task = mock_task
 
-    with patch('asyncio.gather', new_callable=AsyncMock) as mock_gather:
-        await manager._unlock()
+    await manager._unlock()
 
-        # Verify task was cancelled (check before it's set to None)
-        mock_task.cancel.assert_called_once()
-        mock_gather.assert_called_once()
+    # Verify task was cancelled (check before it's set to None)
+    mock_task.cancel.assert_called_once()
 
-        # Verify state reset
-        assert manager.silence_task is None
+    # Verify state reset
+    assert manager.silence_task is None
 
 
 @pytest.mark.unit
@@ -634,6 +629,162 @@ async def test_cleanup_closes_whisper_client():
 
 
 # ============================================================
+# Follow-Up Message Regression Tests (Issue: RecursionError in cleanup)
+# ============================================================
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_unlock_calls_cleanup_user():
+    """Test that _unlock() calls audio_receiver.cleanup_user() when configured"""
+    manager = SpeakerManager()
+    manager.active_speaker = "user_123"
+    manager.lock_start_time = time.time()
+
+    # Mock audio receiver
+    mock_audio_receiver = MagicMock()
+    mock_audio_receiver.cleanup_user = MagicMock()
+    manager.audio_receiver = mock_audio_receiver
+
+    # Unlock should call cleanup_user
+    await manager._unlock()
+
+    # Verify cleanup_user was called with correct user_id
+    mock_audio_receiver.cleanup_user.assert_called_once_with("user_123")
+
+    # Verify state was reset
+    assert manager.active_speaker is None
+    assert manager.whisper_client is None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_unlock_resets_state_before_cleanup():
+    """Test that speaker state is reset BEFORE cleanup operations (ensures lock released even if cleanup fails)"""
+    manager = SpeakerManager()
+    manager.active_speaker = "user_123"
+    manager.lock_start_time = time.time()
+    manager.last_audio_time = time.time()
+
+    # Mock audio receiver that raises exception
+    mock_audio_receiver = MagicMock()
+    mock_audio_receiver.cleanup_user = MagicMock(side_effect=Exception("Cleanup failed"))
+    manager.audio_receiver = mock_audio_receiver
+
+    # Unlock should not raise exception
+    await manager._unlock()
+
+    # Verify state was reset DESPITE cleanup failure
+    assert manager.active_speaker is None
+    assert manager.lock_start_time is None
+    assert manager.last_audio_time is None
+    assert manager.whisper_client is None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_unlock_handles_task_cancellation_errors():
+    """Test that _unlock() doesn't block if task cancellation raises RecursionError"""
+    manager = SpeakerManager()
+    manager.active_speaker = "user_123"
+
+    # Create mock tasks that raise RecursionError on cancel
+    mock_timeout_task = MagicMock()
+    mock_timeout_task.done.return_value = False
+    mock_timeout_task.cancel = MagicMock(side_effect=RecursionError("Max recursion depth"))
+    manager.timeout_task = mock_timeout_task
+
+    mock_silence_task = MagicMock()
+    mock_silence_task.done.return_value = False
+    mock_silence_task.cancel = MagicMock(side_effect=RecursionError("Max recursion depth"))
+    manager.silence_task = mock_silence_task
+
+    # Unlock should complete without blocking or raising exception
+    await manager._unlock()
+
+    # Verify state was reset despite RecursionError
+    assert manager.active_speaker is None
+    assert manager.timeout_task is None
+    assert manager.silence_task is None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_multiple_sequential_voice_interactions():
+    """Test multiple back-to-back voice interactions work correctly (regression test for follow-up message bug)"""
+    manager = SpeakerManager()
+
+    async def mock_audio_stream():
+        yield b'\x00' * 960
+
+    # Helper to close coroutines
+    def close_coro(coro):
+        coro.close()
+        return MagicMock()
+
+    # Mock audio receiver to track cleanup calls
+    mock_audio_receiver = MagicMock()
+    cleanup_calls = []
+    mock_audio_receiver.cleanup_user = MagicMock(side_effect=lambda user_id: cleanup_calls.append(user_id))
+    manager.audio_receiver = mock_audio_receiver
+
+    # Simulate 3 sequential voice interactions
+    for i in range(3):
+        user_id = f"user_{i}"
+
+        # Start speaking
+        with patch.object(manager, '_start_transcription', new_callable=AsyncMock):
+            with patch('asyncio.create_task', side_effect=close_coro):
+                result = await manager.on_speaking_start(user_id, mock_audio_stream())
+                assert result is True
+                assert manager.active_speaker == user_id
+
+        # Unlock (simulating end of interaction)
+        await manager._unlock()
+
+        # Verify cleanup was called
+        assert cleanup_calls[-1] == user_id
+
+        # Verify state is reset for next interaction
+        assert manager.active_speaker is None
+        assert manager.lock_start_time is None
+        assert manager.last_audio_time is None
+
+    # Verify all 3 interactions completed
+    assert len(cleanup_calls) == 3
+    assert cleanup_calls == ["user_0", "user_1", "user_2"]
+
+
+@pytest.mark.unit
+def test_start_silence_detection_creates_task():
+    """Test that _start_silence_detection() (non-async) properly creates asyncio task"""
+    manager = SpeakerManager()
+
+    with patch('asyncio.create_task') as mock_create_task:
+        mock_task = MagicMock()
+        mock_create_task.return_value = mock_task
+
+        # Call _start_silence_detection (NOT awaited - it's not async)
+        manager._start_silence_detection()
+
+        # Verify create_task was called
+        mock_create_task.assert_called_once()
+
+        # Verify task was stored
+        assert manager.silence_task == mock_task
+
+
+@pytest.mark.unit
+def test_set_audio_receiver():
+    """Test setting audio receiver for cleanup callbacks"""
+    manager = SpeakerManager()
+    mock_audio_receiver = MagicMock()
+
+    manager.set_audio_receiver(mock_audio_receiver)
+
+    assert manager.audio_receiver == mock_audio_receiver
+
+
+# ============================================================
 # Additional Behavior Tests
 # ============================================================
 
@@ -655,27 +806,25 @@ async def test_silence_detection_full_flow():
 
     # Mock n8n webhook to avoid network calls
     with patch.object(manager, '_send_to_n8n', new_callable=AsyncMock):
-        # Mock asyncio.gather to avoid RecursionError in cleanup
-        with patch('asyncio.gather', new_callable=AsyncMock):
-            # Start silence detection
-            await manager._start_silence_detection()
+        # Start silence detection (not async - just creates task)
+        manager._start_silence_detection()
 
-            # Simulate audio packet arriving - should reset timer
-            await manager.on_audio_data("user_123")
+        # Simulate audio packet arriving - should reset timer
+        await manager.on_audio_data("user_123")
 
-            # Wait less than threshold - should NOT finalize
-            await asyncio.sleep(0.1)  # 100ms < 200ms threshold
-            assert manager.active_speaker == "user_123"  # Still locked
+        # Wait less than threshold - should NOT finalize
+        await asyncio.sleep(0.1)  # 100ms < 200ms threshold
+        assert manager.active_speaker == "user_123"  # Still locked
 
-            # Simulate another audio packet
-            await manager.on_audio_data("user_123")
+        # Simulate another audio packet
+        await manager.on_audio_data("user_123")
 
-            # Wait for silence threshold to pass with no more packets
-            await asyncio.sleep(0.35)  # 350ms > 200ms threshold + some buffer
+        # Wait for silence threshold to pass with no more packets
+        await asyncio.sleep(0.35)  # 350ms > 200ms threshold + some buffer
 
-            # Should have finalized
-            assert manager.active_speaker is None  # Lock released
-            mock_client.finalize.assert_called_once()
+        # Should have finalized
+        assert manager.active_speaker is None  # Lock released
+        mock_client.finalize.assert_called_once()
 
 
 @pytest.mark.unit
@@ -692,7 +841,8 @@ async def test_on_audio_data_updates_silence_timer():
     mock_task.cancel = MagicMock()
     manager.silence_task = mock_task
 
-    with patch.object(manager, '_start_silence_detection', new_callable=AsyncMock) as mock_start:
+    # _start_silence_detection is now a regular function (not async), so patch normally
+    with patch.object(manager, '_start_silence_detection') as mock_start:
         initial_time = manager.last_audio_time
 
         await manager.on_audio_data("user_123")

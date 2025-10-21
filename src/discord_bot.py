@@ -181,6 +181,28 @@ class AudioReceiver(voice_recv.AudioSink):
         """Return True to receive Opus packets (not decoded PCM)"""
         return True
 
+    def cleanup_user(self, user_id: str):
+        """Cleanup a specific user's audio stream"""
+        logger.info(f"🧹 Cleaning up audio stream for user {user_id}")
+
+        # Send sentinel to stop generator
+        if user_id in self.user_buffers:
+            try:
+                self.user_buffers[user_id].put_nowait(None)
+            except:
+                pass
+            del self.user_buffers[user_id]
+
+        # Cancel task
+        if user_id in self.user_tasks:
+            task = self.user_tasks[user_id]
+            if not task.done():
+                task.cancel()
+            del self.user_tasks[user_id]
+
+        # Remove from active users
+        self.active_users.discard(user_id)
+
     def cleanup(self):
         """Cleanup audio sink"""
         logger.info("🧹 Cleaning up audio receiver")
@@ -238,11 +260,13 @@ async def join_voice(request: JoinVoiceRequest):
 
         # Set up voice receiving - pass event loop for thread-safe task scheduling
         loop = asyncio.get_running_loop()
-        voice_client.listen(AudioReceiver(voice_client, speaker_manager, loop))
+        audio_receiver = AudioReceiver(voice_client, speaker_manager, loop)
+        voice_client.listen(audio_receiver)
 
-        # Pass voice connection to speaker manager
+        # Pass voice connection and audio receiver to speaker manager
         speaker_manager.set_voice_connection(voice_client)
-        logger.info("   🌊 Voice connection passed to speaker manager")
+        speaker_manager.set_audio_receiver(audio_receiver)
+        logger.info("   🌊 Voice connection and audio receiver passed to speaker manager")
 
         logger.info(f"✅ JOIN complete - Now listening in {channel.name}\n")
 
