@@ -20,7 +20,7 @@ from typing import Optional
 
 import discord
 from discord.ext import commands, voice_recv
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 import httpx
 import uvicorn
@@ -66,7 +66,8 @@ bot = commands.Bot(command_prefix='!', intents=intents)
 
 # Voice connection state
 voice_client: Optional[discord.VoiceClient] = None
-speaker_manager = SpeakerManager()
+
+# Note: SpeakerManager initialization moved after broadcast functions are defined
 
 # ============================================================
 # FAST API SETUP
@@ -128,6 +129,7 @@ class AudioReceiver(voice_recv.AudioSink):
             return
 
         user_id = str(user.id)
+        username = user.name if hasattr(user, 'name') else str(user.id)
 
         # Extract Opus audio bytes from VoiceData object
         opus_packet = data.opus
@@ -137,7 +139,7 @@ class AudioReceiver(voice_recv.AudioSink):
 
         # Create buffer for this user if not exists
         if user_id not in self.user_buffers:
-            logger.info(f"📥 New audio stream from user {user_id}")
+            logger.info(f"📥 New audio stream from user {user_id} ({username})")
             # Bounded queue prevents memory issues - 100 packets @ 20ms = 2 seconds of audio
             max_queue_size = int(os.getenv('DISCORD_AUDIO_QUEUE_SIZE', '100'))
             self.user_buffers[user_id] = asyncio.Queue(maxsize=max_queue_size)
@@ -162,7 +164,7 @@ class AudioReceiver(voice_recv.AudioSink):
                 self.active_users.add(user_id)
                 stream_gen = audio_stream_generator(user_id)
                 future = asyncio.run_coroutine_threadsafe(
-                    self.speaker_mgr.on_speaking_start(user_id, stream_gen),
+                    self.speaker_mgr.on_speaking_start(user_id, username, stream_gen),
                     self.loop
                 )
                 self.user_tasks[user_id] = future
@@ -458,31 +460,295 @@ async def health_check():
 async def get_status():
     """Detailed status information"""
     speaker_status = speaker_manager.get_status()
+
+    # Get channel info if connected
+    channel_info = {
+        "connected": False,
+        "channelId": None,
+        "channelName": None,
+        "guildId": None,
+        "guildName": None
+    }
+
+    if voice_client and voice_client.is_connected():
+        channel = voice_client.channel
+        channel_info = {
+            "connected": True,
+            "channelId": str(channel.id) if channel else None,
+            "channelName": channel.name if channel else None,
+            "guildId": str(channel.guild.id) if channel and channel.guild else None,
+            "guildName": channel.guild.name if channel and channel.guild else None
+        }
+
     return {
         "bot": {
             "username": bot.user.name if bot.user else "Not ready",
             "id": str(bot.user.id) if bot.user else None,
             "ready": bot.is_ready()
         },
-        "voice": {
-            "connected": voice_client is not None and voice_client.is_connected(),
-            "speakerLocked": speaker_status['locked'],
+        "voice": channel_info,
+        "speaker": {
+            "locked": speaker_status['locked'],
             "activeSpeaker": speaker_status['activeSpeaker'],
             "speakingDuration": speaker_status['speakingDuration'],
             "silenceDuration": speaker_status['silenceDuration']
         },
         "whisperx": {
             "serverConfigured": bool(os.getenv('WHISPER_SERVER_URL')),
-            "model": os.getenv('WHISPERX_MODEL', 'small'),
-            "device": os.getenv('WHISPERX_DEVICE', 'auto'),
-            "computeType": os.getenv('WHISPERX_COMPUTE_TYPE', 'float16'),
-            "batchSize": os.getenv('WHISPERX_BATCH_SIZE', '16')
+            "serverUrl": os.getenv('WHISPER_SERVER_URL', '')
         },
         "services": {
             "chatterbox": bool(CHATTERBOX_URL),
             "n8nWebhook": bool(os.getenv('N8N_WEBHOOK_URL'))
         }
     }
+
+@app.get("/api/channels")
+async def get_channels():
+    """
+    Get list of available voice channels across all guilds
+
+    Returns:
+        List of guilds with their voice channels
+    """
+    if not bot.is_ready():
+        raise HTTPException(status_code=503, detail="Bot not ready")
+
+    guilds_data = []
+    for guild in bot.guilds:
+        voice_channels = []
+        for channel in guild.voice_channels:
+            voice_channels.append({
+                "id": str(channel.id),
+                "name": channel.name,
+                "userCount": len(channel.members)
+            })
+
+        guilds_data.append({
+            "id": str(guild.id),
+            "name": guild.name,
+            "channels": voice_channels
+        })
+
+    return {"guilds": guilds_data}
+
+@app.get("/api/transcripts")
+async def get_transcripts(limit: int = 10):
+    """
+    Get recent transcriptions
+
+    Args:
+        limit: Maximum number of transcripts to return
+
+    Returns:
+        List of recent transcripts
+    """
+    # TODO: Implement with database storage
+    # For now, return empty list
+    return {"transcripts": []}
+
+@app.get("/api/metrics")
+async def get_metrics():
+    """
+    Get performance metrics
+
+    Returns:
+        Performance metrics including latency, counts, error rate
+    """
+    # TODO: Implement proper metrics tracking
+    # For now, return placeholder data
+    import time
+
+    return {
+        "latency": {
+            "avg": 450,
+            "p50": 400,
+            "p95": 800,
+            "p99": 1200
+        },
+        "transcriptCount": 0,
+        "errorRate": 0.0,
+        "uptime": int(time.time() - app.state.start_time) if hasattr(app.state, 'start_time') else 0
+    }
+
+@app.post("/api/config")
+async def update_config(config: dict):
+    """
+    Update runtime configuration
+
+    Args:
+        config: Configuration updates
+
+    Returns:
+        Success response
+    """
+    # Update speaker manager settings
+    if "SILENCE_THRESHOLD_MS" in config:
+        speaker_manager.silence_threshold_ms = int(config["SILENCE_THRESHOLD_MS"])
+        logger.info(f"⚙️ Updated SILENCE_THRESHOLD_MS to {config['SILENCE_THRESHOLD_MS']}ms")
+
+    if "MAX_SPEAKING_TIME_MS" in config:
+        speaker_manager.max_speaking_time_ms = int(config["MAX_SPEAKING_TIME_MS"])
+        logger.info(f"⚙️ Updated MAX_SPEAKING_TIME_MS to {config['MAX_SPEAKING_TIME_MS']}ms")
+
+    if "USE_STREAMING" in config:
+        speaker_manager.use_streaming = bool(config["USE_STREAMING"])
+        logger.info(f"⚙️ Updated USE_STREAMING to {config['USE_STREAMING']}")
+
+    return {"success": True, "message": "Configuration updated"}
+
+@app.post("/api/speaker/unlock")
+async def unlock_speaker():
+    """
+    Force unlock current speaker
+
+    Returns:
+        Success response with previous speaker ID
+    """
+    previous_speaker = speaker_manager.active_speaker
+    speaker_manager.force_unlock()
+
+    logger.info(f"🔓 Force unlocked speaker (was: {previous_speaker})")
+
+    return {
+        "success": True,
+        "previousSpeaker": previous_speaker
+    }
+
+# ============================================================
+# WEBSOCKET CONNECTION MANAGER
+# ============================================================
+
+class ConnectionManager:
+    """Manage WebSocket connections for real-time updates"""
+
+    def __init__(self):
+        self.active_connections: list[WebSocket] = []
+
+    async def connect(self, websocket: WebSocket):
+        await websocket.accept()
+        self.active_connections.append(websocket)
+        logger.info(f"🔌 WebSocket client connected (total: {len(self.active_connections)})")
+
+    def disconnect(self, websocket: WebSocket):
+        if websocket in self.active_connections:
+            self.active_connections.remove(websocket)
+        logger.info(f"🔌 WebSocket client disconnected (total: {len(self.active_connections)})")
+
+    async def broadcast(self, message: dict):
+        """Broadcast message to all connected clients"""
+        dead_connections = []
+        for connection in self.active_connections:
+            try:
+                await connection.send_json(message)
+            except Exception as e:
+                logger.error(f"❌ Error sending to WebSocket client: {e}")
+                dead_connections.append(connection)
+
+        # Remove dead connections
+        for connection in dead_connections:
+            self.disconnect(connection)
+
+# Initialize connection manager
+ws_manager = ConnectionManager()
+
+@app.websocket("/ws/events")
+async def websocket_endpoint(websocket: WebSocket):
+    """
+    WebSocket endpoint for real-time event streaming
+
+    Events emitted:
+    - speaker_started: User begins speaking
+    - speaker_stopped: User stops speaking
+    - partial_transcript: Partial transcription update
+    - final_transcript: Final transcription result
+    - status_update: General status update
+    """
+    await ws_manager.connect(websocket)
+
+    try:
+        # Send initial status
+        await websocket.send_json({
+            "type": "status_update",
+            "data": {
+                "connected": True,
+                "timestamp": datetime.now().isoformat()
+            }
+        })
+
+        # Keep connection alive
+        while True:
+            try:
+                # Wait for any client messages (ping/pong)
+                data = await websocket.receive_text()
+
+                # Echo back for ping/pong
+                if data == "ping":
+                    await websocket.send_json({"type": "pong"})
+
+            except WebSocketDisconnect:
+                break
+
+    except Exception as e:
+        logger.error(f"❌ WebSocket error: {e}")
+    finally:
+        ws_manager.disconnect(websocket)
+
+# Helper functions to broadcast events from other parts of the code
+async def broadcast_speaker_started(user_id: str, username: str):
+    """Broadcast when a user starts speaking"""
+    await ws_manager.broadcast({
+        "type": "speaker_started",
+        "data": {
+            "userId": user_id,
+            "username": username,
+            "timestamp": datetime.now().isoformat()
+        }
+    })
+
+async def broadcast_speaker_stopped(user_id: str, username: str, duration_ms: int):
+    """Broadcast when a user stops speaking"""
+    await ws_manager.broadcast({
+        "type": "speaker_stopped",
+        "data": {
+            "userId": user_id,
+            "username": username,
+            "durationMs": duration_ms,
+            "timestamp": datetime.now().isoformat()
+        }
+    })
+
+async def broadcast_partial_transcript(user_id: str, username: str, text: str):
+    """Broadcast partial transcription"""
+    await ws_manager.broadcast({
+        "type": "partial_transcript",
+        "data": {
+            "userId": user_id,
+            "username": username,
+            "text": text,
+            "timestamp": datetime.now().isoformat()
+        }
+    })
+
+async def broadcast_final_transcript(user_id: str, username: str, text: str):
+    """Broadcast final transcription"""
+    await ws_manager.broadcast({
+        "type": "final_transcript",
+        "data": {
+            "userId": user_id,
+            "username": username,
+            "text": text,
+            "timestamp": datetime.now().isoformat()
+        }
+    })
+
+# Initialize SpeakerManager with broadcast callbacks
+speaker_manager = SpeakerManager(
+    on_speaker_started=broadcast_speaker_started,
+    on_speaker_stopped=broadcast_speaker_stopped,
+    on_partial_transcript=broadcast_partial_transcript,
+    on_final_transcript=broadcast_final_transcript
+)
 
 # ============================================================
 # APPLICATION LIFECYCLE

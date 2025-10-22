@@ -709,6 +709,96 @@ async def test_unlock_handles_task_cancellation_errors():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_rapid_audio_packets_no_recursion_error():
+    """
+    Test that rapid audio packets (500+) don't cause RecursionError
+
+    This is a regression test for the TaskGroup refactor. Previously,
+    calling on_audio_data() repeatedly would cancel and recreate silence
+    monitoring tasks, creating deeply nested cancellation chains that
+    could exceed Python's recursion limit (492+ levels).
+
+    With the TaskGroup-based approach, on_audio_data() simply updates
+    a timestamp, and a continuous monitoring loop checks it.
+    """
+    manager = SpeakerManager()
+    manager.active_speaker = "user_123"
+    manager.active_speaker_username = "testuser"
+    manager.lock_start_time = time.time()
+    manager.silence_threshold_ms = 100  # Fast threshold for testing
+
+    # Start the monitoring task
+    manager._stop_monitor.clear()
+    manager.monitor_task = asyncio.create_task(manager._monitor_with_taskgroup())
+
+    # Simulate 500 rapid audio packets (would cause RecursionError before fix)
+    for i in range(500):
+        await manager.on_audio_data("user_123")
+        # Brief delay to let event loop process
+        await asyncio.sleep(0.001)  # 1ms between packets
+
+    # Stop the monitor task gracefully
+    manager._stop_monitor.set()
+
+    # Wait for monitor to stop
+    try:
+        await asyncio.wait_for(manager.monitor_task, timeout=1.0)
+    except asyncio.TimeoutError:
+        # If it times out, cancel it
+        manager.monitor_task.cancel()
+        try:
+            await manager.monitor_task
+        except asyncio.CancelledError:
+            pass
+
+    # Success = no RecursionError raised
+    # Verify monitor task completed or was cancelled cleanly
+    assert manager.monitor_task.done()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_taskgroup_based_monitoring_lifecycle():
+    """Test the complete lifecycle of TaskGroup-based monitoring"""
+    manager = SpeakerManager()
+    manager.silence_threshold_ms = 200  # 200ms
+    manager.max_speaking_time_ms = 1000  # 1 second
+
+    # Mock WhisperClient to prevent finalization errors
+    mock_client = AsyncMock()
+    mock_client.finalize = AsyncMock(return_value="test")
+    mock_client.close = AsyncMock()
+    manager.whisper_client = mock_client
+
+    # Start monitoring
+    manager.active_speaker = "user_123"
+    manager.active_speaker_username = "testuser"
+    manager.lock_start_time = time.time()
+    manager._stop_monitor.clear()
+    manager.monitor_task = asyncio.create_task(manager._monitor_with_taskgroup())
+
+    # Initialize silence detection
+    manager._start_silence_detection()
+
+    # Wait a bit
+    await asyncio.sleep(0.05)
+
+    # Simulate audio packets (should prevent silence finalization)
+    for _ in range(3):
+        await manager.on_audio_data("user_123")
+        await asyncio.sleep(0.05)
+
+    # Stop monitoring gracefully by unlocking
+    await manager._unlock()
+
+    # Verify cleanup
+    assert manager.active_speaker is None
+    assert manager.monitor_task is None
+    assert manager._stop_monitor.is_set()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_multiple_sequential_voice_interactions():
     """Test multiple back-to-back voice interactions work correctly (regression test for follow-up message bug)"""
     manager = SpeakerManager()

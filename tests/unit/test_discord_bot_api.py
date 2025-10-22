@@ -520,3 +520,187 @@ def test_audio_receiver_updates_silence_detection_on_each_packet():
 
     # Should have scheduled: 1 on_speaking_start + 6 on_audio_data calls (including first packet)
     assert len(coroutines_scheduled) == 7
+
+
+# ============================================================
+# WebSocket Endpoint Tests
+# ============================================================
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_websocket_connection(client):
+    """Test WebSocket connection to /ws/events endpoint"""
+    from starlette.testclient import TestClient as StarletteTestClient
+
+    # Create websocket connection
+    with StarletteTestClient(discord_bot.app) as test_client:
+        with test_client.websocket_connect("/ws/events") as websocket:
+            # Should receive initial status message
+            data = websocket.receive_json()
+            assert data["type"] == "status_update"
+            assert data["data"]["connected"] is True
+            assert "timestamp" in data["data"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_websocket_ping_pong(client):
+    """Test WebSocket ping/pong functionality"""
+    from starlette.testclient import TestClient as StarletteTestClient
+
+    with StarletteTestClient(discord_bot.app) as test_client:
+        with test_client.websocket_connect("/ws/events") as websocket:
+            # Receive initial status
+            websocket.receive_json()
+
+            # Send ping
+            websocket.send_text("ping")
+
+            # Should receive pong
+            data = websocket.receive_json()
+            assert data["type"] == "pong"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_websocket_broadcast_speaker_started():
+    """Test WebSocket broadcast for speaker_started event"""
+    from unittest.mock import AsyncMock
+
+    # Create mock WebSocket
+    mock_ws = AsyncMock()
+    mock_ws.send_json = AsyncMock()
+
+    # Add to connection manager
+    discord_bot.ws_manager.active_connections.append(mock_ws)
+
+    try:
+        # Broadcast speaker started event
+        await discord_bot.broadcast_speaker_started("user_123", "TestUser")
+
+        # Verify send_json was called
+        mock_ws.send_json.assert_called_once()
+        call_args = mock_ws.send_json.call_args[0][0]
+
+        assert call_args["type"] == "speaker_started"
+        assert call_args["data"]["userId"] == "user_123"
+        assert call_args["data"]["username"] == "TestUser"
+
+    finally:
+        # Clean up
+        discord_bot.ws_manager.active_connections.remove(mock_ws)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_websocket_broadcast_speaker_stopped():
+    """Test WebSocket broadcast for speaker_stopped event"""
+    from unittest.mock import AsyncMock
+
+    # Create mock WebSocket
+    mock_ws = AsyncMock()
+    mock_ws.send_json = AsyncMock()
+
+    # Add to connection manager
+    discord_bot.ws_manager.active_connections.append(mock_ws)
+
+    try:
+        # Broadcast speaker stopped event (includes duration_ms)
+        await discord_bot.broadcast_speaker_stopped("user_123", "TestUser", 5000)
+
+        # Verify send_json was called
+        mock_ws.send_json.assert_called_once()
+        call_args = mock_ws.send_json.call_args[0][0]
+
+        assert call_args["type"] == "speaker_stopped"
+        assert call_args["data"]["userId"] == "user_123"
+        assert call_args["data"]["username"] == "TestUser"
+        assert call_args["data"]["durationMs"] == 5000
+
+    finally:
+        # Clean up
+        discord_bot.ws_manager.active_connections.remove(mock_ws)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_websocket_broadcast_partial_transcript():
+    """Test WebSocket broadcast for partial_transcript event"""
+    from unittest.mock import AsyncMock
+
+    # Create mock WebSocket
+    mock_ws = AsyncMock()
+    mock_ws.send_json = AsyncMock()
+
+    # Add to connection manager
+    discord_bot.ws_manager.active_connections.append(mock_ws)
+
+    try:
+        # Broadcast partial transcript event (includes username and text)
+        await discord_bot.broadcast_partial_transcript("user_123", "TestUser", "Hello world")
+
+        # Verify send_json was called
+        mock_ws.send_json.assert_called_once()
+        call_args = mock_ws.send_json.call_args[0][0]
+
+        assert call_args["type"] == "partial_transcript"
+        assert call_args["data"]["userId"] == "user_123"
+        assert call_args["data"]["username"] == "TestUser"
+        assert call_args["data"]["text"] == "Hello world"
+
+    finally:
+        # Clean up
+        discord_bot.ws_manager.active_connections.remove(mock_ws)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_websocket_broadcast_final_transcript():
+    """Test WebSocket broadcast for final_transcript event"""
+    from unittest.mock import AsyncMock
+
+    # Create mock WebSocket
+    mock_ws = AsyncMock()
+    mock_ws.send_json = AsyncMock()
+
+    # Add to connection manager
+    discord_bot.ws_manager.active_connections.append(mock_ws)
+
+    try:
+        # Broadcast final transcript event (includes username and text)
+        await discord_bot.broadcast_final_transcript("user_123", "TestUser", "Hello world complete")
+
+        # Verify send_json was called
+        mock_ws.send_json.assert_called_once()
+        call_args = mock_ws.send_json.call_args[0][0]
+
+        assert call_args["type"] == "final_transcript"
+        assert call_args["data"]["userId"] == "user_123"
+        assert call_args["data"]["username"] == "TestUser"
+        assert call_args["data"]["text"] == "Hello world complete"
+
+    finally:
+        # Clean up
+        discord_bot.ws_manager.active_connections.remove(mock_ws)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_websocket_disconnect_handling():
+    """Test WebSocket disconnect removes connection from manager"""
+    from unittest.mock import AsyncMock
+
+    # Create mock WebSocket that raises error
+    mock_ws = AsyncMock()
+    mock_ws.send_json = AsyncMock(side_effect=Exception("Connection closed"))
+
+    # Add to connection manager
+    discord_bot.ws_manager.active_connections.append(mock_ws)
+    initial_count = len(discord_bot.ws_manager.active_connections)
+
+    # Broadcast should handle error and remove connection
+    await discord_bot.ws_manager.broadcast({"type": "test"})
+
+    # Verify connection was removed
+    assert len(discord_bot.ws_manager.active_connections) == initial_count - 1
+    assert mock_ws not in discord_bot.ws_manager.active_connections
