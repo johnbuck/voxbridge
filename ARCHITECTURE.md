@@ -227,7 +227,52 @@ voxbridge/
 
 ## 🗺️ Project Roadmap
 
-### ✅ Completed (October 2025)
+### 📚 Planning Documents (Detailed Architecture Plans)
+
+We have **three comprehensive planning documents** totaling over 4,000 lines of detailed architecture:
+
+1. **[VoxBridge 2.0 Transformation Plan](docs/architecture/voxbridge-2.0-transformation-plan.md)** - **NEW** 🆕
+   - **Scope**: Complete architectural transformation (14-16 days)
+   - **Focus**: Standalone modular platform with web interface + optional extensions
+   - **Status**: 🟡 Planning Complete - Ready for Implementation
+
+2. **[Multi-Agent Implementation Plan](docs/architecture/multi-agent-implementation-plan.md)** - **INCORPORATED** ✅
+   - **Scope**: 7-phase multi-agent system (2,222 lines, 8-12 days)
+   - **Focus**: PostgreSQL + Redis, session management, agent routing, queue concurrency
+   - **Status**: **Core phases incorporated into VoxBridge 2.0**
+
+3. **[Frontend + LangGraph Plan](docs/planning/frontend-langgraph-plan.md)** - **INCORPORATED** ✅
+   - **Scope**: LangGraph agent system design (948 lines)
+   - **Focus**: LangChain/LangGraph integration, agent orchestration
+   - **Status**: **LLM abstraction in VoxBridge 2.0 enables future LangGraph integration**
+
+### 🔄 How VoxBridge 2.0 Incorporates Existing Plans
+
+**VoxBridge 2.0 = Multi-Agent Plan + Strategic Expansion**
+
+| Multi-Agent Phase | VoxBridge 2.0 Phase | Enhancement |
+|-------------------|---------------------|-------------|
+| Phase 1: Session Management (PostgreSQL + Redis) | Phase 1: Infrastructure | ✅ Same - PostgreSQL for agents/sessions |
+| Phase 2: Queue Concurrency | Phase 5: Core Refactor | ✅ Expanded - Session-based routing (not just queue) |
+| Phase 3: Agent Routing | Phase 2: Agent Management + Phase 3: LLM Providers | ✅ Expanded - Full LLM abstraction (OpenRouter/Local) |
+| Phase 4: Enhanced Payload | Phase 5: Core Refactor | ✅ Incorporated - Conversation context |
+| Phase 5: User Selection | Phase 2: Agent Management (Frontend UI) | ✅ Enhanced - Web UI instead of Discord commands |
+| Phase 6: Configuration | Phase 2: Agent Management | ✅ Enhanced - Full CRUD UI for agents |
+| Phase 7: Infrastructure | Phase 1 + Phase 6: Extensions | ✅ Expanded - Plus extension system |
+| *(Not in multi-agent plan)* | **Phase 4: Web Voice Interface** | 🆕 **NEW** - Browser-based voice (WebRTC) |
+| *(Not in multi-agent plan)* | **Phase 6: Extension System** | 🆕 **NEW** - Discord/n8n as plugins |
+
+**Key Insight**: VoxBridge 2.0 **builds on** the multi-agent plan by:
+- ✅ Keeping the database/session architecture (Phases 1-4)
+- ✅ Expanding agent management with UI and LLM flexibility
+- 🆕 Adding standalone web interface (not Discord-dependent)
+- 🆕 Making Discord/n8n optional extensions (not core)
+
+---
+
+### ✅ VoxBridge 1.0 - Completed (October 2025)
+
+**Current Production System:**
 1. **Frontend Dashboard** - React 19 + TypeScript + Vite, deployed on port 4903
 2. **Backend API** - All 11+ endpoints implemented and operational
 3. **STT/TTS Pipeline** - WhisperX + Chatterbox with streaming optimizations
@@ -235,26 +280,56 @@ voxbridge/
 5. **Testing Infrastructure** - 43 tests with 88% coverage
 6. **E2E Benchmarking** - Latency tracking and metrics framework
 
-### 🔴 Future Work (Not Started)
+**Architecture**: Discord-centric bot with single-speaker lock
 
-1. **Multi-Agent System** (8-12 days effort)
-   - Phase 1: Session Management (PostgreSQL + Redis)
-   - Phase 2: Queue-Based Concurrency (replace single-speaker lock)
-   - Phase 3: Agent Routing Service (multi-agent support)
-   - Phase 4: Enhanced Webhook Payload (conversation context)
-   - Phase 5: User Agent Selection (Discord slash commands)
-   - Phase 6: Runtime Configuration (agent management)
-   - Phase 7: Infrastructure Updates (Docker Compose)
+---
 
-2. **LangGraph Agent System** (TBD)
-   - LangChain/LangGraph framework integration
-   - Alternative to n8n webhooks
-   - Multi-agent orchestration capabilities
+### 🚀 VoxBridge 2.0 - Next (Nov 2025)
 
-3. **Test Coverage Improvements** (Ongoing)
-   - Fix 5 failing speaker_manager tests
-   - Increase coverage from 88% to 90%+
-   - Add more integration test scenarios
+**Status**: 🟡 **Planning Complete** - Ready for Implementation
+**Effort**: 14-16 days
+**Complete Plan**: [docs/architecture/voxbridge-2.0-transformation-plan.md](docs/architecture/voxbridge-2.0-transformation-plan.md)
+
+**Strategic Transformation**: Discord bot → Standalone modular AI voice platform
+
+**8 Implementation Phases**:
+1. **Core Infrastructure** (2 days) - PostgreSQL, SQLAlchemy, Alembic migrations
+2. **Agent Management** (2 days) - CRUD API + UI for agent configuration
+3. **LLM Providers** (2 days) - OpenRouter + Local LLM abstraction
+4. **Web Voice Interface** (2-3 days) - WebRTC browser voice chat
+5. **Core Refactor** (2-3 days) - Decouple from Discord, session-based routing
+6. **Extension System** (2 days) - Discord + n8n as optional plugins
+7. **Documentation Overhaul** (1 day) - Rewrite all docs for new architecture
+8. **Testing & Migration** (1 day) - Update test suite, verify functionality
+
+**New Capabilities**:
+- ✨ Standalone web voice chat (no Discord required)
+- ✨ Multi-agent support with PostgreSQL storage
+- ✨ Configurable LLMs (OpenRouter or local)
+- ✨ Frontend agent management UI
+- ✨ Extension system (Discord/n8n optional)
+- ✨ Session-based concurrent conversations
+
+---
+
+### 🔮 Future Considerations (Post-2.0)
+
+1. **LangGraph Full Integration**
+   - Implement LangChain/LangGraph framework
+   - Advanced agent orchestration
+   - Tool use and function calling
+   - **Note**: LLM abstraction in v2.0 prepares for this
+
+2. **Authentication & Multi-User**
+   - User accounts and permissions
+   - Agent sharing marketplace
+   - Multi-tenant support
+
+3. **Mobile & Advanced Features**
+   - Native mobile apps
+   - Voice cloning
+   - Real-time translation
+   - Multi-language support
 
 ---
 
