@@ -40,11 +40,13 @@ WHISPERX_BATCH_SIZE = int(os.getenv('WHISPERX_BATCH_SIZE', '16'))
 SERVER_PORT = int(os.getenv('WHISPER_SERVER_PORT', '4901'))
 
 # Auto-detect best device
+gpu_name = None
 if WHISPERX_DEVICE == 'auto':
     if torch.cuda.is_available():
         device = 'cuda'
         compute_type = 'float16'  # Best for GPU
-        logger.info(f"🎮 GPU detected: {torch.cuda.get_device_name(0)}")
+        gpu_name = torch.cuda.get_device_name(0)
+        logger.info(f"🎮 GPU detected: {gpu_name}")
         logger.info(f"💾 VRAM available: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.1f} GB")
     else:
         device = 'cpu'
@@ -53,6 +55,8 @@ if WHISPERX_DEVICE == 'auto':
 else:
     device = WHISPERX_DEVICE
     compute_type = WHISPERX_COMPUTE_TYPE
+    if device == 'cuda' and torch.cuda.is_available():
+        gpu_name = torch.cuda.get_device_name(0)
 
 def log_loading_progress(start_time, stop_event):
     """Background thread that provides better progress messages"""
@@ -463,7 +467,13 @@ async def handle_client(websocket, path):
 
 async def health_check(request):
     """Health check endpoint - returns 200 when model is loaded"""
-    return web.Response(text='{"status":"ready","model":"' + WHISPERX_MODEL + '"}', content_type='application/json')
+    response_data = {
+        "status": "ready",
+        "model": WHISPERX_MODEL,
+        "device": device,
+        "gpu_name": gpu_name
+    }
+    return web.Response(text=json.dumps(response_data), content_type='application/json')
 
 
 async def start_http_server():

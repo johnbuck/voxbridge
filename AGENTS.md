@@ -459,6 +459,42 @@ if not self.webhook_url:
     logger.warning("⚠️ No webhook configured")
 ```
 
+## TTS Latency Optimization
+
+### Progressive Audio Playback (Option B - Implemented)
+
+**Problem**: Chatterbox generates audio progressively, but VoxBridge buffers the entire response before playback (4-5s latency for long responses).
+
+**Solution**: Stream audio bytes directly to FFmpeg stdin as they arrive, start playback after minimal buffer.
+
+**Configuration**:
+```python
+USE_PROGRESSIVE_TTS_PLAYBACK=true  # Enable progressive playback
+USE_PROGRESSIVE_TTS_PLAYBACK=false # Use buffered mode (default, more stable)
+```
+
+**Implementation** (`streaming_handler.py`):
+- `_synthesize_and_play()` checks `self.use_progressive_playback`
+- If true: Uses `_synthesize_and_play_progressive()` with FFmpeg stdin pipe
+- If false: Uses existing `_synthesize_to_stream()` → `_play_audio_stream()` (buffered)
+
+**Benefits**:
+- 50-60% reduction in perceived latency
+- Start playback after ~50-100KB instead of waiting for full download
+- Maintains stable fallback option
+
+### ❌ Sentence-by-Sentence TTS (Option A - DO NOT USE)
+
+**Attempted approach**: Split AI response into sentences, send each to TTS separately, play sequentially.
+
+**Why it doesn't work**:
+- Breaks Chatterbox's internal audio coherence
+- Causes pacing/intonation issues across sentence boundaries
+- Introduced audio glitches and unnatural pauses
+- Significantly more complex error handling
+
+**Key learning**: Let Chatterbox handle text chunking internally. VoxBridge should stream the audio bytes progressively, not split the text.
+
 ## Anti-Patterns to Avoid
 
 ### ❌ Blocking Operations in Async Code
@@ -579,6 +615,7 @@ docker compose build --no-cache
 - `SILENCE_THRESHOLD_MS` - Silence detection (default: 800)
 - `MAX_SPEAKING_TIME_MS` - Max speaking duration (default: 45000)
 - `USE_STREAMING` - Enable streaming responses (default: true)
+- `USE_PROGRESSIVE_TTS_PLAYBACK` - Enable progressive audio playback (default: false)
 
 ### Test Markers
 

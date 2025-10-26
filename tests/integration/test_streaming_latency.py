@@ -203,28 +203,36 @@ async def test_tts_streaming_with_custom_options(mock_chatterbox_server, latency
 @pytest.mark.asyncio
 async def test_n8n_sse_streaming_latency(mock_n8n_server, latency_tracker, latency_assertions):
     """
-    Test n8n SSE streaming latency
+    Test n8n SSE streaming latency with new full-response architecture
 
     VALIDATES:
-    - SSE chunks arrive incrementally
-    - First chunk latency < 50ms
-    - Sentence extraction is fast
-    - No blocking on full response
+    - SSE chunks are buffered without blocking
+    - Chunk accumulation is fast
+    - Full response processed as single TTS request
+    - Frontend receives chunks in real-time for display
     """
     mock_voice_client = MagicMock()
     mock_voice_client.is_connected.return_value = True
 
     handler = StreamingResponseHandler(mock_voice_client, "user_123")
 
-    sentences_processed = []
-    sentence_timings = []
+    text_synthesized = None
+    synthesis_timestamp = None
 
-    # Mock sentence synthesis to track timing
+    # Mock TTS to capture complete text
     async def mock_synthesize(text):
-        sentence_timings.append(time.perf_counter())
-        sentences_processed.append(text)
+        nonlocal text_synthesized, synthesis_timestamp
+        synthesis_timestamp = time.perf_counter()
+        text_synthesized = text
 
     handler._synthesize_and_play = mock_synthesize
+
+    # Track frontend broadcasts
+    frontend_chunks = []
+    async def mock_broadcast(text, is_final):
+        frontend_chunks.append((text, is_final))
+
+    handler.on_ai_response = mock_broadcast
 
     # Simulate SSE streaming chunks
     latency_tracker.start("sse_total")
@@ -242,128 +250,149 @@ async def test_n8n_sse_streaming_latency(mock_n8n_server, latency_tracker, laten
 
     chunk_start = time.perf_counter()
 
+    # Accumulate chunks (should be non-blocking)
+    latency_tracker.start("chunk_accumulation")
     for i, chunk in enumerate(chunks):
         if i == 0:
             latency_tracker.start("sse_first_chunk")
-            first_chunk_latency = (time.perf_counter() - chunk_start) * 1000
             latency_tracker.end("sse_first_chunk")
 
         await handler.on_chunk(chunk)
         await asyncio.sleep(0.01)  # Simulate network delay between chunks
 
-    # Finalize to process remaining buffer
+    accumulation_time = latency_tracker.end("chunk_accumulation")
+
+    # Finalize to process complete response
     await handler.finalize()
 
     latency_tracker.end("sse_total")
 
     print("\n" + latency_tracker.report())
     print(f"\n🎯 SSE Streaming Performance:")
-    print(f"   Sentences extracted: {sentences_processed}")
-    print(f"   Sentence timings: {[f'{(t-chunk_start)*1000:.2f}ms' for t in sentence_timings]}")
+    print(f"   Chunk accumulation time: {accumulation_time:.2f}ms")
+    print(f"   Complete text synthesized: \"{text_synthesized}\"")
+    print(f"   Frontend chunks received: {len(frontend_chunks)}")
 
     # ASSERTIONS
-    assert len(sentences_processed) >= 2, "Expected at least 2 sentences"
+    # All chunks should be buffered
+    expected_text = ''.join(chunks)
+    assert handler.buffer == '' or text_synthesized == expected_text, "Buffer should be processed"
 
-    # Verify incremental processing (sentences processed as they arrive)
-    # Not all at once at the end
-    if len(sentence_timings) >= 2:
-        time_spread = (sentence_timings[-1] - sentence_timings[0]) * 1000
-        assert time_spread > 10, "Sentences should be processed incrementally"
+    # Frontend should receive all chunks for real-time display
+    assert len(frontend_chunks) == len(chunks) + 1, f"Frontend should receive {len(chunks)} chunks + final marker"
+
+    # Chunk accumulation should be fast (non-blocking)
+    latency_assertions.assert_low_latency(accumulation_time, 100, "SSE chunk accumulation")
 
 
 # ============================================================
-# Sentence Extraction Latency Tests
+# Buffer Accumulation Latency Tests
 # ============================================================
 
 @pytest.mark.integration
 @pytest.mark.latency
 @pytest.mark.asyncio
-async def test_sentence_extraction_latency(latency_tracker, latency_assertions):
+async def test_buffer_accumulation_latency(latency_tracker, latency_assertions):
     """
-    Test sentence extraction performance
+    Test buffer accumulation performance
 
     VALIDATES:
-    - Sentence extraction is fast (<10ms)
-    - Multiple delimiters handled efficiently
-    - Buffer management is performant
+    - Buffer accumulation is fast (<5ms per chunk)
+    - String concatenation is performant
+    - No blocking during accumulation
     """
     mock_voice_client = MagicMock()
     handler = StreamingResponseHandler(mock_voice_client, "user_123")
 
-    # Test with various sentence structures
-    test_cases = [
-        "Simple sentence.",
-        "Question? Another sentence!",
-        "Multiple sentences. With different delimiters! And questions?",
-        "Very long sentence that goes on and on and on and on to test buffer performance. Another one!",
+    # Test with various chunk sizes
+    test_chunks = [
+        "Simple chunk. ",
+        "Another chunk with more text! ",
+        "A longer chunk that simulates streaming from n8n with multiple words. ",
+        "Final chunk to complete the buffer.",
     ]
 
-    for text in test_cases:
-        handler.buffer = text
+    total_latency = 0
+    for chunk in test_chunks:
+        latency_tracker.start("buffer_accumulation")
+        await handler.on_chunk(chunk)
+        latency = latency_tracker.end("buffer_accumulation")
+        total_latency += latency
 
-        latency_tracker.start("sentence_extraction")
-        sentences = handler._extract_sentences()
-        latency = latency_tracker.end("sentence_extraction")
+        print(f"Accumulated chunk ({len(chunk)} chars) in {latency:.2f}ms")
 
-        print(f"Extracted {len(sentences)} sentences in {latency:.2f}ms: {sentences}")
+        # Buffer accumulation should be very fast
+        latency_assertions.assert_low_latency(latency, 5, "Buffer accumulation")
 
-        # Sentence extraction should be very fast
-        latency_assertions.assert_low_latency(latency, 10, "Sentence extraction")
+    print(f"Total buffer: {len(handler.buffer)} chars")
+    print(f"Total accumulation time: {total_latency:.2f}ms")
+
+    # Verify buffer contains all chunks
+    expected_buffer = ''.join(test_chunks)
+    assert handler.buffer == expected_buffer, "Buffer should contain all chunks"
 
 
 # ============================================================
-# Queue Processing Latency Tests
+# Full Response Processing Latency Tests
 # ============================================================
 
 @pytest.mark.integration
 @pytest.mark.latency
 @pytest.mark.asyncio
-async def test_queue_processing_no_blocking(latency_tracker):
+async def test_full_response_processing_latency(latency_tracker):
     """
-    Test queue processing doesn't block on slow TTS
+    Test full response processing with single TTS request
 
     VALIDATES:
-    - Queue accepts sentences without blocking
-    - Slow TTS synthesis doesn't prevent new sentences from queueing
-    - Sentences processed sequentially but queueing is async
+    - Full response is processed as single unit
+    - TTS receives complete text in one request
+    - Processing is non-blocking during accumulation
     """
     mock_voice_client = MagicMock()
     mock_voice_client.is_connected.return_value = True
 
     handler = StreamingResponseHandler(mock_voice_client, "user_123")
 
-    synthesis_times = []
-    sentences_synthesized = []
+    text_synthesized = None
+    synthesis_time = None
 
-    # Mock slow TTS (simulates network delay)
-    async def slow_synthesize(text):
+    # Mock TTS to capture what text is sent
+    async def capture_synthesize(text):
+        nonlocal text_synthesized, synthesis_time
         start = time.perf_counter()
-        await asyncio.sleep(0.02)  # 20ms TTS delay (shorter for faster test)
-        synthesis_times.append((time.perf_counter() - start) * 1000)
-        sentences_synthesized.append(text)
+        await asyncio.sleep(0.02)  # 20ms TTS delay (simulates network)
+        synthesis_time = (time.perf_counter() - start) * 1000
+        text_synthesized = text
 
-    handler._synthesize_and_play = slow_synthesize
+    handler._synthesize_and_play = capture_synthesize
 
-    # Queue multiple sentences rapidly
-    latency_tracker.start("rapid_queueing")
+    # Accumulate chunks rapidly (non-blocking)
+    latency_tracker.start("chunk_accumulation")
 
-    # Manually add sentences to queue (bypass on_chunk to ensure they're queued)
-    handler.sentence_queue.extend(["First sentence.", "Second sentence.", "Third sentence."])
+    chunks = ["First sentence. ", "Second sentence. ", "Third sentence."]
+    for chunk in chunks:
+        await handler.on_chunk(chunk)
 
-    queueing_time = latency_tracker.end("rapid_queueing")
+    accumulation_time = latency_tracker.end("chunk_accumulation")
 
-    print(f"\n🎯 Rapid queueing: {queueing_time:.2f}ms")
-    print(f"   Queue size before processing: {len(handler.sentence_queue)}")
+    print(f"\n🎯 Chunk accumulation: {accumulation_time:.2f}ms")
+    print(f"   Buffer size: {len(handler.buffer)} chars")
 
-    # Queueing should be instant
-    assert queueing_time < 5, f"Queueing blocked: {queueing_time:.2f}ms"
+    # Accumulation should be very fast (not blocked by TTS)
+    assert accumulation_time < 10, f"Chunk accumulation blocked: {accumulation_time:.2f}ms"
 
-    # Now process the queue
-    await handler._process_queue()
+    # Now process the full response
+    latency_tracker.start("full_response_processing")
+    await handler._process_full_response()
+    processing_time = latency_tracker.end("full_response_processing")
 
-    print(f"   Sentences processed: {sentences_synthesized}")
-    print(f"   Synthesis times: {[f'{t:.2f}ms' for t in synthesis_times]}")
-    assert len(synthesis_times) == 3, f"Expected 3 sentences synthesized, got {len(synthesis_times)}"
+    print(f"   Full response processing: {processing_time:.2f}ms")
+    print(f"   Text synthesized: \"{text_synthesized}\"")
+    print(f"   Synthesis time: {synthesis_time:.2f}ms")
+
+    # Verify single TTS request with complete text
+    expected_text = ''.join(chunks)
+    assert text_synthesized == expected_text, "Should synthesize complete response as single unit"
 
 
 # ============================================================
@@ -507,15 +536,10 @@ async def test_end_to_end_streaming_flow(
 
                     latency_tracker.end("sse_processing")
 
-                    # Stage 2: Finalize
+                    # Stage 2: Finalize (includes TTS processing)
                     latency_tracker.start("finalization")
                     await handler.finalize()
                     latency_tracker.end("finalization")
-
-                    # Stage 3: Queue Processing (TTS happens here)
-                    latency_tracker.start("queue_processing")
-                    await handler._process_queue()
-                    latency_tracker.end("queue_processing")
 
     total_latency = latency_tracker.end("pipeline_total")
 

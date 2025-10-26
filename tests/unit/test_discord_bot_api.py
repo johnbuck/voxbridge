@@ -582,7 +582,7 @@ async def test_websocket_broadcast_speaker_started():
         mock_ws.send_json.assert_called_once()
         call_args = mock_ws.send_json.call_args[0][0]
 
-        assert call_args["type"] == "speaker_started"
+        assert call_args["event"] == "speaker_started"
         assert call_args["data"]["userId"] == "user_123"
         assert call_args["data"]["username"] == "TestUser"
 
@@ -612,7 +612,7 @@ async def test_websocket_broadcast_speaker_stopped():
         mock_ws.send_json.assert_called_once()
         call_args = mock_ws.send_json.call_args[0][0]
 
-        assert call_args["type"] == "speaker_stopped"
+        assert call_args["event"] == "speaker_stopped"
         assert call_args["data"]["userId"] == "user_123"
         assert call_args["data"]["username"] == "TestUser"
         assert call_args["data"]["durationMs"] == 5000
@@ -643,7 +643,7 @@ async def test_websocket_broadcast_partial_transcript():
         mock_ws.send_json.assert_called_once()
         call_args = mock_ws.send_json.call_args[0][0]
 
-        assert call_args["type"] == "partial_transcript"
+        assert call_args["event"] == "partial_transcript"
         assert call_args["data"]["userId"] == "user_123"
         assert call_args["data"]["username"] == "TestUser"
         assert call_args["data"]["text"] == "Hello world"
@@ -674,7 +674,7 @@ async def test_websocket_broadcast_final_transcript():
         mock_ws.send_json.assert_called_once()
         call_args = mock_ws.send_json.call_args[0][0]
 
-        assert call_args["type"] == "final_transcript"
+        assert call_args["event"] == "final_transcript"
         assert call_args["data"]["userId"] == "user_123"
         assert call_args["data"]["username"] == "TestUser"
         assert call_args["data"]["text"] == "Hello world complete"
@@ -699,7 +699,7 @@ async def test_websocket_disconnect_handling():
     initial_count = len(discord_bot.ws_manager.active_connections)
 
     # Broadcast should handle error and remove connection
-    await discord_bot.ws_manager.broadcast({"type": "test"})
+    await discord_bot.ws_manager.broadcast({"event": "test"})
 
     # Verify connection was removed
     assert len(discord_bot.ws_manager.active_connections) == initial_count - 1
