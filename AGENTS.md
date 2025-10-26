@@ -34,6 +34,93 @@ Discord Voice Channel
 1. **whisperx** (port 4901) - WhisperX STT server, GPU-enabled (GPU 1)
 2. **voxbridge-discord** (port 4900) - Discord bot, integrates all services
 
+## Architecture Documentation
+
+**Comprehensive architectural plans and implementation guides** are organized in `docs/`.
+
+### Navigation Index
+
+See **[ARCHITECTURE.md](ARCHITECTURE.md)** for complete documentation map and quick navigation.
+
+### Implementation Plans
+
+#### Multi-Agent System Implementation
+**Document**: [docs/architecture/multi-agent-implementation-plan.md](docs/architecture/multi-agent-implementation-plan.md) (70KB, 2223 lines)
+
+**Summary**: 7-phase architectural refactor to transform VoxBridge from single-speaker to multi-agent concurrent system.
+
+**Key Features**:
+- Session management (PostgreSQL + Redis)
+- Queue-based concurrency (replace speaker lock)
+- Agent routing service (multi-agent support)
+- Enhanced webhook payload (conversation context)
+- User agent selection (Discord slash commands)
+- Runtime configuration (agent management)
+- Infrastructure updates (Docker Compose)
+
+**Status**: 🟡 Phase 1-2 in progress
+**Effort**: 8-12 development days
+
+**Before**: Single speaker, single agent, no sessions
+**After**: Concurrent users, multiple agents, full conversation context
+
+---
+
+#### Frontend + LangGraph Agent System
+**Document**: [docs/planning/frontend-langgraph-plan.md](docs/planning/frontend-langgraph-plan.md) (31KB)
+
+**Summary**: Web frontend for VoxBridge with Chatterbox-inspired styling, plus LangChain/LangGraph-based agent system as alternative to n8n webhooks.
+
+**Tech Stack**:
+- React 19 + TypeScript + Vite
+- Tailwind CSS v4 + shadcn/ui (New York style)
+- WebSocket + Server-Sent Events
+- LangChain/LangGraph (Python)
+
+**Status**: 🟢 Frontend complete, backend API pending
+
+---
+
+### Progress Tracking
+
+#### Frontend Development Progress
+**Document**: [docs/progress/frontend-progress.md](docs/progress/frontend-progress.md) (9.4KB)
+
+**Latest Status**: Frontend foundation complete ✅
+
+**Completed**:
+- React 19 + Vite + TypeScript project (20+ files, 1500+ LOC)
+- Chatterbox theme integration (OKLCH color system)
+- 11 UI components (shadcn/ui)
+- API client + WebSocket hook
+- Main dashboard with real-time monitoring
+
+**Next Steps**:
+- Backend API endpoints (`/api/channels`, `/api/transcripts`, `/api/metrics`)
+- WebSocket event emissions
+- Channel selector + TTS testing
+- Docker deployment
+
+---
+
+### Analysis Documents
+
+#### n8n Webhooks & Sessions Analysis
+**Document**: [ANALYSIS_n8n_WEBHOOKS_SESSIONS.md](ANALYSIS_n8n_WEBHOOKS_SESSIONS.md) (30KB)
+
+**Summary**: Detailed analysis of current VoxBridge architecture constraints and blockers for multi-agent support.
+
+**Key Findings**:
+- Single-speaker, single-agent system by architectural design
+- Global speaker lock prevents concurrent processing
+- No session management or conversation history
+- Static webhook URL limits routing capabilities
+- Singleton architecture prevents horizontal scaling
+
+**Conclusion**: Multi-agent support requires core architectural changes (detailed in multi-agent implementation plan).
+
+---
+
 ## Critical Architectural Concepts
 
 ### Speaker Lock System
@@ -625,6 +712,337 @@ pytest -m integration   # Integration tests only
 pytest -m e2e          # End-to-end tests only
 pytest -m "not slow"   # Skip slow tests
 ```
+
+## Claude Code Workflows
+
+VoxBridge is optimized for use with Claude Code (claude.ai/code) using slash commands, custom agents, and structured documentation.
+
+### Slash Commands
+
+Repeatable workflow templates are available via the `/` menu:
+
+- **`/test-unit`** - Run unit tests with coverage report
+- **`/test-integration`** - Run integration tests with mock servers
+- **`/test-all`** - Run full test suite with HTML coverage
+- **`/logs-discord`** - Tail Discord bot logs (filtered)
+- **`/logs-latency`** - Show latency tracking logs
+- **`/rebuild`** - Rebuild and restart containers (no cache)
+- **`/debug-streaming`** - Debug streaming response flow
+- **`/status`** - Check services health and metrics
+
+**Usage:**
+```
+Type `/` in Claude Code to see available commands
+Select command from menu or type full name
+```
+
+**Team Benefit:** These commands are checked into git (`.claude/commands/`), ensuring consistent workflows across the team.
+
+### Custom Agents
+
+Specialized sub-agents with focused system prompts are available via the `/agents` command:
+
+#### test-reviewer
+**Purpose:** Review test coverage and quality, identify gaps and edge cases
+
+**When to use:**
+- After adding new features
+- Before code reviews or pull requests
+- When coverage drops below 80%
+
+**Example:**
+```
+/agents test-reviewer
+
+Please analyze test coverage for speaker_manager.py and recommend improvements.
+```
+
+#### latency-optimizer
+**Purpose:** Analyze latency logs and recommend performance optimizations
+
+**When to use:**
+- Investigating performance issues
+- After adding new features (latency regression check)
+- Optimizing user experience
+
+**Example:**
+```
+/agents latency-optimizer
+
+Please analyze the last 500 latency logs and recommend optimizations for reducing end-to-end conversation latency.
+```
+
+#### docker-troubleshooter
+**Purpose:** Diagnose Docker, container, networking, and GPU issues
+
+**When to use:**
+- Containers won't start or keep restarting
+- GPU not detected or CUDA errors
+- Network connectivity issues
+- After Docker/driver updates
+
+**Example:**
+```
+/agents docker-troubleshooter
+
+The voxbridge-whisperx container keeps restarting. Please diagnose and provide a solution.
+```
+
+#### api-documenter
+**Purpose:** Generate and update OpenAPI specifications for FastAPI endpoints
+
+**When to use:**
+- Adding new API endpoints
+- Preparing API documentation for external users
+- Setting up API testing tools
+
+**Example:**
+```
+/agents api-documenter
+
+Please generate a complete OpenAPI 3.0 specification for all VoxBridge endpoints and save it to openapi.yaml.
+```
+
+### Test-Writing Agents
+
+Specialized agents for increasing test coverage from 61% to 80%+:
+
+#### unit-test-writer
+**Purpose:** Create unit tests for uncovered code paths
+
+**When to use:**
+- Coverage reports show gaps in critical modules
+- Adding new features (write tests for new code)
+- Refactoring (ensure tests still cover functionality)
+- Bug fixes (add test that reproduces bug, then fix)
+
+**Capabilities:**
+- Analyze coverage reports (htmlcov/, pytest --cov)
+- Write async/await unit tests
+- Mock Discord.py, WhisperX, n8n, Chatterbox
+- Focus on critical paths (speaker lock, streaming, error handling)
+- Run tests after writing to verify they pass
+
+**Example:**
+```
+/agents unit-test-writer
+
+Analyze coverage for speaker_manager.py and write unit tests for lines 450-475 (n8n webhook error handling). Goal: increase coverage from 45% to 75%+.
+```
+
+#### integration-test-writer
+**Purpose:** Create integration tests using mock servers
+
+**When to use:**
+- Testing component interactions
+- Validating full workflows (STT → AI → TTS)
+- Benchmarking latency and performance
+- Testing retry logic and error recovery
+
+**Capabilities:**
+- Write integration tests (tests/integration/)
+- Use existing mock servers (tests/mocks/)
+- Test component interactions (Discord ↔ WhisperX ↔ n8n ↔ Chatterbox)
+- Include latency benchmarks and assertions
+- Test error handling and recovery
+
+**Example:**
+```
+/agents integration-test-writer
+
+Write integration test for the full streaming pipeline (STT → n8n → TTS) with latency benchmarks. Target: first audio in < 1s.
+```
+
+#### test-fixture-builder
+**Purpose:** Build reusable test fixtures and mock infrastructure
+
+**When to use:**
+- Multiple tests have duplicate setup code
+- Test setup is complex (> 5 lines)
+- Creating new test data samples
+- Building mock infrastructure for new components
+
+**Capabilities:**
+- Create pytest fixtures (@pytest.fixture)
+- Build mock Discord objects (VoiceClient, User, Guild)
+- Generate realistic sample data (Opus audio, transcripts, TTS responses)
+- Organize fixtures in conftest.py
+- Reduce code duplication
+
+**Example:**
+```
+/agents test-fixture-builder
+
+Create fixtures for mock Discord voice clients and sample Opus audio data. Multiple tests need these and setup is currently duplicated.
+```
+
+#### e2e-test-writer
+**Purpose:** Create end-to-end tests using real services
+
+**When to use:**
+- Validating production readiness
+- Testing complete user workflows
+- Benchmarking real-world performance
+- Smoke testing before deployment
+- Verifying service integrations with real components
+
+**Capabilities:**
+- Write E2E tests (tests/e2e/)
+- Use real Docker services (VoxBridge, WhisperX, Chatterbox)
+- Test complete user workflows (join → speak → transcribe → respond → TTS)
+- Handle service availability gracefully (@pytest.mark.skipif)
+- Focus on critical paths (10-20 tests, not comprehensive coverage)
+
+**Example:**
+```
+/agents e2e-test-writer
+
+Write an E2E test for the complete conversation workflow using real VoxBridge, WhisperX, and Chatterbox services. Include latency benchmarks and error handling.
+```
+
+**Test Coverage Workflow:**
+
+1. **Analyze gaps:**
+   ```
+   /test-all  # Run full suite
+   /agents test-reviewer  # Analyze coverage gaps
+   ```
+
+2. **Build infrastructure (if needed):**
+   ```
+   /agents test-fixture-builder
+   Create fixtures for [scenario X]
+   ```
+
+3. **Write tests (by type):**
+   ```
+   /agents unit-test-writer
+   Write unit tests for speaker_manager.py lines 450-475
+
+   /agents integration-test-writer
+   Write integration test for streaming pipeline
+
+   /agents e2e-test-writer
+   Write E2E test for full conversation loop
+   ```
+
+4. **Verify improvements:**
+   ```
+   /test-all  # Run full suite
+   /agents test-reviewer  # Re-analyze coverage
+   ```
+
+### Extended Thinking
+
+For complex tasks, use extended thinking to improve solution quality:
+
+- **`think`** - Basic extended thinking (standard)
+- **`think hard`** - More thorough analysis
+- **`think harder`** - Deep analysis for complex problems
+- **`ultrathink`** - Maximum thinking budget for critical tasks
+
+**Example use cases:**
+- Complex refactoring (speaker_manager.py, streaming_handler.py)
+- Architectural decisions (new streaming patterns, latency optimizations)
+- Debugging intricate async/await issues
+- Designing new test frameworks
+
+**Example:**
+```
+think harder
+
+How can we reduce latency in the streaming pipeline while maintaining accuracy and reliability?
+```
+
+### Parallel Development with Git Worktrees
+
+Run multiple Claude Code sessions simultaneously on different features:
+
+```bash
+# Main session: Refactoring speaker_manager.py
+cd /home/wiley/Docker/voxbridge
+
+# Parallel session 1: Adding new metrics
+git worktree add ../voxbridge-metrics -b feature/new-metrics
+cd ../voxbridge-metrics
+# Run claude code here
+
+# Parallel session 2: Fixing bug
+git worktree add ../voxbridge-bugfix -b fix/tts-timeout
+cd ../voxbridge-bugfix
+# Run claude code here
+
+# Cleanup when done
+git worktree remove ../voxbridge-metrics
+git worktree remove ../voxbridge-bugfix
+```
+
+**Benefits:**
+- Work on multiple features simultaneously
+- Each session has independent context
+- No context pollution between sessions
+- Easy to switch between tasks
+
+### Recommended Workflows
+
+#### Adding a New Feature
+1. **Plan:** Use `think hard` to analyze requirements and design approach
+2. **Implement:** Write code following existing patterns (see Modification Patterns section)
+3. **Test:** Use `/test-unit` to verify unit tests pass
+4. **Review:** Use `/agents test-reviewer` to check coverage
+5. **Document:** Update relevant documentation (README.md, CLAUDE.md)
+6. **Integration:** Use `/test-integration` to verify integration
+7. **Verify:** Use `/status` to check services are healthy
+8. **Commit:** Create git commit with detailed message
+
+#### Debugging Performance Issues
+1. **Collect Data:** Use `/logs-latency` to gather metrics
+2. **Analyze:** Use `/agents latency-optimizer` for recommendations
+3. **Implement:** Apply optimizations (code or configuration)
+4. **Validate:** Compare before/after metrics
+5. **Document:** Update CLAUDE.md with findings
+
+#### Troubleshooting Container Issues
+1. **Check Status:** Use `/status` to see container health
+2. **View Logs:** Use `/logs-discord` or check specific container
+3. **Diagnose:** Use `/agents docker-troubleshooter` for analysis
+4. **Fix:** Apply recommended solution
+5. **Verify:** Use `/status` again to confirm fix
+6. **Rebuild if needed:** Use `/rebuild` for clean slate
+
+### Documentation Hierarchy
+
+VoxBridge uses a three-tier documentation system optimized for Claude Code:
+
+1. **CLAUDE.md** (~200 lines) - Quick reference for common tasks
+   - Common commands, file locations, API endpoints
+   - Claude Code auto-reads this on every conversation start
+   - Use for quick lookups and common operations
+
+2. **AGENTS.md** (~700 lines) - Comprehensive architectural guidance
+   - Architecture patterns, modification guidelines, anti-patterns
+   - Deep dive into system design and implementation
+   - Use for understanding system behavior and best practices
+
+3. **README.md** (~700 lines) - User-facing documentation
+   - Setup instructions, API reference, troubleshooting
+   - Designed for end users and new developers
+   - Use for onboarding and external documentation
+
+**When to use which:**
+- **Quick task** (restart service, run tests) → CLAUDE.md
+- **Understanding architecture** (how streaming works) → AGENTS.md
+- **Setup or API usage** (how to install, API endpoints) → README.md
+
+### Tips for Working with Claude Code
+
+1. **Use Slash Commands Liberally** - They encapsulate best practices and save time
+2. **Delegate to Specialized Agents** - Reduces context pollution, improves focus
+3. **Think Before Complex Tasks** - Use `think hard` for refactoring or architectural changes
+4. **Run Tests Frequently** - Use `/test-unit` after every significant change
+5. **Check Logs Early** - Use `/logs-discord` or `/logs-latency` to catch issues fast
+6. **Leverage Parallel Sessions** - Use git worktrees for concurrent feature development
+7. **Keep Documentation Updated** - Update CLAUDE.md with new patterns or commands
 
 ## Getting Help
 
