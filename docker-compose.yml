@@ -47,6 +47,7 @@ services:
       - ./src/speaker_manager.py:/app/src/speaker_manager.py      # Live code updates
       - ./src/streaming_handler.py:/app/src/streaming_handler.py  # Live code updates
       - ./requirements-bot.txt:/app/requirements-bot.txt          # For reference
+      - ./assets:/app/assets                                      # Thinking indicator sound effects
     environment:
       # Discord
       - DISCORD_TOKEN=${DISCORD_TOKEN}
@@ -55,7 +56,7 @@ services:
       - WHISPER_SERVER_URL=ws://whisperx:4901
 
       # Speaker Management
-      - SILENCE_THRESHOLD_MS=${SILENCE_THRESHOLD_MS:-800}
+      - SILENCE_THRESHOLD_MS=${SILENCE_THRESHOLD_MS:-600}
       - MAX_SPEAKING_TIME_MS=${MAX_SPEAKING_TIME_MS:-45000}
 
       # Chatterbox TTS
@@ -73,6 +74,9 @@ services:
       # Latency Optimization Features
       - USE_CLAUSE_SPLITTING=${USE_CLAUSE_SPLITTING:-true}
       - USE_PARALLEL_TTS=${USE_PARALLEL_TTS:-false}
+      - USE_PROGRESSIVE_TTS_PLAYBACK=${USE_PROGRESSIVE_TTS_PLAYBACK:-false}
+      - USE_THINKING_INDICATORS=${USE_THINKING_INDICATORS:-true}
+      - THINKING_INDICATOR_PROBABILITY=${THINKING_INDICATOR_PROBABILITY:-0.8}
       - MIN_CLAUSE_LENGTH=${MIN_CLAUSE_LENGTH:-10}
       - MIN_SENTENCE_LENGTH=${MIN_SENTENCE_LENGTH:-3}
       - DISCORD_AUDIO_QUEUE_SIZE=${DISCORD_AUDIO_QUEUE_SIZE:-100}
@@ -85,6 +89,26 @@ services:
     networks:
       - bot-network
       - pinkleberry_bridge
+
+  # VoxBridge Frontend - React monitoring dashboard
+  voxbridge-frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: voxbridge-frontend
+    ports:
+      - "${FRONTEND_PORT:-4901}:80"
+    depends_on:
+      - voxbridge-discord
+    restart: unless-stopped
+    networks:
+      - bot-network
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost/health"]
+      interval: 30s
+      timeout: 3s
+      start_period: 10s
+      retries: 3
 
 networks:
   bot-network:
