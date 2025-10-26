@@ -1,5 +1,5 @@
 import { Link, useLocation } from 'wouter';
-import { Home, Bot, Mic, Volume2 } from 'lucide-react';
+import { Home, Bot, Mic, Volume2, MessageSquare } from 'lucide-react';
 import { cn } from '../lib/utils';
 
 export default function Navigation() {
@@ -11,6 +11,12 @@ export default function Navigation() {
       label: 'Voxbridge',
       icon: Home,
       description: 'Main Dashboard - Status & Conversation'
+    },
+    {
+      path: '/voice-chat',
+      label: 'Voice Chat',
+      icon: MessageSquare,
+      description: 'Web Voice Chat Interface'
     },
     {
       path: '/discord-bot',

@@ -11,6 +11,7 @@ import { VoxbridgePage } from '@/pages/VoxbridgePage';
 import { DiscordBotPage } from '@/pages/DiscordBotPage';
 import { WhisperXPage } from '@/pages/WhisperXPage';
 import { ChatterboxTTSPage } from '@/pages/ChatterboxTTSPage';
+import { VoiceChatPage } from '@/pages/VoiceChatPage';
 import { ToastProvider } from '@/components/ui/toast';
 import '@/styles/globals.css';
 
@@ -41,6 +42,7 @@ function App() {
                 <Route path="/discord-bot" component={DiscordBotPage} />
                 <Route path="/whisperx" component={WhisperXPage} />
                 <Route path="/chatterbox-tts" component={ChatterboxTTSPage} />
+                <Route path="/voice-chat" component={VoiceChatPage} />
                 <Route>
                   {/* 404 Route */}
                   <div className="container mx-auto px-4 py-8 text-center">

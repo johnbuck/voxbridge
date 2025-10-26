@@ -160,6 +160,56 @@ export interface AgentUpdateRequest {
   tts_pitch?: number;
 }
 
+// VoxBridge 2.0 Phase 4: Session Management
+export interface Session {
+  id: string;
+  user_id: string;
+  user_name: string | null;
+  title: string | null;
+  agent_id: string;
+  active: boolean;
+  started_at: string;
+  ended_at: string | null;
+  session_type: string;
+  session_metadata: string | null;
+  message_count: number;
+}
+
+export interface SessionCreateRequest {
+  user_id: string;
+  agent_id: string;
+  user_name?: string | null;
+  title?: string | null;
+  session_type?: string;
+  session_metadata?: string | null;
+}
+
+export interface SessionUpdateRequest {
+  title?: string;
+  active?: boolean;
+}
+
+export interface Message {
+  id: number;
+  session_id: string;
+  role: string;
+  content: string;
+  timestamp: string;
+  audio_duration_ms: number | null;
+  tts_duration_ms: number | null;
+  llm_latency_ms: number | null;
+  total_latency_ms: number | null;
+}
+
+export interface MessageRequest {
+  role: string;
+  content: string;
+  audio_duration_ms?: number | null;
+  tts_duration_ms?: number | null;
+  llm_latency_ms?: number | null;
+  total_latency_ms?: number | null;
+}
+
 export interface TTSOptions {
   // Streaming settings
   chunkSize?: number;
@@ -307,6 +357,49 @@ class ApiClient {
   async deleteAgent(agentId: string): Promise<void> {
     await this.request<void>(`/api/agents/${agentId}`, {
       method: 'DELETE',
+    });
+  }
+
+  // VoxBridge 2.0 Phase 4: Session Management
+  async getSessions(userId: string, activeOnly: boolean = false, limit: number = 50): Promise<Session[]> {
+    return this.request<Session[]>(`/api/sessions?user_id=${userId}&active_only=${activeOnly}&limit=${limit}`);
+  }
+
+  async getSession(sessionId: string): Promise<Session> {
+    return this.request<Session>(`/api/sessions/${sessionId}`);
+  }
+
+  async createSession(request: SessionCreateRequest): Promise<Session> {
+    return this.request<Session>('/api/sessions', {
+      method: 'POST',
+      body: JSON.stringify(request),
+    });
+  }
+
+  async updateSession(sessionId: string, updates: SessionUpdateRequest): Promise<Session> {
+    return this.request<Session>(`/api/sessions/${sessionId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(updates),
+    });
+  }
+
+  async deleteSession(sessionId: string): Promise<void> {
+    await this.request<void>(`/api/sessions/${sessionId}`, {
+      method: 'DELETE',
+    });
+  }
+
+  async getSessionMessages(sessionId: string, limit?: number): Promise<Message[]> {
+    const url = limit
+      ? `/api/sessions/${sessionId}/messages?limit=${limit}`
+      : `/api/sessions/${sessionId}/messages`;
+    return this.request<Message[]>(url);
+  }
+
+  async addMessage(sessionId: string, message: MessageRequest): Promise<Message> {
+    return this.request<Message>(`/api/sessions/${sessionId}/messages`, {
+      method: 'POST',
+      body: JSON.stringify(message),
     });
   }
 }
