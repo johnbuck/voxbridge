@@ -128,6 +128,7 @@ export interface Agent {
   temperature: number;
   llm_provider: string;
   llm_model: string;
+  use_n8n: boolean; // Phase 3: Use n8n webhook instead of direct LLM
   tts_voice: string | null;
   tts_rate: number;
   tts_pitch: number;
@@ -141,6 +142,7 @@ export interface AgentCreateRequest {
   temperature?: number;
   llm_provider?: string;
   llm_model?: string;
+  use_n8n?: boolean; // Phase 3: Use n8n webhook instead of direct LLM
   tts_voice?: string | null;
   tts_rate?: number;
   tts_pitch?: number;
@@ -152,6 +154,7 @@ export interface AgentUpdateRequest {
   temperature?: number;
   llm_provider?: string;
   llm_model?: string;
+  use_n8n?: boolean; // Phase 3: Use n8n webhook instead of direct LLM
   tts_voice?: string | null;
   tts_rate?: number;
   tts_pitch?: number;

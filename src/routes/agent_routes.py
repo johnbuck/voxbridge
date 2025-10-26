@@ -40,6 +40,7 @@ class AgentCreateRequest(BaseModel):
     temperature: float = Field(0.7, ge=0.0, le=1.0, description="LLM temperature")
     llm_provider: str = Field("openrouter", description="LLM provider (openrouter or local)")
     llm_model: str = Field("anthropic/claude-3.5-sonnet", description="Model identifier")
+    use_n8n: bool = Field(False, description="Use n8n webhook instead of direct LLM (Phase 3)")
     tts_voice: Optional[str] = Field(None, description="TTS voice ID")
     tts_rate: float = Field(1.0, ge=0.5, le=2.0, description="TTS speech rate")
     tts_pitch: float = Field(1.0, ge=0.5, le=2.0, description="TTS pitch adjustment")
@@ -53,6 +54,7 @@ class AgentUpdateRequest(BaseModel):
     temperature: Optional[float] = Field(None, ge=0.0, le=1.0)
     llm_provider: Optional[str] = None
     llm_model: Optional[str] = None
+    use_n8n: Optional[bool] = None
     tts_voice: Optional[str] = None
     tts_rate: Optional[float] = Field(None, ge=0.5, le=2.0)
     tts_pitch: Optional[float] = Field(None, ge=0.5, le=2.0)
@@ -67,6 +69,7 @@ class AgentResponse(BaseModel):
     temperature: float
     llm_provider: str
     llm_model: str
+    use_n8n: bool
     tts_voice: Optional[str]
     tts_rate: float
     tts_pitch: float
@@ -108,6 +111,7 @@ async def create_agent(request: AgentCreateRequest):
             temperature=request.temperature,
             llm_provider=request.llm_provider,
             llm_model=request.llm_model,
+            use_n8n=request.use_n8n,
             tts_voice=request.tts_voice,
             tts_rate=request.tts_rate,
             tts_pitch=request.tts_pitch,
@@ -120,6 +124,7 @@ async def create_agent(request: AgentCreateRequest):
             temperature=agent.temperature,
             llm_provider=agent.llm_provider,
             llm_model=agent.llm_model,
+            use_n8n=agent.use_n8n,
             tts_voice=agent.tts_voice,
             tts_rate=agent.tts_rate,
             tts_pitch=agent.tts_pitch,
@@ -163,6 +168,7 @@ async def list_agents():
                 temperature=agent.temperature,
                 llm_provider=agent.llm_provider,
                 llm_model=agent.llm_model,
+                use_n8n=agent.use_n8n,
                 tts_voice=agent.tts_voice,
                 tts_rate=agent.tts_rate,
                 tts_pitch=agent.tts_pitch,
@@ -213,6 +219,7 @@ async def get_agent(agent_id: UUID):
             temperature=agent.temperature,
             llm_provider=agent.llm_provider,
             llm_model=agent.llm_model,
+            use_n8n=agent.use_n8n,
             tts_voice=agent.tts_voice,
             tts_rate=agent.tts_rate,
             tts_pitch=agent.tts_pitch,
@@ -257,6 +264,7 @@ async def update_agent(agent_id: UUID, request: AgentUpdateRequest):
             temperature=request.temperature,
             llm_provider=request.llm_provider,
             llm_model=request.llm_model,
+            use_n8n=request.use_n8n,
             tts_voice=request.tts_voice,
             tts_rate=request.tts_rate,
             tts_pitch=request.tts_pitch,
@@ -268,13 +276,14 @@ async def update_agent(agent_id: UUID, request: AgentUpdateRequest):
                 detail=f"Agent with ID {agent_id} not found"
             )
 
-        return AgentResponse(
+        response = AgentResponse(
             id=str(agent.id),
             name=agent.name,
             system_prompt=agent.system_prompt,
             temperature=agent.temperature,
             llm_provider=agent.llm_provider,
             llm_model=agent.llm_model,
+            use_n8n=agent.use_n8n,
             tts_voice=agent.tts_voice,
             tts_rate=agent.tts_rate,
             tts_pitch=agent.tts_pitch,

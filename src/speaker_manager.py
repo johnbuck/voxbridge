@@ -18,6 +18,7 @@ import os
 import time
 from typing import Optional
 from datetime import datetime
+from uuid import UUID
 
 import httpx
 from tenacity import (
@@ -28,6 +29,9 @@ from tenacity import (
 )
 
 from src.whisper_client import WhisperClient
+from src.llm.factory import LLMProviderFactory
+from src.llm.types import LLMMessage, LLMStreamChunk, LLMError
+from src.services.agent_service import AgentService
 
 logger = logging.getLogger(__name__)
 
@@ -119,10 +123,16 @@ class SpeakerManager:
             if n8n_webhook_prod:
                 logger.info(f"🌐 PRODUCTION MODE: Using webhook: {self.n8n_webhook_url}")
 
+        # VoxBridge 2.0: Agent configuration
+        # Default agent ID (for now, we'll use first agent; later add per-user agent selection)
+        default_agent_id = os.getenv('DEFAULT_AGENT_ID')  # Optional: Set specific agent via env
+        self.default_agent_id = UUID(default_agent_id) if default_agent_id else None
+
         logger.info(f"📋 SpeakerManager initialized:")
         logger.info(f"   Silence threshold: {self.silence_threshold_ms}ms")
         logger.info(f"   Max speaking time: {self.max_speaking_time_ms}ms")
         logger.info(f"   Streaming mode: {self.use_streaming}")
+        logger.info(f"   Default agent ID: {self.default_agent_id or 'auto-detect'}")
 
     def _get_tts_options(self, response_headers: dict) -> dict:
         """
@@ -470,21 +480,41 @@ class SpeakerManager:
                 try:
                     await self._play_thinking_indicator()
 
-                    # Log time from thinking indicator to n8n call (proves non-blocking)
+                    # Log time from thinking indicator to AI call (proves non-blocking)
                     if self.t_thinking_indicator_start:
-                        t_before_n8n = time.time()
-                        latency_to_n8n_ms = (t_before_n8n - self.t_thinking_indicator_start) * 1000
-                        logger.info(f"⏱️ LATENCY [thinking indicator → n8n webhook]: {latency_to_n8n_ms:.2f}ms")
+                        t_before_ai = time.time()
+                        latency_to_ai_ms = (t_before_ai - self.t_thinking_indicator_start) * 1000
+                        logger.info(f"⏱️ LATENCY [thinking indicator → AI processing]: {latency_to_ai_ms:.2f}ms")
                 except Exception as e:
                     logger.error(f"❌ Error playing thinking indicator: {e}")
 
-            # Send to n8n webhook
-            if transcript and self.n8n_webhook_url:
-                await self._send_to_n8n(transcript)
-            elif transcript:
-                logger.info(f"📝 Transcript (no webhook): \"{transcript}\"")
+            # VoxBridge 2.0 Phase 3: Route to n8n or direct LLM based on agent configuration
+            if transcript:
+                try:
+                    # Load agent to determine routing
+                    if self.default_agent_id:
+                        agent = await AgentService.get_agent(self.default_agent_id)
+                    else:
+                        # Fallback: Get first available agent
+                        agents = await AgentService.get_all_agents()
+                        agent = agents[0] if agents else None
+
+                    if agent and not agent.use_n8n:
+                        # Route to direct LLM provider
+                        logger.info(f"🤖 Routing to direct LLM (agent: {agent.name}, use_n8n=False)")
+                        await self._handle_llm_response(transcript, agent.id)
+                    elif self.n8n_webhook_url:
+                        # Route to n8n webhook (legacy flow)
+                        logger.info("🌐 Routing to n8n webhook (use_n8n=True or default)")
+                        await self._send_to_n8n(transcript)
+                    else:
+                        logger.warning("⚠️ No AI routing available (no agent or n8n webhook)")
+                        logger.info(f"📝 Transcript: \"{transcript}\"")
+
+                except Exception as e:
+                    logger.error(f"❌ Error routing AI request: {e}")
             else:
-                logger.info("📝 Empty transcript - skipping webhook")
+                logger.info("📝 Empty transcript - skipping AI processing")
 
         except Exception as e:
             logger.error(f"❌ Error finalizing transcription: {e}")
@@ -534,6 +564,110 @@ class SpeakerManager:
         except Exception as e:
             logger.error(f"❌ Error sending to n8n: {e}")
             raise  # Re-raise to allow retry decorator to work
+
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=1, max=10),
+        retry=retry_if_exception_type((httpx.TimeoutException, httpx.NetworkError, LLMError)),
+        reraise=True
+    )
+    async def _handle_llm_response(self, transcript: str, agent_id: Optional[UUID] = None) -> None:
+        """
+        Handle direct LLM response generation (VoxBridge 2.0 Phase 3)
+
+        Args:
+            transcript: Transcribed text from user
+            agent_id: Agent ID to use (if None, uses default or first available)
+        """
+        try:
+            t_llm_start = time.time()
+
+            # 1. Load agent from database
+            if agent_id:
+                agent = await AgentService.get_agent(agent_id)
+            elif self.default_agent_id:
+                agent = await AgentService.get_agent(self.default_agent_id)
+            else:
+                # Fallback: Get first available agent
+                agents = await AgentService.get_all_agents()
+                agent = agents[0] if agents else None
+
+            if not agent:
+                logger.error("❌ No agent available for LLM response generation")
+                return
+
+            logger.info(f"🤖 Using agent: {agent.name} (provider: {agent.llm_provider}, model: {agent.llm_model})")
+
+            # 2. Create LLM provider
+            provider = LLMProviderFactory.create_provider(agent)
+
+            # 3. Build conversation messages
+            # TODO Phase 4: Load conversation history from sessions/conversations tables
+            messages = [
+                LLMMessage(role="system", content=agent.system_prompt),
+                LLMMessage(role="user", content=transcript)
+            ]
+
+            logger.info(f"📤 Sending to LLM: \"{transcript}\"")
+
+            # 4. Stream response from LLM
+            first_chunk_received = False
+            full_response = ""
+
+            async for chunk in provider.generate_stream(
+                messages=messages,
+                temperature=agent.temperature,
+                max_tokens=None  # Use provider default
+            ):
+                # Track first chunk latency
+                if not first_chunk_received:
+                    t_first_chunk = time.time()
+                    first_chunk_latency_s = t_first_chunk - t_llm_start
+                    logger.info(f"⏱️ LATENCY [LLM first chunk]: {first_chunk_latency_s:.3f}s")
+                    first_chunk_received = True
+
+                    # Record metrics
+                    if self.metrics_tracker:
+                        self.metrics_tracker.record_n8n_first_chunk_latency(first_chunk_latency_s)
+
+                # Accumulate response
+                full_response += chunk.content
+
+                # Pass chunk to streaming handler (if available and streaming enabled)
+                if self.use_streaming and self.streaming_handler:
+                    await self.streaming_handler.process_chunk(chunk.content)
+
+                # Check for finish
+                if chunk.finish_reason:
+                    logger.info(f"✅ LLM response complete (finish_reason: {chunk.finish_reason})")
+                    if chunk.usage:
+                        logger.info(f"📊 Token usage: {chunk.usage}")
+
+            # Record total AI generation latency
+            t_llm_complete = time.time()
+            llm_latency_s = t_llm_complete - t_llm_start
+            logger.info(f"⏱️ LATENCY [total LLM generation]: {llm_latency_s:.3f}s")
+
+            if self.metrics_tracker:
+                self.metrics_tracker.record_ai_generation_latency(llm_latency_s)
+
+            # If not streaming, send complete response at once
+            if not self.use_streaming:
+                logger.info(f"📨 LLM response (non-streaming): \"{full_response[:100]}...\"")
+                if self.on_ai_response:
+                    await self.on_ai_response(full_response)
+                # TODO: Send to TTS via streaming_handler.process_complete_response()
+
+            # TODO Phase 4: Save conversation turn to database
+            # - Save user message (transcript) to conversations table
+            # - Save assistant message (full_response) to conversations table
+
+        except LLMError as e:
+            logger.error(f"❌ LLM Error: {e.message} (provider: {e.provider}, retryable: {e.retryable})")
+            raise  # Re-raise to allow retry decorator to work
+        except Exception as e:
+            logger.error(f"❌ Error handling LLM response: {e}")
+            raise
 
     async def _play_thinking_indicator(self) -> None:
         """

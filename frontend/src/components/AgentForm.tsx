@@ -24,6 +24,7 @@ import {
 } from '@/components/ui/select';
 import { Slider } from '@/components/ui/slider';
 import { Label } from '@/components/ui/label';
+import { Switch } from '@/components/ui/switch';
 import { Loader2 } from 'lucide-react';
 
 interface AgentFormProps {
@@ -42,6 +43,7 @@ export function AgentForm({ open, onOpenChange, agent, onSubmit }: AgentFormProp
   const [temperature, setTemperature] = useState(0.7);
   const [llmProvider, setLlmProvider] = useState<'openrouter' | 'local'>('openrouter');
   const [llmModel, setLlmModel] = useState('anthropic/claude-3.5-sonnet');
+  const [useN8n, setUseN8n] = useState(false);
   const [ttsVoice, setTtsVoice] = useState('');
   const [ttsRate, setTtsRate] = useState(1.0);
   const [ttsPitch, setTtsPitch] = useState(1.0);
@@ -55,6 +57,7 @@ export function AgentForm({ open, onOpenChange, agent, onSubmit }: AgentFormProp
       setTemperature(agent.temperature);
       setLlmProvider(agent.llm_provider as 'openrouter' | 'local');
       setLlmModel(agent.llm_model);
+      setUseN8n(agent.use_n8n);
       setTtsVoice(agent.tts_voice || '');
       setTtsRate(agent.tts_rate);
       setTtsPitch(agent.tts_pitch);
@@ -65,6 +68,7 @@ export function AgentForm({ open, onOpenChange, agent, onSubmit }: AgentFormProp
       setTemperature(0.7);
       setLlmProvider('openrouter');
       setLlmModel('anthropic/claude-3.5-sonnet');
+      setUseN8n(false);
       setTtsVoice('');
       setTtsRate(1.0);
       setTtsPitch(1.0);
@@ -82,6 +86,7 @@ export function AgentForm({ open, onOpenChange, agent, onSubmit }: AgentFormProp
         temperature,
         llm_provider: llmProvider,
         llm_model: llmModel,
+        use_n8n: useN8n,
         tts_voice: ttsVoice || null,
         tts_rate: ttsRate,
         tts_pitch: ttsPitch,
@@ -179,6 +184,21 @@ export function AgentForm({ open, onOpenChange, agent, onSubmit }: AgentFormProp
             <p className="text-xs text-muted-foreground">
               Lower = more focused, Higher = more creative
             </p>
+          </div>
+
+          {/* Use n8n Toggle (Phase 3) */}
+          <div className="flex items-center justify-between space-x-2 py-2">
+            <div className="space-y-0.5">
+              <Label htmlFor="useN8n">Use n8n Webhook</Label>
+              <p className="text-xs text-muted-foreground">
+                Route to n8n webhook instead of direct LLM
+              </p>
+            </div>
+            <Switch
+              id="useN8n"
+              checked={useN8n}
+              onCheckedChange={setUseN8n}
+            />
           </div>
 
           {/* TTS Configuration */}

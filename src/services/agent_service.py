@@ -24,6 +24,7 @@ class AgentService:
         temperature: float = 0.7,
         llm_provider: str = "openrouter",
         llm_model: str = "anthropic/claude-3.5-sonnet",
+        use_n8n: bool = False,
         tts_voice: Optional[str] = None,
         tts_rate: float = 1.0,
         tts_pitch: float = 1.0,
@@ -37,6 +38,7 @@ class AgentService:
             temperature: LLM temperature (0.0-1.0)
             llm_provider: LLM provider ('openrouter' or 'local')
             llm_model: Model identifier
+            use_n8n: Use n8n webhook instead of direct LLM
             tts_voice: TTS voice ID (optional)
             tts_rate: TTS speech rate (0.5-2.0)
             tts_pitch: TTS pitch adjustment (0.5-2.0)
@@ -68,6 +70,7 @@ class AgentService:
             temperature=temperature,
             llm_provider=llm_provider,
             llm_model=llm_model,
+            use_n8n=use_n8n,
             tts_voice=tts_voice,
             tts_rate=tts_rate,
             tts_pitch=tts_pitch,
@@ -133,6 +136,7 @@ class AgentService:
         temperature: Optional[float] = None,
         llm_provider: Optional[str] = None,
         llm_model: Optional[str] = None,
+        use_n8n: Optional[bool] = None,
         tts_voice: Optional[str] = None,
         tts_rate: Optional[float] = None,
         tts_pitch: Optional[float] = None,
@@ -187,6 +191,9 @@ class AgentService:
 
             if llm_model is not None:
                 agent.llm_model = llm_model
+
+            if use_n8n is not None:
+                agent.use_n8n = use_n8n
 
             if tts_voice is not None:
                 agent.tts_voice = tts_voice

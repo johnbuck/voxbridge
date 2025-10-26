@@ -60,6 +60,9 @@ class Agent(Base):
     tts_rate = Column(Float, nullable=False, default=1.0)  # Speech rate (0.5-2.0)
     tts_pitch = Column(Float, nullable=False, default=1.0)  # Pitch (0.5-2.0)
 
+    # VoxBridge 2.0 Phase 3: LLM Routing
+    use_n8n = Column(Boolean, nullable=False, default=False)  # Use n8n webhook instead of direct LLM
+
     # Metadata
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(
