@@ -271,6 +271,13 @@ docker compose up -d
 - **POST /voice/leave** - Leave voice channel
 - **POST /voice/speak** - Speak text via TTS (`{text}` or `{output, options}`)
 
+### Agent Management (VoxBridge 2.0)
+- **GET /api/agents** - List all AI agents
+- **GET /api/agents/{id}** - Get specific agent by UUID
+- **POST /api/agents** - Create new agent (`{name, system_prompt, temperature?, llm_provider?, llm_model?, tts_voice?, tts_rate?, tts_pitch?}`)
+- **PUT /api/agents/{id}** - Update agent (partial update, all fields optional)
+- **DELETE /api/agents/{id}** - Delete agent (cascades to sessions/conversations)
+
 ### Monitoring
 - **GET /health** - Health check (bot ready, in voice, speaker status)
 - **GET /status** - Detailed status (bot, voice, whisper, services)

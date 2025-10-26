@@ -106,7 +106,7 @@ class Session(Base):
     session_type = Column(
         String(20), nullable=False
     )  # 'web', 'discord', 'extension'
-    metadata = Column(Text, nullable=True)  # JSON string for extension-specific data
+    session_metadata = Column(Text, nullable=True)  # JSON string for extension-specific data
 
     # Relationships
     conversations = relationship(

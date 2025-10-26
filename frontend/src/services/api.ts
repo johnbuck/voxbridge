@@ -120,6 +120,43 @@ export interface RuntimeConfig {
   USE_STREAMING?: boolean;
 }
 
+// VoxBridge 2.0: Agent Management
+export interface Agent {
+  id: string;
+  name: string;
+  system_prompt: string;
+  temperature: number;
+  llm_provider: string;
+  llm_model: string;
+  tts_voice: string | null;
+  tts_rate: number;
+  tts_pitch: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AgentCreateRequest {
+  name: string;
+  system_prompt: string;
+  temperature?: number;
+  llm_provider?: string;
+  llm_model?: string;
+  tts_voice?: string | null;
+  tts_rate?: number;
+  tts_pitch?: number;
+}
+
+export interface AgentUpdateRequest {
+  name?: string;
+  system_prompt?: string;
+  temperature?: number;
+  llm_provider?: string;
+  llm_model?: string;
+  tts_voice?: string | null;
+  tts_rate?: number;
+  tts_pitch?: number;
+}
+
 export interface TTSOptions {
   // Streaming settings
   chunkSize?: number;
@@ -238,6 +275,35 @@ class ApiClient {
     return this.request<{ success: boolean; message: string }>('/api/tts/config', {
       method: 'POST',
       body: JSON.stringify({ enabled, options }),
+    });
+  }
+
+  // VoxBridge 2.0: Agent Management
+  async getAgents(): Promise<Agent[]> {
+    return this.request<Agent[]>('/api/agents');
+  }
+
+  async getAgent(agentId: string): Promise<Agent> {
+    return this.request<Agent>(`/api/agents/${agentId}`);
+  }
+
+  async createAgent(agent: AgentCreateRequest): Promise<Agent> {
+    return this.request<Agent>('/api/agents', {
+      method: 'POST',
+      body: JSON.stringify(agent),
+    });
+  }
+
+  async updateAgent(agentId: string, updates: AgentUpdateRequest): Promise<Agent> {
+    return this.request<Agent>(`/api/agents/${agentId}`, {
+      method: 'PUT',
+      body: JSON.stringify(updates),
+    });
+  }
+
+  async deleteAgent(agentId: string): Promise<void> {
+    await this.request<void>(`/api/agents/${agentId}`, {
+      method: 'DELETE',
     });
   }
 }

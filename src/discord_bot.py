@@ -29,6 +29,7 @@ from dotenv import load_dotenv
 
 from src.speaker_manager import SpeakerManager
 from src.streaming_handler import StreamingResponseHandler
+from src.routes.agent_routes import router as agent_router
 
 # Load environment variables
 load_dotenv()
@@ -348,6 +349,11 @@ def get_frontend_tts_options() -> Optional[dict]:
 # ============================================================
 
 app = FastAPI(title="VoxBridge API")
+
+# Include agent management routes (VoxBridge 2.0)
+app.include_router(agent_router)
+
+# Note: WebSocket manager will be initialized after ConnectionManager is defined
 
 # Pydantic models for API
 class JoinVoiceRequest(BaseModel):
@@ -1024,6 +1030,10 @@ class ConnectionManager:
 
 # Initialize connection manager
 ws_manager = ConnectionManager()
+
+# Set WebSocket manager for agent routes (VoxBridge 2.0)
+from src.routes.agent_routes import set_websocket_manager
+set_websocket_manager(ws_manager)
 
 @app.websocket("/ws/events")
 async def websocket_endpoint(websocket: WebSocket):
