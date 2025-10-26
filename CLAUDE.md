@@ -30,15 +30,31 @@ For comprehensive architecture and patterns, see [AGENTS.md](./AGENTS.md).
 
 **Testing**: 43 tests (38 passing), 88% coverage
 
-### 🔴 Future Work (Not Started)
+### 🟢 VoxBridge 2.0 - In Progress (Oct-Nov 2025)
+
+**Branch**: `voxbridge-2.0`
+**Plan**: [docs/architecture/voxbridge-2.0-transformation-plan.md](docs/architecture/voxbridge-2.0-transformation-plan.md)
+**Status**: Phase 1 ✅ COMPLETE (Oct 26, 2025)
+
+**Phase 1: Core Infrastructure** ✅:
+- PostgreSQL 15 database for agents, sessions, conversations
+- SQLAlchemy 2.0 ORM models with UUID primary keys
+- Alembic migrations (async PostgreSQL)
+- Database seed script (3 example agents)
+
+**Upcoming**: Phase 2 (Agent Management API + UI), Phase 3 (LLM Providers), Phase 4 (WebRTC)
+
+### 📚 Related Planning Documents
 
 1. **Multi-Agent System** - [docs/architecture/multi-agent-implementation-plan.md](docs/architecture/multi-agent-implementation-plan.md)
    - **Summary**: 7-phase refactor (session mgmt, queue concurrency, agent routing)
-   - **Effort**: 8-12 days
-   - **Goal**: Support concurrent users + multiple n8n agents
+   - **Status**: Core phases incorporated into VoxBridge 2.0
+   - **Effort**: 2,222 lines of detailed planning
+   - **Note**: VoxBridge 2.0 builds on this foundation with expanded scope
 
 2. **LangGraph Integration** - [docs/planning/frontend-langgraph-plan.md](docs/planning/frontend-langgraph-plan.md)
    - **Summary**: LangChain/LangGraph as alternative to n8n webhooks
+   - **Status**: Future work (post-VoxBridge 2.0)
    - **Goal**: Multi-agent orchestration
 
 **Quick navigation**: Start with [ARCHITECTURE.md](ARCHITECTURE.md) for complete documentation and roadmap.
@@ -71,12 +87,14 @@ docker compose down && docker compose build --no-cache && docker compose up -d
 
 ## Architecture Overview
 
-**Three-Container Python Setup:**
+**Four-Container Setup (VoxBridge 2.0):**
+- `postgres` (port 5432) - PostgreSQL 15 database for agents/sessions/conversations
 - `voxbridge-whisperx` (ports 4901, 4902) - WhisperX STT server (GPU: RTX 5060 Ti)
 - `voxbridge-discord` (port 4900) - Discord.py bot with FastAPI + streaming responses
 - `voxbridge-frontend` (port 4903) - React monitoring dashboard ✅ **DEPLOYED**
 
 **Key Integration Points:**
+- Discord → PostgreSQL: Async SQLAlchemy (agent/session storage)
 - Discord → WhisperX: WebSocket at `ws://whisperx:4901`
 - Discord → Chatterbox TTS: HTTP at `http://chatterbox:4800`
 - Discord → n8n: HTTP streaming webhook (`N8N_WEBHOOK_URL`)
@@ -91,14 +109,22 @@ docker compose down && docker compose build --no-cache && docker compose up -d
 - **src/whisper_client.py** (350+ lines) - WhisperX WebSocket client
 - **src/whisper_server.py** (400+ lines) - WhisperX server (GPU-accelerated)
 
+### Database (VoxBridge 2.0)
+- **src/database/models.py** (170 lines) - SQLAlchemy ORM models (Agent, Session, Conversation)
+- **src/database/session.py** (140 lines) - Async session management with connection pooling
+- **src/database/seed.py** (160 lines) - Example agent seeding script
+- **alembic/versions/001_initial_schema.py** - Initial database migration
+
 ### Frontend
 - **frontend/src/App.tsx** - Main dashboard with real-time metrics
 - **frontend/src/components/** - UI components (MetricsCard, AudioVisualization, etc.)
 
 ### Configuration
-- **docker-compose.yml** - Main orchestration (2 containers + frontend)
-- **.env** - Environment variables (not in repo, see docker-compose.yml for required vars)
-- **requirements-bot.txt** - Discord bot Python dependencies
+- **docker-compose.yml** - Main orchestration (4 containers: postgres + whisperx + discord + frontend)
+- **.env** - Environment variables (not in repo, see .env.example for template)
+- **.env.example** - Environment variable template with database config
+- **alembic.ini** - Alembic migration configuration
+- **requirements-bot.txt** - Discord bot Python dependencies (includes SQLAlchemy, asyncpg)
 - **requirements.txt** - WhisperX server dependencies
 - **requirements-test.txt** - Testing dependencies
 
@@ -118,6 +144,14 @@ docker compose down && docker compose build --no-cache && docker compose up -d
 - `CHATTERBOX_URL` - Chatterbox TTS API URL
 - `CHATTERBOX_VOICE_ID` - Voice ID for TTS
 
+**Database (VoxBridge 2.0):**
+- `POSTGRES_USER=voxbridge` - PostgreSQL username
+- `POSTGRES_PASSWORD=voxbridge_dev_password` - PostgreSQL password
+- `POSTGRES_DB=voxbridge` - PostgreSQL database name
+- `DATABASE_URL` - Auto-constructed from above or override
+- `OPENROUTER_API_KEY` - Optional: OpenRouter API key for LLM provider
+- `LOCAL_LLM_BASE_URL` - Optional: Local LLM endpoint (e.g., http://localhost:11434/v1)
+
 **Optional (with defaults):**
 - `WHISPER_SERVER_URL=ws://whisperx:4901` - WhisperX WebSocket
 - `SILENCE_THRESHOLD_MS=600` - Silence detection (ms)
@@ -134,6 +168,27 @@ docker compose down && docker compose build --no-cache && docker compose up -d
 - `WHISPERX_BATCH_SIZE=16` - Batch size for transcription
 
 ## Common Commands
+
+### Database Management (VoxBridge 2.0)
+```bash
+# Run Alembic migrations
+docker exec voxbridge-discord alembic upgrade head
+
+# Seed example agents
+docker exec voxbridge-discord python -m src.database.seed
+
+# Clear all agents (WARNING: Destructive!)
+docker exec voxbridge-discord python -m src.database.seed --clear
+
+# Check database connection
+docker exec voxbridge-discord python -c "import asyncio; from src.database import check_db_connection; print(asyncio.run(check_db_connection()))"
+
+# PostgreSQL shell
+docker exec -it voxbridge-postgres psql -U voxbridge -d voxbridge
+
+# View agents in database
+docker exec voxbridge-postgres psql -U voxbridge -d voxbridge -c "SELECT id, name, llm_provider, llm_model FROM agents;"
+```
 
 ### Docker Management
 ```bash

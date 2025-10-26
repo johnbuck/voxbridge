@@ -187,6 +187,84 @@ See **[ARCHITECTURE.md](ARCHITECTURE.md)** for complete documentation map and qu
 
 ## Critical Architectural Concepts
 
+### Database Architecture (VoxBridge 2.0)
+
+**PostgreSQL schema for agent storage and session management** - Foundation for multi-agent system.
+
+**Status**: ✅ **Phase 1 COMPLETE** (Oct 26, 2025)
+**Branch**: `voxbridge-2.0`
+
+**Schema Design**:
+
+```sql
+-- Agents: AI agent configurations
+CREATE TABLE agents (
+    id UUID PRIMARY KEY,
+    name VARCHAR(100) UNIQUE NOT NULL,
+    description TEXT,
+    system_prompt TEXT NOT NULL,
+    llm_provider VARCHAR(50) NOT NULL,  -- 'openrouter' | 'local_llm'
+    llm_model VARCHAR(100) NOT NULL,     -- e.g., 'anthropic/claude-3.5-sonnet'
+    temperature FLOAT DEFAULT 0.7,
+    tts_voice VARCHAR(100),
+    tts_rate FLOAT DEFAULT 1.0,
+    tts_pitch FLOAT DEFAULT 1.0,
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW(),
+    is_active BOOLEAN DEFAULT TRUE
+);
+
+-- Sessions: User voice sessions
+CREATE TABLE sessions (
+    id UUID PRIMARY KEY,
+    user_id VARCHAR(100) NOT NULL,      -- Discord user ID or web user ID
+    user_name VARCHAR(100),
+    agent_id UUID REFERENCES agents(id),
+    active BOOLEAN DEFAULT TRUE,
+    started_at TIMESTAMP DEFAULT NOW(),
+    ended_at TIMESTAMP,
+    session_type VARCHAR(20) NOT NULL,  -- 'web' | 'discord' | 'extension'
+    metadata TEXT                        -- JSON for extension-specific data
+);
+
+-- Conversations: Message history
+CREATE TABLE conversations (
+    id INTEGER PRIMARY KEY,
+    session_id UUID REFERENCES sessions(id),
+    role VARCHAR(20) NOT NULL,           -- 'user' | 'assistant' | 'system'
+    content TEXT NOT NULL,
+    timestamp TIMESTAMP DEFAULT NOW(),
+    audio_duration_ms INTEGER,           -- For user messages
+    tts_duration_ms INTEGER,             -- For assistant messages
+    llm_latency_ms INTEGER,              -- For assistant messages
+    total_latency_ms INTEGER             -- End-to-end latency
+);
+```
+
+**Design Decisions** (Phase 1):
+- **UUID primary keys** - Globally unique, scalable for distributed systems
+- **API keys from env vars only** - No encrypted keys in database (simple, secure)
+- **PostgreSQL only** - Redis deferred to Phase 5 (start simple)
+- **Integer PKs for conversations** - High-volume insert performance
+
+**Indexes**:
+- `agents.name` (unique) - Lookup by name
+- `sessions.user_id`, `sessions.agent_id`, `sessions.active` - Session queries
+- `conversations.session_id`, `conversations.timestamp` - History retrieval
+
+**Key Files**:
+- `src/database/models.py:170` - SQLAlchemy ORM models
+- `src/database/session.py:140` - Async connection management
+- `src/database/seed.py:160` - Example agent seeding
+- `alembic/versions/001_initial_schema.py` - Initial migration
+
+**Example Agents**:
+1. **Auren (Default)** - Friendly general-purpose assistant (temp=0.7)
+2. **TechSupport** - Technical troubleshooting specialist (temp=0.5, slower speech)
+3. **Creative Writer** - Creative writing assistant (temp=0.9, faster speech)
+
+---
+
 ### Speaker Lock System
 
 **Single-speaker constraint** - Only one user can speak at a time.
@@ -245,8 +323,19 @@ See **[ARCHITECTURE.md](ARCHITECTURE.md)** for complete documentation map and qu
 │   ├── speaker_manager.py      # Speaker lock + n8n integration
 │   ├── whisper_client.py       # WhisperX WebSocket client
 │   ├── streaming_handler.py    # n8n streaming response handler
-│   └── whisper_server.py       # WhisperX server (runs in whisperx container)
-├── requirements-bot.txt        # Discord bot dependencies
+│   ├── whisper_server.py       # WhisperX server (runs in whisperx container)
+│   └── database/               # Database layer (VoxBridge 2.0)
+│       ├── __init__.py         # Module exports
+│       ├── models.py           # SQLAlchemy ORM models (Agent, Session, Conversation)
+│       ├── session.py          # Async connection management
+│       └── seed.py             # Example agent seeding
+├── alembic/                    # Database migrations (VoxBridge 2.0)
+│   ├── env.py                  # Alembic environment (async support)
+│   ├── script.py.mako          # Migration template
+│   └── versions/               # Migration scripts
+│       └── 001_initial_schema.py
+├── alembic.ini                 # Alembic configuration
+├── requirements-bot.txt        # Discord bot dependencies (includes SQLAlchemy, asyncpg)
 └── requirements.txt            # WhisperX server dependencies
 ```
 
