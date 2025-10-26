@@ -30,6 +30,7 @@ from dotenv import load_dotenv
 from src.speaker_manager import SpeakerManager
 from src.streaming_handler import StreamingResponseHandler
 from src.routes.agent_routes import router as agent_router
+from src.routes.session_routes import router as session_router
 
 # Load environment variables
 load_dotenv()
@@ -352,6 +353,9 @@ app = FastAPI(title="VoxBridge API")
 
 # Include agent management routes (VoxBridge 2.0)
 app.include_router(agent_router)
+
+# Include session/conversation management routes (VoxBridge 2.0 Phase 4)
+app.include_router(session_router)
 
 # Note: WebSocket manager will be initialized after ConnectionManager is defined
 

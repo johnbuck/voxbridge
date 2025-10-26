@@ -95,6 +95,7 @@ class Session(Base):
         String(100), nullable=False, index=True
     )  # Discord user ID or web user ID
     user_name = Column(String(100), nullable=True)  # Display name for debugging
+    title = Column(String(200), nullable=True)  # Conversation title (auto-generated or user-set)
 
     # Agent Association
     agent_id = Column(UUID(as_uuid=True), ForeignKey("agents.id"), nullable=False, index=True)
