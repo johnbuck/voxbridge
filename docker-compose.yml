@@ -1,4 +1,25 @@
 services:
+  # PostgreSQL - Database for agents, sessions, conversations
+  postgres:
+    image: postgres:15-alpine
+    container_name: voxbridge-postgres
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER:-voxbridge}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-voxbridge_dev_password}
+      - POSTGRES_DB=${POSTGRES_DB:-voxbridge}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    restart: unless-stopped
+    networks:
+      - bot-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-voxbridge}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   # WhisperX STT Server - Handles speech-to-text with GPU
   whisperx:
     build:
@@ -83,8 +104,14 @@ services:
 
       # Server Config
       - PORT=4900
+
+      # Database Configuration
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-voxbridge}:${POSTGRES_PASSWORD:-voxbridge_dev_password}@postgres:5432/${POSTGRES_DB:-voxbridge}
     depends_on:
-      - whisperx
+      postgres:
+        condition: service_healthy
+      whisperx:
+        condition: service_started
     restart: unless-stopped
     networks:
       - bot-network
@@ -123,3 +150,9 @@ volumes:
       type: none
       o: bind
       device: ../zexternal-volumes/voxbridge-whisperx-models
+  postgres-data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ../zexternal-volumes/voxbridge-postgres-data
