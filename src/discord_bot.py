@@ -15,6 +15,7 @@ import logging
 import os
 import signal
 import tempfile
+import uuid
 from datetime import datetime
 from typing import Optional
 
@@ -53,6 +54,272 @@ if not DISCORD_TOKEN:
     exit(1)
 
 # ============================================================
+# METRICS TRACKING
+# ============================================================
+
+import time
+import statistics
+from collections import deque
+from threading import Lock
+
+class MetricsTracker:
+    """Track performance metrics for the application"""
+
+    def __init__(self, max_samples=100):
+        self.max_samples = max_samples
+
+        # Legacy metrics
+        self.latencies = deque(maxlen=max_samples)
+        self.n8n_response_latencies = deque(maxlen=max_samples)  # n8n → first response
+        self.n8n_first_chunk_latencies = deque(maxlen=max_samples)  # n8n → first chunk
+        self.tts_first_byte_latencies = deque(maxlen=max_samples)  # response complete → first audio byte
+
+        # Phase 1: Speech → Transcription
+        self.whisper_connection_latencies = deque(maxlen=max_samples)  # user starts speaking → WhisperX connected
+        self.first_partial_transcript_latencies = deque(maxlen=max_samples)  # WhisperX connected → first partial
+        self.transcription_duration_latencies = deque(maxlen=max_samples)  # first partial → final transcript
+        self.silence_detection_latencies = deque(maxlen=max_samples)  # last audio → silence detected (ms)
+
+        # Phase 2: AI Processing
+        self.ai_generation_latencies = deque(maxlen=max_samples)  # webhook sent → response received
+        self.response_parsing_latencies = deque(maxlen=max_samples)  # response received → text extracted (ms)
+
+        # Phase 3: TTS Generation
+        self.tts_queue_latencies = deque(maxlen=max_samples)  # text ready → TTS request sent
+        self.tts_generation_latencies = deque(maxlen=max_samples)  # TTS sent → all audio downloaded
+        # tts_first_byte_latencies already defined above
+
+        # Phase 4: Audio Playback
+        self.audio_playback_latencies = deque(maxlen=max_samples)  # audio ready → playback complete
+        self.ffmpeg_processing_latencies = deque(maxlen=max_samples)  # FFmpeg conversion time (ms)
+
+        # End-to-End
+        self.total_pipeline_latencies = deque(maxlen=max_samples)  # user starts speaking → audio playback complete
+        self.time_to_first_audio_latencies = deque(maxlen=max_samples)  # user starts speaking → first audio byte plays
+
+        # UX Enhancement
+        self.thinking_indicator_durations = deque(maxlen=max_samples)  # thinking sound duration (gap filled)
+
+        # Counters
+        self.transcript_count = 0
+        self.error_count = 0
+        self.total_requests = 0
+        self.start_time = time.time()
+        self.lock = Lock()
+
+    def record_latency(self, latency_ms: float):
+        """Record a latency measurement (overall transcript latency)"""
+        with self.lock:
+            self.latencies.append(latency_ms)
+            self.total_requests += 1
+
+    def record_n8n_response_latency(self, latency_s: float):
+        """Record n8n response latency (time to first response)"""
+        with self.lock:
+            self.n8n_response_latencies.append(latency_s)
+
+    def record_n8n_first_chunk_latency(self, latency_s: float):
+        """Record n8n first chunk latency (time to first text chunk)"""
+        with self.lock:
+            self.n8n_first_chunk_latencies.append(latency_s)
+
+    def record_tts_first_byte_latency(self, latency_s: float):
+        """Record TTS first byte latency (time to first audio byte from Chatterbox)"""
+        with self.lock:
+            self.tts_first_byte_latencies.append(latency_s)
+
+    # Phase 1: Speech → Transcription recording methods
+    def record_whisper_connection_latency(self, latency_s: float):
+        """Record WhisperX connection latency (user starts speaking → connected)"""
+        with self.lock:
+            self.whisper_connection_latencies.append(latency_s)
+
+    def record_first_partial_transcript_latency(self, latency_s: float):
+        """Record first partial transcript latency (WhisperX connected → first partial)"""
+        with self.lock:
+            self.first_partial_transcript_latencies.append(latency_s)
+
+    def record_transcription_duration(self, latency_s: float):
+        """Record transcription duration (first partial → final transcript)"""
+        with self.lock:
+            self.transcription_duration_latencies.append(latency_s)
+
+    def record_silence_detection_latency(self, latency_ms: float):
+        """Record silence detection latency (last audio → silence detected) in ms"""
+        with self.lock:
+            self.silence_detection_latencies.append(latency_ms)
+
+    # Phase 2: AI Processing recording methods
+    def record_ai_generation_latency(self, latency_s: float):
+        """Record AI generation latency (webhook sent → response received)"""
+        with self.lock:
+            self.ai_generation_latencies.append(latency_s)
+
+    def record_response_parsing_latency(self, latency_ms: float):
+        """Record response parsing latency (response received → text extracted) in ms"""
+        with self.lock:
+            self.response_parsing_latencies.append(latency_ms)
+
+    # Phase 3: TTS Generation recording methods
+    def record_tts_queue_latency(self, latency_s: float):
+        """Record TTS queue latency (text ready → TTS request sent)"""
+        with self.lock:
+            self.tts_queue_latencies.append(latency_s)
+
+    def record_tts_generation_latency(self, latency_s: float):
+        """Record TTS generation latency (TTS sent → all audio downloaded)"""
+        with self.lock:
+            self.tts_generation_latencies.append(latency_s)
+
+    # Phase 4: Audio Playback recording methods
+    def record_audio_playback_latency(self, latency_s: float):
+        """Record audio playback latency (audio ready → playback complete)"""
+        with self.lock:
+            self.audio_playback_latencies.append(latency_s)
+
+    def record_ffmpeg_processing_latency(self, latency_ms: float):
+        """Record FFmpeg processing latency (conversion time) in ms"""
+        with self.lock:
+            self.ffmpeg_processing_latencies.append(latency_ms)
+
+    # End-to-End recording methods
+    def record_total_pipeline_latency(self, latency_s: float):
+        """Record total pipeline latency (user starts speaking → audio playback complete)"""
+        with self.lock:
+            self.total_pipeline_latencies.append(latency_s)
+
+    def record_time_to_first_audio(self, latency_s: float):
+        """Record time to first audio (user starts speaking → first audio byte plays)"""
+        with self.lock:
+            self.time_to_first_audio_latencies.append(latency_s)
+
+    def record_thinking_indicator_duration(self, duration_s: float):
+        """Record thinking indicator duration (gap filled between transcript and TTS)"""
+        with self.lock:
+            self.thinking_indicator_durations.append(duration_s)
+
+    def record_transcript(self):
+        """Record a transcript completion"""
+        with self.lock:
+            self.transcript_count += 1
+
+    def record_error(self):
+        """Record an error"""
+        with self.lock:
+            self.error_count += 1
+            self.total_requests += 1
+
+    def _calc_stats(self, latencies_deque) -> dict:
+        """Calculate statistics for a latency deque"""
+        if not latencies_deque:
+            return {"avg": 0, "p50": 0, "p95": 0, "p99": 0}
+
+        sorted_latencies = sorted(latencies_deque)
+        return {
+            "avg": round(statistics.mean(sorted_latencies), 3),
+            "p50": round(statistics.median(sorted_latencies), 3),
+            "p95": round(sorted_latencies[int(len(sorted_latencies) * 0.95)], 3) if len(sorted_latencies) > 1 else round(sorted_latencies[0], 3),
+            "p99": round(sorted_latencies[int(len(sorted_latencies) * 0.99)], 3) if len(sorted_latencies) > 1 else round(sorted_latencies[0], 3)
+        }
+
+    def get_metrics(self) -> dict:
+        """Get current metrics snapshot"""
+        with self.lock:
+            # Overall transcript latency (ms) - legacy
+            if not self.latencies:
+                latency_stats = {"avg": 0, "p50": 0, "p95": 0, "p99": 0}
+            else:
+                sorted_latencies = sorted(self.latencies)
+                latency_stats = {
+                    "avg": int(statistics.mean(sorted_latencies)),
+                    "p50": int(statistics.median(sorted_latencies)),
+                    "p95": int(sorted_latencies[int(len(sorted_latencies) * 0.95)]) if len(sorted_latencies) > 1 else int(sorted_latencies[0]),
+                    "p99": int(sorted_latencies[int(len(sorted_latencies) * 0.99)]) if len(sorted_latencies) > 1 else int(sorted_latencies[0])
+                }
+
+            # Legacy detailed latencies (seconds)
+            n8n_response_stats = self._calc_stats(self.n8n_response_latencies)
+            n8n_first_chunk_stats = self._calc_stats(self.n8n_first_chunk_latencies)
+            tts_first_byte_stats = self._calc_stats(self.tts_first_byte_latencies)
+
+            # Phase 1: Speech → Transcription (seconds)
+            whisper_connection_stats = self._calc_stats(self.whisper_connection_latencies)
+            first_partial_stats = self._calc_stats(self.first_partial_transcript_latencies)
+            transcription_duration_stats = self._calc_stats(self.transcription_duration_latencies)
+
+            # Silence detection in ms - convert to int stats
+            silence_detection_stats = self._calc_stats(self.silence_detection_latencies)
+            if silence_detection_stats["avg"] > 0:
+                silence_detection_stats = {k: int(v) for k, v in silence_detection_stats.items()}
+
+            # Phase 2: AI Processing
+            ai_generation_stats = self._calc_stats(self.ai_generation_latencies)
+            response_parsing_stats = self._calc_stats(self.response_parsing_latencies)
+            if response_parsing_stats["avg"] > 0:
+                response_parsing_stats = {k: int(v) for k, v in response_parsing_stats.items()}
+
+            # Phase 3: TTS Generation (seconds)
+            tts_queue_stats = self._calc_stats(self.tts_queue_latencies)
+            tts_generation_stats = self._calc_stats(self.tts_generation_latencies)
+
+            # Phase 4: Audio Playback (seconds)
+            audio_playback_stats = self._calc_stats(self.audio_playback_latencies)
+            ffmpeg_processing_stats = self._calc_stats(self.ffmpeg_processing_latencies)
+            if ffmpeg_processing_stats["avg"] > 0:
+                ffmpeg_processing_stats = {k: int(v) for k, v in ffmpeg_processing_stats.items()}
+
+            # End-to-End (seconds)
+            total_pipeline_stats = self._calc_stats(self.total_pipeline_latencies)
+            time_to_first_audio_stats = self._calc_stats(self.time_to_first_audio_latencies)
+
+            # UX Enhancement (seconds)
+            thinking_indicator_stats = self._calc_stats(self.thinking_indicator_durations)
+
+            error_rate = self.error_count / self.total_requests if self.total_requests > 0 else 0.0
+            uptime = int(time.time() - self.start_time)
+
+            return {
+                # Legacy metrics
+                "latency": latency_stats,
+                "n8nResponseLatency": n8n_response_stats,
+                "n8nFirstChunkLatency": n8n_first_chunk_stats,
+                "ttsFirstByteLatency": tts_first_byte_stats,
+
+                # Phase 1: Speech → Transcription
+                "whisperConnectionLatency": whisper_connection_stats,
+                "firstPartialTranscriptLatency": first_partial_stats,
+                "transcriptionDuration": transcription_duration_stats,
+                "silenceDetectionLatency": silence_detection_stats,
+
+                # Phase 2: AI Processing
+                "aiGenerationLatency": ai_generation_stats,
+                "responseParsingLatency": response_parsing_stats,
+
+                # Phase 3: TTS Generation
+                "ttsQueueLatency": tts_queue_stats,
+                "ttsGenerationLatency": tts_generation_stats,
+
+                # Phase 4: Audio Playback
+                "audioPlaybackLatency": audio_playback_stats,
+                "ffmpegProcessingLatency": ffmpeg_processing_stats,
+
+                # End-to-End
+                "totalPipelineLatency": total_pipeline_stats,
+                "timeToFirstAudio": time_to_first_audio_stats,
+
+                # UX Enhancement
+                "thinkingIndicatorDuration": thinking_indicator_stats,
+
+                # Counters
+                "transcriptCount": self.transcript_count,
+                "errorRate": error_rate,
+                "uptime": uptime
+            }
+
+# Global metrics tracker
+metrics_tracker = MetricsTracker()
+
+# ============================================================
 # DISCORD BOT SETUP
 # ============================================================
 
@@ -66,6 +333,13 @@ bot = commands.Bot(command_prefix='!', intents=intents)
 
 # Voice connection state
 voice_client: Optional[discord.VoiceClient] = None
+
+# Frontend TTS options (set via /api/tts/config endpoint)
+frontend_tts_options: Optional[dict] = None
+
+def get_frontend_tts_options() -> Optional[dict]:
+    """Get current frontend TTS options (avoids import caching)"""
+    return frontend_tts_options
 
 # Note: SpeakerManager initialization moved after broadcast functions are defined
 
@@ -82,6 +356,10 @@ class JoinVoiceRequest(BaseModel):
 
 class SpeakRequest(BaseModel):
     output: dict
+    options: dict = {}
+
+class TTSConfigRequest(BaseModel):
+    enabled: bool
     options: dict = {}
 
 # ============================================================
@@ -480,6 +758,64 @@ async def get_status():
             "guildName": channel.guild.name if channel and channel.guild else None
         }
 
+    # Query GPU device information from actual services
+    whisperx_device = "Unknown"
+    chatterbox_device = "Unknown"
+
+    # Query Chatterbox TTS for GPU info
+    try:
+        # Extract base URL (remove /v1 suffix if present)
+        chatterbox_base = CHATTERBOX_URL.replace('/v1', '')
+        async with httpx.AsyncClient(timeout=2.0) as client:
+            response = await client.get(f"{chatterbox_base}/health")
+            if response.status_code == 200:
+                health_data = response.json()
+                device = health_data.get('device', 'cpu')
+
+                # If device is 'cuda', try to get more specific GPU info from /info endpoint
+                if device == 'cuda':
+                    try:
+                        info_response = await client.get(f"{chatterbox_base}/info")
+                        if info_response.status_code == 200:
+                            info_data = info_response.json()
+                            gpu_name = info_data.get('gpu_name', 'CUDA GPU')
+                            # Simplify GPU name (e.g., "NVIDIA GeForce RTX 5060 Ti" -> "RTX 5060 Ti")
+                            if "RTX" in gpu_name:
+                                chatterbox_device = gpu_name.split("NVIDIA")[-1].strip().split("GeForce")[-1].strip()
+                            else:
+                                chatterbox_device = gpu_name
+                        else:
+                            chatterbox_device = "CUDA GPU"
+                    except Exception:
+                        chatterbox_device = "CUDA GPU"
+                else:
+                    chatterbox_device = device.upper()
+    except Exception as e:
+        logger.debug(f"Failed to query Chatterbox device info: {e}")
+
+    # Query WhisperX for GPU info
+    try:
+        # WhisperX health endpoint is on port 4902
+        whisperx_url = "http://whisperx:4902"
+        async with httpx.AsyncClient(timeout=2.0) as client:
+            response = await client.get(f"{whisperx_url}/health")
+            if response.status_code == 200:
+                health_data = response.json()
+                # WhisperX health may not include device info, so check if it exists
+                device = health_data.get('device')
+                if device:
+                    if device == 'cuda':
+                        # Try to get GPU name if available
+                        gpu_name = health_data.get('gpu_name', 'CUDA GPU')
+                        if "RTX" in gpu_name:
+                            whisperx_device = gpu_name.split("NVIDIA")[-1].strip().split("GeForce")[-1].strip()
+                        else:
+                            whisperx_device = gpu_name
+                    else:
+                        whisperx_device = device.upper()
+    except Exception as e:
+        logger.debug(f"Failed to query WhisperX device info: {e}")
+
     return {
         "bot": {
             "username": bot.user.name if bot.user else "Not ready",
@@ -499,7 +835,13 @@ async def get_status():
         },
         "services": {
             "chatterbox": bool(CHATTERBOX_URL),
-            "n8nWebhook": bool(os.getenv('N8N_WEBHOOK_URL'))
+            "chatterboxUrl": CHATTERBOX_URL or '',
+            "n8nWebhook": bool(os.getenv('N8N_WEBHOOK_URL')),
+            "n8nWebhookUrl": os.getenv('N8N_WEBHOOK_URL', '')
+        },
+        "devices": {
+            "whisperx": whisperx_device,
+            "chatterbox": chatterbox_device
         }
     }
 
@@ -555,21 +897,7 @@ async def get_metrics():
     Returns:
         Performance metrics including latency, counts, error rate
     """
-    # TODO: Implement proper metrics tracking
-    # For now, return placeholder data
-    import time
-
-    return {
-        "latency": {
-            "avg": 450,
-            "p50": 400,
-            "p95": 800,
-            "p99": 1200
-        },
-        "transcriptCount": 0,
-        "errorRate": 0.0,
-        "uptime": int(time.time() - app.state.start_time) if hasattr(app.state, 'start_time') else 0
-    }
+    return metrics_tracker.get_metrics()
 
 @app.post("/api/config")
 async def update_config(config: dict):
@@ -596,6 +924,39 @@ async def update_config(config: dict):
         logger.info(f"⚙️ Updated USE_STREAMING to {config['USE_STREAMING']}")
 
     return {"success": True, "message": "Configuration updated"}
+
+@app.post("/api/tts/config")
+async def update_tts_config(config: TTSConfigRequest):
+    """
+    Update TTS configuration from frontend dashboard
+
+    Priority order for TTS options:
+    1. n8n webhook headers (X-TTS-Options)
+    2. Frontend dashboard settings (this endpoint)
+    3. Environment variable defaults
+
+    Args:
+        config: TTS configuration with enabled flag and options
+
+    Returns:
+        Success response
+    """
+    global frontend_tts_options
+
+    if config.enabled:
+        frontend_tts_options = {
+            "enabled": True,
+            "options": config.options
+        }
+        logger.info(f"⚙️ Frontend TTS options ENABLED: {config.options}")
+    else:
+        frontend_tts_options = None
+        logger.info(f"⚙️ Frontend TTS options DISABLED")
+
+    return {
+        "success": True,
+        "message": f"TTS options {'enabled' if config.enabled else 'disabled'}"
+    }
 
 @app.post("/api/speaker/unlock")
 async def unlock_speaker():
@@ -637,13 +998,25 @@ class ConnectionManager:
 
     async def broadcast(self, message: dict):
         """Broadcast message to all connected clients"""
+        event_type = message.get('event', 'unknown')
+        num_clients = len(self.active_connections)
+        logger.info(f"📤 Broadcasting {event_type} to {num_clients} client(s)")
+
         dead_connections = []
+        success_count = 0
         for connection in self.active_connections:
             try:
                 await connection.send_json(message)
+                success_count += 1
             except Exception as e:
                 logger.error(f"❌ Error sending to WebSocket client: {e}")
                 dead_connections.append(connection)
+
+        # Log results
+        if success_count > 0:
+            logger.info(f"✅ Sent {event_type} to {success_count}/{num_clients} client(s)")
+        if dead_connections:
+            logger.warning(f"⚠️ Removed {len(dead_connections)} dead connection(s)")
 
         # Remove dead connections
         for connection in dead_connections:
@@ -669,7 +1042,7 @@ async def websocket_endpoint(websocket: WebSocket):
     try:
         # Send initial status
         await websocket.send_json({
-            "type": "status_update",
+            "event": "status_update",
             "data": {
                 "connected": True,
                 "timestamp": datetime.now().isoformat()
@@ -698,7 +1071,7 @@ async def websocket_endpoint(websocket: WebSocket):
 async def broadcast_speaker_started(user_id: str, username: str):
     """Broadcast when a user starts speaking"""
     await ws_manager.broadcast({
-        "type": "speaker_started",
+        "event": "speaker_started",
         "data": {
             "userId": user_id,
             "username": username,
@@ -709,7 +1082,7 @@ async def broadcast_speaker_started(user_id: str, username: str):
 async def broadcast_speaker_stopped(user_id: str, username: str, duration_ms: int):
     """Broadcast when a user stops speaking"""
     await ws_manager.broadcast({
-        "type": "speaker_stopped",
+        "event": "speaker_stopped",
         "data": {
             "userId": user_id,
             "username": username,
@@ -721,7 +1094,7 @@ async def broadcast_speaker_stopped(user_id: str, username: str, duration_ms: in
 async def broadcast_partial_transcript(user_id: str, username: str, text: str):
     """Broadcast partial transcription"""
     await ws_manager.broadcast({
-        "type": "partial_transcript",
+        "event": "partial_transcript",
         "data": {
             "userId": user_id,
             "username": username,
@@ -732,12 +1105,29 @@ async def broadcast_partial_transcript(user_id: str, username: str, text: str):
 
 async def broadcast_final_transcript(user_id: str, username: str, text: str):
     """Broadcast final transcription"""
+    # Record transcript completion metric
+    metrics_tracker.record_transcript()
+
     await ws_manager.broadcast({
-        "type": "final_transcript",
+        "event": "final_transcript",
         "data": {
             "userId": user_id,
             "username": username,
             "text": text,
+            "timestamp": datetime.now().isoformat()
+        }
+    })
+
+async def broadcast_ai_response(text: str, is_final: bool = False):
+    """Broadcast AI agent response"""
+    message_id = str(uuid.uuid4())
+    logger.info(f"📡 Broadcasting AI response: \"{text[:50]}...\" (id={message_id}, isFinal={is_final})")
+    await ws_manager.broadcast({
+        "event": "ai_response",
+        "data": {
+            "id": message_id,
+            "text": text,
+            "isFinal": is_final,
             "timestamp": datetime.now().isoformat()
         }
     })
@@ -747,7 +1137,9 @@ speaker_manager = SpeakerManager(
     on_speaker_started=broadcast_speaker_started,
     on_speaker_stopped=broadcast_speaker_stopped,
     on_partial_transcript=broadcast_partial_transcript,
-    on_final_transcript=broadcast_final_transcript
+    on_final_transcript=broadcast_final_transcript,
+    on_ai_response=broadcast_ai_response,
+    metrics_tracker=metrics_tracker
 )
 
 # ============================================================
