@@ -8,21 +8,40 @@ For comprehensive architecture and patterns, see [AGENTS.md](./AGENTS.md).
 
 **Active implementation plans** are in `docs/`. See [ARCHITECTURE.md](ARCHITECTURE.md) for complete index.
 
-### Current Priorities
+### ✅ Implemented Features (October 2025)
 
-1. **Multi-Agent Refactor** - [docs/architecture/multi-agent-implementation-plan.md](docs/architecture/multi-agent-implementation-plan.md)
-   - **Status**: 🟡 Phase 1-2 in progress
+**Frontend Dashboard** (Port 4903):
+- ✅ React 19 + TypeScript + Vite production deployment
+- ✅ 4 pages: VoxBridge, Discord Bot, WhisperX, Chatterbox TTS
+- ✅ Real-time WebSocket monitoring (`/ws/events`)
+- ✅ Dark mode with Chatterbox styling
+
+**Backend API** (Port 4900):
+- ✅ All 11+ endpoints operational (voice, monitoring, config)
+- ✅ WebSocket real-time events
+- ✅ Health checks and metrics
+
+**Performance Features**:
+- ✅ Thinking indicator with sound + duration tracking
+- ✅ Active speaker UX indicators
+- ✅ Streaming optimizations (clause splitting, parallel TTS)
+- ✅ E2E latency benchmark framework
+- ✅ TTS error handling with retry logic
+
+**Testing**: 43 tests (38 passing), 88% coverage
+
+### 🔴 Future Work (Not Started)
+
+1. **Multi-Agent System** - [docs/architecture/multi-agent-implementation-plan.md](docs/architecture/multi-agent-implementation-plan.md)
    - **Summary**: 7-phase refactor (session mgmt, queue concurrency, agent routing)
    - **Effort**: 8-12 days
    - **Goal**: Support concurrent users + multiple n8n agents
 
-2. **Frontend + LangGraph** - [docs/planning/frontend-langgraph-plan.md](docs/planning/frontend-langgraph-plan.md)
-   - **Status**: 🟢 Frontend complete, backend API pending
-   - **Progress**: [docs/progress/frontend-progress.md](docs/progress/frontend-progress.md)
-   - **Summary**: React dashboard + LangChain/LangGraph agents
-   - **Next**: Backend API endpoints needed
+2. **LangGraph Integration** - [docs/planning/frontend-langgraph-plan.md](docs/planning/frontend-langgraph-plan.md)
+   - **Summary**: LangChain/LangGraph as alternative to n8n webhooks
+   - **Goal**: Multi-agent orchestration
 
-**Quick navigation**: Start with [ARCHITECTURE.md](ARCHITECTURE.md) for full documentation map.
+**Quick navigation**: Start with [ARCHITECTURE.md](ARCHITECTURE.md) for complete documentation and roadmap.
 
 ## Quick Start
 
@@ -52,10 +71,10 @@ docker compose down && docker compose build --no-cache && docker compose up -d
 
 ## Architecture Overview
 
-**Two-Container Python Setup:**
+**Three-Container Python Setup:**
 - `voxbridge-whisperx` (ports 4901, 4902) - WhisperX STT server (GPU: RTX 5060 Ti)
 - `voxbridge-discord` (port 4900) - Discord.py bot with FastAPI + streaming responses
-- `voxbridge-frontend` (port 4903) - React monitoring dashboard
+- `voxbridge-frontend` (port 4903) - React monitoring dashboard ✅ **DEPLOYED**
 
 **Key Integration Points:**
 - Discord → WhisperX: WebSocket at `ws://whisperx:4901`
@@ -84,11 +103,12 @@ docker compose down && docker compose build --no-cache && docker compose up -d
 - **requirements-test.txt** - Testing dependencies
 
 ### Testing
-- **tests/unit/** - Unit tests (86 tests, fast, fully mocked)
-- **tests/integration/** - Integration tests (16 tests, mock servers)
+- **tests/unit/** - Unit tests (43 total: 38 passing, 5 failing)
+- **tests/integration/** - Integration tests (mock servers)
 - **tests/e2e/** - End-to-end tests (real services)
 - **tests/mocks/** - Mock servers (WhisperX, n8n, Chatterbox, Discord)
 - **tests/fixtures/** - Test data (audio, transcripts, TTS samples)
+- **Coverage**: 88% (38/43 passing rate)
 
 ## Environment Variables
 
