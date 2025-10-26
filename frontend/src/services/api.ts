@@ -43,7 +43,13 @@ export interface DetailedStatus {
   };
   services: {
     chatterbox: boolean;
+    chatterboxUrl: string;
     n8nWebhook: boolean;
+    n8nWebhookUrl: string;
+  };
+  devices?: {
+    whisperx: string;
+    chatterbox: string;
   };
 }
 
@@ -66,13 +72,43 @@ export interface Transcript {
   isFinal: boolean;
 }
 
+export interface LatencyStats {
+  avg: number;
+  p50: number;
+  p95: number;
+  p99: number;
+}
+
 export interface Metrics {
-  latency: {
-    avg: number;
-    p50: number;
-    p95: number;
-    p99: number;
-  };
+  // Legacy metrics
+  latency: LatencyStats;
+  n8nResponseLatency: LatencyStats;
+  n8nFirstChunkLatency: LatencyStats;
+  ttsFirstByteLatency: LatencyStats;
+
+  // Phase 1: Speech → Transcription (seconds)
+  whisperConnectionLatency: LatencyStats;
+  firstPartialTranscriptLatency: LatencyStats;
+  transcriptionDuration: LatencyStats;
+  silenceDetectionLatency: LatencyStats;  // milliseconds
+
+  // Phase 2: AI Processing (seconds)
+  aiGenerationLatency: LatencyStats;
+  responseParsingLatency: LatencyStats;  // milliseconds
+
+  // Phase 3: TTS Generation (seconds)
+  ttsQueueLatency: LatencyStats;
+  ttsGenerationLatency: LatencyStats;
+
+  // Phase 4: Audio Playback (seconds)
+  audioPlaybackLatency: LatencyStats;
+  ffmpegProcessingLatency: LatencyStats;  // milliseconds
+
+  // End-to-End (seconds)
+  totalPipelineLatency: LatencyStats;
+  timeToFirstAudio: LatencyStats;
+
+  // Counters
   transcriptCount: number;
   errorRate: number;
   uptime: number;
@@ -82,8 +118,28 @@ export interface RuntimeConfig {
   SILENCE_THRESHOLD_MS?: number;
   MAX_SPEAKING_TIME_MS?: number;
   USE_STREAMING?: boolean;
-  USE_CLAUSE_SPLITTING?: boolean;
-  USE_PARALLEL_TTS?: boolean;
+}
+
+export interface TTSOptions {
+  // Streaming settings
+  chunkSize?: number;
+  streamingStrategy?: 'sentence' | 'paragraph' | 'fixed' | 'word';
+  streamingQuality?: 'fast' | 'balanced' | 'high';
+  streamingBufferSize?: number;
+
+  // Voice generation (required when sending from dashboard)
+  temperature: number;
+  exaggeration: number;
+  cfgWeight: number;
+
+  // Output settings
+  speedFactor?: number;
+  outputFormat?: 'wav' | 'mp3';
+
+  // Voice settings
+  voiceMode?: 'default' | 'clone';
+  voiceId?: string;
+  referenceAudioFilename?: string;
 }
 
 class ApiClient {
@@ -174,6 +230,14 @@ class ApiClient {
   async unlockSpeaker(): Promise<{ success: boolean; previousSpeaker: string | null }> {
     return this.request<{ success: boolean; previousSpeaker: string | null }>('/api/speaker/unlock', {
       method: 'POST',
+    });
+  }
+
+  // TTS Options
+  async setTTSOptions(enabled: boolean, options: TTSOptions): Promise<{ success: boolean; message: string }> {
+    return this.request<{ success: boolean; message: string }>('/api/tts/config', {
+      method: 'POST',
+      body: JSON.stringify({ enabled, options }),
     });
   }
 }

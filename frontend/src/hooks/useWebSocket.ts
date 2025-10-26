@@ -28,6 +28,7 @@ export interface WebSocketOptions {
   reconnect?: boolean;
   reconnectInterval?: number;
   maxReconnectAttempts?: number;
+  onMessage?: (message: WebSocketMessage) => void;
 }
 
 export function useWebSocket(
@@ -63,6 +64,10 @@ export function useWebSocket(
         try {
           const message: WebSocketMessage = JSON.parse(event.data);
           setLastMessage(message);
+          // Call onMessage callback immediately (bypasses React batching)
+          if (options.onMessage) {
+            options.onMessage(message);
+          }
         } catch (err) {
           console.error('[WebSocket] Failed to parse message:', err);
         }

@@ -56,6 +56,31 @@ export function ChannelSelector({ onJoinSuccess, onJoinError }: ChannelSelectorP
     }
   };
 
+  const handleQuickConnect = () => {
+    if (!data?.guilds || data.guilds.length === 0) return;
+
+    // Try to find a channel with users first
+    for (const guild of data.guilds) {
+      const channelWithUsers = guild.channels.find(ch => ch.userCount > 0);
+      if (channelWithUsers) {
+        joinMutation.mutate({
+          channelId: channelWithUsers.id,
+          guildId: guild.id
+        });
+        return;
+      }
+    }
+
+    // Otherwise, join the first available channel
+    const firstGuild = data.guilds[0];
+    if (firstGuild.channels.length > 0) {
+      joinMutation.mutate({
+        channelId: firstGuild.channels[0].id,
+        guildId: firstGuild.id
+      });
+    }
+  };
+
   const handleValueChange = (value: string) => {
     // Value format: "guildId:channelId"
     const [guildId, channelId] = value.split(':');
@@ -76,6 +101,26 @@ export function ChannelSelector({ onJoinSuccess, onJoinError }: ChannelSelectorP
 
   return (
     <div className="space-y-2">
+      {/* Quick Connect Button */}
+      <Button
+        onClick={handleQuickConnect}
+        disabled={isLoading || joinMutation.isPending || !data?.guilds || data.guilds.length === 0}
+        className="w-full font-semibold"
+        size="lg"
+      >
+        {joinMutation.isPending ? 'Joining...' : 'Quick Connect'}
+      </Button>
+
+      {/* Manual Channel Selection */}
+      <div className="relative">
+        <div className="absolute inset-0 flex items-center">
+          <span className="w-full border-t" />
+        </div>
+        <div className="relative flex justify-center text-xs uppercase">
+          <span className="bg-background px-2 text-muted-foreground">Or select manually</span>
+        </div>
+      </div>
+
       <Select onValueChange={handleValueChange}>
         <SelectTrigger className="w-full">
           <SelectValue placeholder="Select a voice channel" />
@@ -112,8 +157,9 @@ export function ChannelSelector({ onJoinSuccess, onJoinError }: ChannelSelectorP
         onClick={handleJoin}
         disabled={!selectedChannel || joinMutation.isPending}
         className="w-full"
+        variant="outline"
       >
-        {joinMutation.isPending ? 'Joining...' : 'Join Channel'}
+        {joinMutation.isPending ? 'Joining...' : 'Join Selected Channel'}
       </Button>
     </div>
   );

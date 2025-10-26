@@ -3,8 +3,8 @@
  * Main monitoring and control interface
  */
 
-import { useEffect, useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useState, useRef, useCallback } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/services/api';
 import { useWebSocket } from '@/hooks/useWebSocket';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -12,12 +12,27 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { ChannelSelector } from '@/components/ChannelSelector';
 import { TTSTest } from '@/components/TTSTest';
+import { TTSSettings } from '@/components/TTSSettings';
+import { RuntimeSettings } from '@/components/RuntimeSettings';
 import { MetricsPanel } from '@/components/MetricsPanel';
+
+interface TranscriptItem {
+  id: string; // Unique identifier for the message
+  type: 'user' | 'ai';
+  userId?: string;
+  username?: string;
+  text: string;
+  timestamp: string;
+  isFinal?: boolean;
+}
 
 export function Dashboard() {
   const [activeSpeaker, setActiveSpeaker] = useState<string | null>(null);
   const [partialTranscript, setPartialTranscript] = useState<string>('');
   const [finalTranscript, setFinalTranscript] = useState<string>('');
+  const [transcriptHistory, setTranscriptHistory] = useState<TranscriptItem[]>([]);
+  const seenMessageIdsRef = useRef(new Set<string>());
+  const queryClient = useQueryClient();
 
   // Poll health status
   const { data: health } = useQuery({
@@ -33,33 +48,94 @@ export function Dashboard() {
     refetchInterval: 5000, // Poll every 5 seconds
   });
 
-  // WebSocket for real-time updates
-  const { isConnected: wsConnected, lastMessage } = useWebSocket('/ws/events');
-
-  // Handle WebSocket messages
-  useEffect(() => {
-    if (!lastMessage) return;
-
-    switch (lastMessage.event) {
+  // Handle WebSocket messages via callback (bypasses React batching)
+  const handleMessage = useCallback((message: any) => {
+    switch (message.event) {
       case 'speaker_started':
-        setActiveSpeaker(lastMessage.data.userId);
+        setActiveSpeaker(message.data.userId);
         break;
       case 'speaker_stopped':
         setActiveSpeaker(null);
         setPartialTranscript('');
         break;
       case 'partial_transcript':
-        setPartialTranscript(lastMessage.data.text);
+        setPartialTranscript(message.data.text);
         break;
       case 'final_transcript':
-        setFinalTranscript(lastMessage.data.text);
+        setFinalTranscript(message.data.text);
         setPartialTranscript('');
+        // Add to history (newest first)
+        // Generate deterministic ID based on message content (not random)
+        const userMessageId = `user-${message.data.userId}-${message.data.timestamp}-${message.data.text.substring(0, 50)}`;
+
+        // Check if already seen (using ref for synchronous check)
+        if (seenMessageIdsRef.current.has(userMessageId)) {
+          console.log('[Final Transcript] Duplicate message, skipping:', userMessageId);
+          break;
+        }
+
+        console.log('[Final Transcript] Adding new message:', userMessageId);
+        seenMessageIdsRef.current.add(userMessageId);
+
+        setTranscriptHistory((prev) => {
+          const newItem: TranscriptItem = {
+            id: userMessageId,
+            type: 'user',
+            userId: message.data.userId,
+            username: message.data.username,
+            text: message.data.text,
+            timestamp: message.data.timestamp,
+          };
+          // Keep only last 100 transcripts
+          return [newItem, ...prev].slice(0, 100);
+        });
+        break;
+      case 'ai_response':
+        // Add AI response sentence to history
+        const messageId = message.data.id;
+        console.log('[AI Response] Received:', { id: messageId, text: message.data.text });
+
+        // Check if we've already seen this message (using ref for synchronous check)
+        if (seenMessageIdsRef.current.has(messageId)) {
+          console.log('[AI Response] Duplicate message, skipping:', messageId);
+          break;
+        }
+
+        console.log('[AI Response] Adding new message:', messageId);
+        seenMessageIdsRef.current.add(messageId);
+
+        setTranscriptHistory((prev) => {
+          console.log('[AI Response] Current history length:', prev.length);
+
+          const newItem: TranscriptItem = {
+            id: messageId,
+            type: 'ai',
+            text: message.data.text,
+            timestamp: message.data.timestamp,
+            isFinal: message.data.isFinal,
+          };
+          const newHistory = [newItem, ...prev].slice(0, 100);
+          console.log('[AI Response] New history length:', newHistory.length);
+          // Keep only last 100 transcripts
+          return newHistory;
+        });
+
+        // Trigger metrics refetch when AI response is complete
+        if (message.data.isFinal) {
+          console.log('[Metrics] Refetching metrics after AI response completion');
+          queryClient.invalidateQueries({ queryKey: ['metrics'] });
+        }
         break;
       case 'status_update':
         // Status update from WebSocket (supplements polling)
         break;
     }
-  }, [lastMessage]);
+  }, [queryClient]);
+
+  // WebSocket for real-time updates
+  const { isConnected: wsConnected } = useWebSocket('/ws/events', {
+    onMessage: handleMessage
+  });
 
   const getStatusBadge = (isReady: boolean) => {
     return isReady ? (
@@ -177,12 +253,16 @@ export function Dashboard() {
               </div>
 
               <div>
-                <p className="text-sm font-medium mb-2">Speaker Status</p>
+                <p className="text-sm font-medium mb-2">Speaker Lock</p>
                 {health?.speakerLocked ? (
                   <div className="space-y-2">
                     <Badge>🔒 Locked</Badge>
                     <p className="text-xs text-muted-foreground">
                       Active: {health.activeSpeaker}
+                    </p>
+                    <p className="text-xs text-muted-foreground mb-2">
+                      Speaker lock prevents interruptions during transcription.
+                      Use unlock if stuck.
                     </p>
                     <Button
                       onClick={() => api.unlockSpeaker()}
@@ -190,14 +270,14 @@ export function Dashboard() {
                       size="sm"
                       className="w-full"
                     >
-                      Force Unlock
+                      Force Unlock Speaker
                     </Button>
                   </div>
                 ) : (
                   <div>
                     <Badge variant="outline">🔓 Unlocked</Badge>
                     <p className="text-xs text-muted-foreground mt-1">
-                      No active speaker
+                      Ready to accept new speakers
                     </p>
                   </div>
                 )}
@@ -207,16 +287,23 @@ export function Dashboard() {
 
             {/* TTS Test */}
             <TTSTest inVoiceChannel={health?.inVoiceChannel ?? false} />
+
+            {/* Runtime Settings */}
+            <RuntimeSettings />
+
+            {/* TTS Settings */}
+            <TTSSettings />
           </div>
 
-          {/* Center Panel: Live Transcription */}
-          <Card className="lg:col-span-2">
+          {/* Center Panel: Conversation */}
+          <Card className="lg:col-span-2 flex flex-col">
             <CardHeader>
-              <CardTitle>Live Transcription</CardTitle>
+              <CardTitle>Conversation</CardTitle>
             </CardHeader>
-            <CardContent className="space-y-4">
-              {activeSpeaker ? (
-                <div>
+            <CardContent className="flex flex-col flex-1 min-h-0 space-y-4">
+              {/* Active Speaker Section */}
+              {activeSpeaker && (
+                <div className="border-b border-border pb-4 shrink-0">
                   <div className="flex items-center gap-2 mb-3">
                     <div className="w-3 h-3 bg-green-500 rounded-full animate-pulse"></div>
                     <span className="font-medium">User: {activeSpeaker}</span>
@@ -238,13 +325,47 @@ export function Dashboard() {
                     </div>
                   )}
                 </div>
-              ) : (
-                <div className="text-center py-12 text-muted-foreground">
-                  <p className="text-sm">Waiting for audio...</p>
-                  <p className="text-xs mt-1">
-                    Speak in the Discord voice channel to see transcriptions
-                  </p>
+              )}
+
+              {/* Conversation History */}
+              {transcriptHistory.length > 0 ? (
+                <div className="flex-1 overflow-y-auto space-y-3 min-h-0">
+                  {transcriptHistory.map((item) => (
+                    <div
+                      key={item.id}
+                      className={`flex ${item.type === 'ai' ? 'justify-end' : 'justify-start'}`}
+                    >
+                      <div
+                        className={`max-w-[80%] p-3 rounded-lg ${
+                          item.type === 'user'
+                            ? 'bg-primary/10 border border-primary/20'
+                            : 'bg-purple-500/10 border border-purple-500/20'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between mb-1 gap-2">
+                          <span className={`text-xs font-medium ${
+                            item.type === 'user' ? 'text-primary' : 'text-purple-400'
+                          }`}>
+                            {item.type === 'user' ? item.username : 'AI Assistant'}
+                          </span>
+                          <span className="text-xs text-muted-foreground whitespace-nowrap">
+                            {new Date(item.timestamp).toLocaleTimeString()}
+                          </span>
+                        </div>
+                        <p className="text-sm">{item.text}</p>
+                      </div>
+                    </div>
+                  ))}
                 </div>
+              ) : (
+                !activeSpeaker && (
+                  <div className="text-center py-12 text-muted-foreground flex-1">
+                    <p className="text-sm">Waiting for audio...</p>
+                    <p className="text-xs mt-1">
+                      Speak in the Discord voice channel to see transcriptions
+                    </p>
+                  </div>
+                )
               )}
             </CardContent>
           </Card>
