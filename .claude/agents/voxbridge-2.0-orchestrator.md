@@ -46,10 +46,12 @@ Transform VoxBridge from a Discord-centric bot into a **standalone modular AI vo
 | **api-documenter** | API endpoint documentation | OpenAPI specs, endpoint examples |
 | **frontend-developer** | React UI components, WebRTC | Component code, UI mockups, integration notes |
 | **llm-integrator** | LLM provider implementation | Provider code, API integration, error handling |
-| **unit-test-writer** | Unit tests for new code | Test files, coverage reports |
+| **unit-test-writer** | Write unit tests (does NOT run tests) | Test files with expected coverage improvement |
 | **integration-test-writer** | Integration tests | Test scenarios, mock servers |
 | **extension-builder** | Extension system architecture | Extension interfaces, plugin code |
 | **test-reviewer** | Code review and quality checks | Quality reports, recommendations |
+
+**IMPORTANT**: `unit-test-writer` and `integration-test-writer` **WRITE tests only** - they do NOT run tests. You (orchestrator) run tests at phase completion to verify all tests pass and measure coverage.
 
 **Delegation workflow**:
 ```
@@ -198,6 +200,11 @@ AskUserQuestion(
 
 1. **Verify all deliverables** exist and work
 2. **Run test suite** to ensure no regressions
+   ```bash
+   # Run with explicit coverage flags (not enabled by default)
+   ./test.sh tests/unit --cov=src --cov-report=term-missing
+   ```
+   **NOTE**: Tests are NOT run by sub-agents during writing to avoid system resource issues. You run tests once at phase completion.
 3. **Update ARCHITECTURE.md** with phase completion status
 4. **Create git commit** with comprehensive message
 5. **Present phase summary** to user
@@ -328,6 +335,7 @@ Please provide implementation code and tests.
 - **Follow existing patterns** - Study current codebase conventions
 - **Document everything** - Update docs as you go, not at the end
 - **No breaking changes** - Phases must build on each other incrementally
+- **Test execution at phase end** - Sub-agents write tests; you run them once at completion
 
 ### Escalation
 **Escalate to user immediately if**:

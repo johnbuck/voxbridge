@@ -6,17 +6,13 @@
 import { useState, useRef, useCallback } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/services/api';
-import type { Agent, AgentCreateRequest } from '@/services/api';
 import { useWebSocket } from '@/hooks/useWebSocket';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Button } from '@/components/ui/button';
 import { MetricsPanel } from '@/components/MetricsPanel';
 import { StatusSummary } from '@/components/StatusSummary';
 import { RuntimeSettings } from '@/components/RuntimeSettings';
-import { AgentCard } from '@/components/AgentCard';
-import { AgentForm } from '@/components/AgentForm';
 import { useToastHelpers } from '@/components/ui/toast';
-import { Copy, CircleCheckBig, Activity, XCircle, AlertCircle, Mic, Plus, Brain } from 'lucide-react';
+import { Copy, CircleCheckBig, Activity, XCircle, AlertCircle, Mic } from 'lucide-react';
 
 interface TranscriptItem {
   id: string;
@@ -39,10 +35,6 @@ export function VoxbridgePage() {
   const queryClient = useQueryClient();
   const toast = useToastHelpers();
 
-  // VoxBridge 2.0: Agent Management State
-  const [selectedAgent, setSelectedAgent] = useState<Agent | null>(null);
-  const [formOpen, setFormOpen] = useState(false);
-
   // Poll health status
   const { data: health } = useQuery({
     queryKey: ['health'],
@@ -55,13 +47,6 @@ export function VoxbridgePage() {
     queryKey: ['status'],
     queryFn: () => api.getStatus(),
     refetchInterval: 5000,
-  });
-
-  // VoxBridge 2.0: Fetch agents
-  const { data: agents = [], isLoading: isLoadingAgents } = useQuery({
-    queryKey: ['agents'],
-    queryFn: () => api.getAgents(),
-    refetchInterval: 10000, // Refresh every 10 seconds
   });
 
   // Fetch metrics
@@ -178,49 +163,6 @@ export function VoxbridgePage() {
     if (url.length <= maxLength) return url;
     const start = url.substring(0, maxLength - 3);
     return `${start}...`;
-  };
-
-  // VoxBridge 2.0: Agent CRUD Handlers
-  const handleCreateAgent = () => {
-    setSelectedAgent(null);
-    setFormOpen(true);
-  };
-
-  const handleEditAgent = (agent: Agent) => {
-    setSelectedAgent(agent);
-    setFormOpen(true);
-  };
-
-  const handleDeleteAgent = async (agent: Agent) => {
-    if (!confirm(`Delete agent "${agent.name}"? This cannot be undone.`)) {
-      return;
-    }
-
-    try {
-      await api.deleteAgent(agent.id);
-      queryClient.invalidateQueries({ queryKey: ['agents'] });
-      toast.success(`Agent "${agent.name}" deleted successfully`);
-    } catch (error) {
-      toast.error(`Failed to delete agent: ${error}`);
-    }
-  };
-
-  const handleSubmitAgent = async (agentData: AgentCreateRequest) => {
-    try {
-      if (selectedAgent) {
-        // Edit mode
-        await api.updateAgent(selectedAgent.id, agentData);
-        toast.success(`Agent "${agentData.name}" updated successfully`);
-      } else {
-        // Create mode
-        await api.createAgent(agentData);
-        toast.success(`Agent "${agentData.name}" created successfully`);
-      }
-      queryClient.invalidateQueries({ queryKey: ['agents'] });
-    } catch (error) {
-      toast.error(`Failed to save agent: ${error}`);
-      throw error; // Re-throw to keep form open
-    }
   };
 
   // Status helper functions for dynamic service status displays
@@ -592,56 +534,6 @@ export function VoxbridgePage() {
             )}
           </CardContent>
         </Card>
-
-        {/* VoxBridge 2.0: Agent Management Section */}
-        <Card>
-          <CardHeader>
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <Brain className="h-5 w-5 text-primary" />
-                <CardTitle>AI Agent Management</CardTitle>
-              </div>
-              <Button onClick={handleCreateAgent} size="sm" className="gap-2">
-                <Plus className="h-4 w-4" />
-                Create Agent
-              </Button>
-            </div>
-          </CardHeader>
-          <CardContent>
-            {isLoadingAgents ? (
-              <div className="text-center py-12 text-muted-foreground">
-                <p className="text-sm">Loading agents...</p>
-              </div>
-            ) : agents.length === 0 ? (
-              <div className="text-center py-12 text-muted-foreground">
-                <Brain className="h-12 w-12 mx-auto mb-4 opacity-50" />
-                <p className="text-sm">No agents configured yet</p>
-                <p className="text-xs mt-1">
-                  Create your first AI agent to get started
-                </p>
-              </div>
-            ) : (
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                {agents.map((agent) => (
-                  <AgentCard
-                    key={agent.id}
-                    agent={agent}
-                    onEdit={handleEditAgent}
-                    onDelete={handleDeleteAgent}
-                  />
-                ))}
-              </div>
-            )}
-          </CardContent>
-        </Card>
-
-        {/* Agent Form Dialog */}
-        <AgentForm
-          open={formOpen}
-          onOpenChange={setFormOpen}
-          agent={selectedAgent}
-          onSubmit={handleSubmitAgent}
-        />
       </div>
     </div>
   );

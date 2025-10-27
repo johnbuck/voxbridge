@@ -12,6 +12,7 @@ import { DiscordBotPage } from '@/pages/DiscordBotPage';
 import { WhisperXPage } from '@/pages/WhisperXPage';
 import { ChatterboxTTSPage } from '@/pages/ChatterboxTTSPage';
 import { VoiceChatPage } from '@/pages/VoiceChatPage';
+import { AgentsPage } from '@/pages/AgentsPage';
 import { ToastProvider } from '@/components/ui/toast';
 import '@/styles/globals.css';
 
@@ -39,6 +40,7 @@ function App() {
             <main className="flex-1">
               <Switch>
                 <Route path="/" component={VoxbridgePage} />
+                <Route path="/agents" component={AgentsPage} />
                 <Route path="/discord-bot" component={DiscordBotPage} />
                 <Route path="/whisperx" component={WhisperXPage} />
                 <Route path="/chatterbox-tts" component={ChatterboxTTSPage} />

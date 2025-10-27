@@ -4,6 +4,17 @@ services:
       context: .
       dockerfile: Dockerfile.test
     container_name: voxbridge-test
+
+    # Resource limits to prevent system lockup during coverage analysis
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'      # Max 2 CPU cores
+          memory: 4G        # Max 4GB RAM
+        reservations:
+          cpus: '0.5'       # Min 0.5 CPU cores
+          memory: 1G        # Min 1GB RAM
+
     volumes:
       # Mount source code for live updates during development
       - ./src:/app/src

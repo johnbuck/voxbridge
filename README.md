@@ -53,6 +53,32 @@ Real-time voice transcription service for Discord using WhisperX STT.
 - Other speakers ignored until current speaker finishes
 - Natural conversation flow
 
+### 🤖 AI Agent Management
+- Create and manage multiple AI agents with different personalities and LLM configurations
+- Dedicated web UI for agent CRUD operations
+- Real-time updates via WebSocket
+
+## VoxBridge 2.0: Multi-Agent Platform
+
+VoxBridge 2.0 transforms the Discord bot into a modular AI voice platform:
+
+### Phase 1: Core Infrastructure ✅ (Complete)
+- PostgreSQL database for agent storage
+- SQLAlchemy ORM models (agents, sessions, conversations)
+- Alembic migrations
+
+### Phase 2: Agent Management ✅ (Complete)
+- Full CRUD API for AI agents
+- Dedicated agent management UI (`/agents`)
+- Real-time updates via WebSocket
+- Support for multiple LLM providers (OpenRouter, Local)
+
+### Phase 3: LLM Provider Abstraction (Next)
+- Abstract provider interface
+- OpenRouter implementation
+- Local LLM support (Ollama-compatible)
+- Dynamic routing based on agent configuration
+
 ## Quick Start
 
 ### WhisperX Benefits

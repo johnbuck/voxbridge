@@ -16,6 +16,13 @@ For comprehensive architecture and patterns, see [AGENTS.md](./AGENTS.md).
 - ✅ Real-time WebSocket monitoring (`/ws/events`)
 - ✅ Dark mode with Chatterbox styling
 
+**Agent Management UI** (Phase 2):
+- ✅ Dedicated AgentsPage at `/agents` route
+- ✅ Agent CRUD operations (create, edit, delete)
+- ✅ Real-time updates via WebSocket
+- ✅ Agent cards with provider badges
+- ✅ Form validation for all agent fields
+
 **Backend API** (Port 4900):
 - ✅ All 11+ endpoints operational (voice, monitoring, config)
 - ✅ WebSocket real-time events
@@ -34,7 +41,7 @@ For comprehensive architecture and patterns, see [AGENTS.md](./AGENTS.md).
 
 **Branch**: `voxbridge-2.0`
 **Plan**: [docs/architecture/voxbridge-2.0-transformation-plan.md](docs/architecture/voxbridge-2.0-transformation-plan.md)
-**Status**: Phase 1 ✅ COMPLETE (Oct 26, 2025)
+**Status**: Phase 2 ✅ COMPLETE (Oct 27, 2025)
 
 **Phase 1: Core Infrastructure** ✅:
 - PostgreSQL 15 database for agents, sessions, conversations
@@ -42,7 +49,13 @@ For comprehensive architecture and patterns, see [AGENTS.md](./AGENTS.md).
 - Alembic migrations (async PostgreSQL)
 - Database seed script (3 example agents)
 
-**Upcoming**: Phase 2 (Agent Management API + UI), Phase 3 (LLM Providers), Phase 4 (WebRTC)
+**Phase 2: Agent Management System** ✅:
+- Full CRUD API for AI agents (`/api/agents`)
+- Dedicated AgentsPage at `/agents` route
+- Real-time WebSocket updates for agent changes
+- Support for multiple LLM providers (OpenRouter, Local)
+
+**Upcoming**: Phase 3 (LLM Provider Abstraction), Phase 4 (Session/Conversation Management), Phase 5 (WebRTC)
 
 ### 📚 Related Planning Documents
 
@@ -274,7 +287,7 @@ docker compose up -d
 ### Agent Management (VoxBridge 2.0)
 - **GET /api/agents** - List all AI agents
 - **GET /api/agents/{id}** - Get specific agent by UUID
-- **POST /api/agents** - Create new agent (`{name, system_prompt, temperature?, llm_provider?, llm_model?, tts_voice?, tts_rate?, tts_pitch?}`)
+- **POST /api/agents** - Create new agent (`{name, system_prompt, temperature?, llm_provider?, llm_model?, tts_voice?, tts_rate?, tts_pitch?, use_n8n?}`)
 - **PUT /api/agents/{id}** - Update agent (partial update, all fields optional)
 - **DELETE /api/agents/{id}** - Delete agent (cascades to sessions/conversations)
 
