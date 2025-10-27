@@ -1,95 +1,66 @@
 """
-LLM Provider Base Class
-
-Abstract base class for all LLM provider implementations.
+Abstract base class for LLM providers.
 """
 
 from abc import ABC, abstractmethod
-from typing import AsyncIterator, List, Optional
-
-from src.llm.types import LLMMessage, LLMResponse, LLMStreamChunk
+from typing import AsyncIterator, Optional
+from src.llm.types import LLMRequest
 
 
 class LLMProvider(ABC):
     """
     Abstract base class for LLM providers.
 
-    All providers must implement streaming generation with conversation history support.
+    All LLM providers must implement streaming generation and health checks.
     """
 
-    def __init__(self, model: str, api_key: Optional[str] = None, base_url: Optional[str] = None):
+    def __init__(self, api_key: Optional[str] = None, base_url: Optional[str] = None):
         """
-        Initialize provider.
+        Initialize LLM provider.
 
         Args:
-            model: Model identifier (e.g., "anthropic/claude-3.5-sonnet")
-            api_key: API key for authentication (optional)
-            base_url: Base URL for API (optional, for local LLMs)
+            api_key: API key for authentication (if required)
+            base_url: Base URL for API endpoint (for local/custom deployments)
         """
-        self.model = model
         self.api_key = api_key
         self.base_url = base_url
 
     @abstractmethod
-    async def generate_stream(
-        self,
-        messages: List[LLMMessage],
-        temperature: float = 0.7,
-        max_tokens: Optional[int] = None,
-    ) -> AsyncIterator[LLMStreamChunk]:
+    async def generate_stream(self, request: LLMRequest) -> AsyncIterator[str]:
         """
-        Generate streaming response.
+        Generate streaming response from LLM.
+
+        This method must yield text chunks as they arrive from the LLM without buffering.
+        Each chunk should be yielded immediately for low-latency streaming.
 
         Args:
-            messages: Conversation history (system + user messages)
-            temperature: Sampling temperature (0.0-1.0)
-            max_tokens: Maximum tokens to generate (optional)
+            request: LLMRequest with messages, temperature, model, etc.
 
         Yields:
-            LLMStreamChunk: Streamed response chunks
+            str: Text chunks as they arrive from LLM
 
         Raises:
-            LLMError: On provider errors
+            LLMTimeoutError: Request timeout (first token or inter-token)
+            LLMRateLimitError: Rate limit exceeded
+            LLMConnectionError: Network/connection error
+            LLMAuthenticationError: Authentication failure
+            LLMError: Other LLM errors
         """
         pass
 
-    async def generate(
-        self,
-        messages: List[LLMMessage],
-        temperature: float = 0.7,
-        max_tokens: Optional[int] = None,
-    ) -> LLMResponse:
+    @abstractmethod
+    async def health_check(self) -> bool:
         """
-        Generate complete response (non-streaming).
+        Check if provider is available and responding.
 
-        Default implementation collects streaming chunks.
-        Providers can override for efficiency.
-
-        Args:
-            messages: Conversation history
-            temperature: Sampling temperature
-            max_tokens: Maximum tokens to generate
+        This should be a lightweight check (e.g., GET /health or list models).
 
         Returns:
-            LLMResponse: Complete response
-
-        Raises:
-            LLMError: On provider errors
+            bool: True if provider is healthy, False otherwise
         """
-        content = ""
-        finish_reason = None
-        usage = None
+        pass
 
-        async for chunk in self.generate_stream(messages, temperature, max_tokens):
-            content += chunk.content
-            if chunk.finish_reason:
-                finish_reason = chunk.finish_reason
-            if chunk.usage:
-                usage = chunk.usage
-
-        return LLMResponse(
-            content=content,
-            usage=usage,
-            model=self.model,
-            finish_reason=finish_reason
-        )
+    @property
+    def provider_name(self) -> str:
+        """Return provider name (for logging)."""
+        return self.__class__.__name__.replace("Provider", "").lower()

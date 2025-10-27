@@ -30,7 +30,7 @@ from tenacity import (
 
 from src.whisper_client import WhisperClient
 from src.llm.factory import LLMProviderFactory
-from src.llm.types import LLMMessage, LLMStreamChunk, LLMError
+from src.llm.types import LLMMessage, LLMRequest, LLMError
 from src.services.agent_service import AgentService
 
 logger = logging.getLogger(__name__)
@@ -598,15 +598,22 @@ class SpeakerManager:
 
             logger.info(f"🤖 Using agent: {agent.name} (provider: {agent.llm_provider}, model: {agent.llm_model})")
 
-            # 2. Create LLM provider
-            provider = LLMProviderFactory.create_provider(agent)
+            # 2. Create LLM provider from agent config
+            provider, model = LLMProviderFactory.create_from_agent_config(
+                llm_provider=agent.llm_provider,
+                llm_model=agent.llm_model
+            )
 
-            # 3. Build conversation messages
+            # 3. Build conversation request
             # TODO Phase 4: Load conversation history from sessions/conversations tables
-            messages = [
-                LLMMessage(role="system", content=agent.system_prompt),
-                LLMMessage(role="user", content=transcript)
-            ]
+            request = LLMRequest(
+                messages=[
+                    LLMMessage(role="system", content=agent.system_prompt),
+                    LLMMessage(role="user", content=transcript)
+                ],
+                temperature=agent.temperature,
+                model=model
+            )
 
             logger.info(f"📤 Sending to LLM: \"{transcript}\"")
 
@@ -614,11 +621,7 @@ class SpeakerManager:
             first_chunk_received = False
             full_response = ""
 
-            async for chunk in provider.generate_stream(
-                messages=messages,
-                temperature=agent.temperature,
-                max_tokens=None  # Use provider default
-            ):
+            async for chunk in provider.generate_stream(request):
                 # Track first chunk latency
                 if not first_chunk_received:
                     t_first_chunk = time.time()
@@ -630,18 +633,15 @@ class SpeakerManager:
                     if self.metrics_tracker:
                         self.metrics_tracker.record_n8n_first_chunk_latency(first_chunk_latency_s)
 
-                # Accumulate response
-                full_response += chunk.content
+                # Accumulate response (chunks are plain strings)
+                full_response += chunk
 
                 # Pass chunk to streaming handler (if available and streaming enabled)
                 if self.use_streaming and self.streaming_handler:
-                    await self.streaming_handler.process_chunk(chunk.content)
+                    await self.streaming_handler.process_chunk(chunk)
 
-                # Check for finish
-                if chunk.finish_reason:
-                    logger.info(f"✅ LLM response complete (finish_reason: {chunk.finish_reason})")
-                    if chunk.usage:
-                        logger.info(f"📊 Token usage: {chunk.usage}")
+            # Close provider
+            await provider.close()
 
             # Record total AI generation latency
             t_llm_complete = time.time()
@@ -663,7 +663,9 @@ class SpeakerManager:
             # - Save assistant message (full_response) to conversations table
 
         except LLMError as e:
-            logger.error(f"❌ LLM Error: {e.message} (provider: {e.provider}, retryable: {e.retryable})")
+            logger.error(f"❌ LLM Error: {str(e)}")
+            # Fail gracefully - play error message via TTS
+            # TODO: Implement graceful error handling with TTS message
             raise  # Re-raise to allow retry decorator to work
         except Exception as e:
             logger.error(f"❌ Error handling LLM response: {e}")

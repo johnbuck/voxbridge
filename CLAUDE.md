@@ -55,7 +55,15 @@ For comprehensive architecture and patterns, see [AGENTS.md](./AGENTS.md).
 - Real-time WebSocket updates for agent changes
 - Support for multiple LLM providers (OpenRouter, Local)
 
-**Upcoming**: Phase 3 (LLM Provider Abstraction), Phase 4 (Session/Conversation Management), Phase 5 (WebRTC)
+**Phase 3: LLM Provider Abstraction** ✅:
+- Abstract LLM provider interface with streaming support
+- OpenRouter.ai provider (SSE streaming)
+- Local LLM provider (Ollama, vLLM, LM Studio)
+- LLM provider factory with agent configuration
+- Hybrid n8n mode (webhooks + direct LLM)
+- 90 unit tests with ~88% coverage
+
+**Upcoming**: Phase 4 (Web Voice Interface), Phase 5 (Core Refactor)
 
 ### 📚 Related Planning Documents
 
@@ -128,6 +136,14 @@ docker compose down && docker compose build --no-cache && docker compose up -d
 - **src/database/seed.py** (160 lines) - Example agent seeding script
 - **alembic/versions/001_initial_schema.py** - Initial database migration
 
+### LLM Providers (VoxBridge 2.0 Phase 3)
+- **src/llm/base.py** (66 lines) - Abstract LLMProvider class with generate_stream() and health_check()
+- **src/llm/types.py** (54 lines) - Pydantic models (LLMMessage, LLMRequest, LLMError, etc.)
+- **src/llm/openrouter.py** (262 lines) - OpenRouter.ai provider with SSE streaming
+- **src/llm/local_llm.py** (264 lines) - Local LLM provider (Ollama, vLLM, LM Studio)
+- **src/llm/factory.py** (110 lines) - LLM provider factory with agent configuration support
+- **src/llm/__init__.py** (25 lines) - Package exports
+
 ### Frontend
 - **frontend/src/App.tsx** - Main dashboard with real-time metrics
 - **frontend/src/components/** - UI components (MetricsCard, AudioVisualization, etc.)
@@ -142,12 +158,16 @@ docker compose down && docker compose build --no-cache && docker compose up -d
 - **requirements-test.txt** - Testing dependencies
 
 ### Testing
-- **tests/unit/** - Unit tests (43 total: 38 passing, 5 failing)
+- **tests/unit/** - Unit tests (133 total: 128 passing, 5 failing)
+- **tests/unit/test_llm_types.py** (350 lines, 21 tests) - LLM type validation tests
+- **tests/unit/test_llm_factory.py** (421 lines, 24 tests) - Factory pattern tests
+- **tests/unit/test_openrouter_provider.py** (772 lines, 21 tests) - OpenRouter provider tests
+- **tests/unit/test_local_llm_provider.py** (882 lines, 24 tests) - Local LLM provider tests
 - **tests/integration/** - Integration tests (mock servers)
 - **tests/e2e/** - End-to-end tests (real services)
 - **tests/mocks/** - Mock servers (WhisperX, n8n, Chatterbox, Discord)
 - **tests/fixtures/** - Test data (audio, transcripts, TTS samples)
-- **Coverage**: 88% (38/43 passing rate)
+- **Coverage**: ~88% overall, ~88% LLM module coverage
 
 ## Environment Variables
 

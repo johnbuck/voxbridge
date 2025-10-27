@@ -1,70 +1,53 @@
 """
-LLM Provider Type Definitions
-
-Common types used across LLM provider implementations.
+Type definitions for LLM provider abstraction layer.
 """
 
-from typing import Dict, List, Literal, Optional
-from dataclasses import dataclass
+from typing import List, Optional
+from pydantic import BaseModel, Field
 
 
-@dataclass
-class LLMMessage:
-    """
-    A single message in a conversation.
+class LLMMessage(BaseModel):
+    """A message in the conversation history."""
 
-    Attributes:
-        role: Message role (system, user, assistant)
-        content: Message text content
-    """
-    role: Literal["system", "user", "assistant"]
-    content: str
+    role: str = Field(..., description="Message role: 'system', 'user', or 'assistant'")
+    content: str = Field(..., description="Message content")
+
+    class Config:
+        frozen = True  # Immutable
 
 
-@dataclass
-class LLMStreamChunk:
-    """
-    A chunk of streamed LLM response.
+class LLMRequest(BaseModel):
+    """Request to generate LLM response."""
 
-    Attributes:
-        content: Text content of the chunk
-        finish_reason: Reason streaming finished (if applicable)
-        usage: Token usage information (if available)
-    """
-    content: str
-    finish_reason: Optional[str] = None
-    usage: Optional[Dict[str, int]] = None
+    messages: List[LLMMessage] = Field(..., description="Conversation history")
+    temperature: float = Field(default=0.7, ge=0.0, le=2.0, description="Sampling temperature")
+    model: str = Field(..., description="Model identifier")
+    max_tokens: Optional[int] = Field(default=None, ge=1, description="Maximum tokens to generate")
+
+    class Config:
+        frozen = True  # Immutable
 
 
-@dataclass
-class LLMResponse:
-    """
-    Complete LLM response (non-streaming).
-
-    Attributes:
-        content: Full response text
-        usage: Token usage statistics
-        model: Model used for generation
-        finish_reason: Why generation stopped
-    """
-    content: str
-    usage: Optional[Dict[str, int]] = None
-    model: Optional[str] = None
-    finish_reason: Optional[str] = None
-
-
-@dataclass
 class LLMError(Exception):
-    """
-    LLM provider error.
+    """Base exception for LLM provider errors."""
+    pass
 
-    Attributes:
-        message: Error message
-        provider: Provider name that raised the error
-        status_code: HTTP status code (if applicable)
-        retryable: Whether the error can be retried
-    """
-    message: str
-    provider: str
-    status_code: Optional[int] = None
-    retryable: bool = False
+
+class LLMTimeoutError(LLMError):
+    """LLM request timeout error."""
+    pass
+
+
+class LLMRateLimitError(LLMError):
+    """LLM rate limit exceeded error."""
+    pass
+
+
+class LLMConnectionError(LLMError):
+    """LLM connection/network error."""
+    pass
+
+
+class LLMAuthenticationError(LLMError):
+    """LLM authentication error (invalid API key)."""
+    pass

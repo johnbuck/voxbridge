@@ -1,80 +1,110 @@
 """
-LLM Provider Factory
+Factory for creating LLM provider instances.
 
-Creates appropriate LLM provider instances based on agent configuration.
+Supports dynamic provider selection based on configuration or runtime parameters.
 """
 
 import logging
 import os
 from typing import Optional
 
-from src.database.models import Agent
 from src.llm.base import LLMProvider
 from src.llm.openrouter import OpenRouterProvider
 from src.llm.local_llm import LocalLLMProvider
-from src.llm.types import LLMError
 
 logger = logging.getLogger(__name__)
 
 
 class LLMProviderFactory:
-    """Factory for creating LLM provider instances"""
+    """
+    Factory for creating LLM provider instances.
+
+    Supports:
+    - 'openrouter': OpenRouter.ai (requires OPENROUTER_API_KEY)
+    - 'local': Local OpenAI-compatible LLM (requires LOCAL_LLM_BASE_URL)
+    """
 
     @staticmethod
-    def create_provider(agent: Agent) -> LLMProvider:
+    def create_provider(
+        provider_name: str,
+        api_key: Optional[str] = None,
+        base_url: Optional[str] = None,
+    ) -> LLMProvider:
         """
-        Create appropriate LLM provider for an agent.
+        Create LLM provider instance.
 
         Args:
-            agent: Agent model with LLM configuration
+            provider_name: Provider name ('openrouter' or 'local')
+            api_key: API key (or None to read from environment)
+            base_url: Base URL (for local LLM or custom OpenRouter endpoint)
 
         Returns:
-            LLMProvider: Configured provider instance
+            LLMProvider: Initialized provider instance
 
         Raises:
-            LLMError: If provider cannot be created
+            ValueError: Invalid provider name or missing configuration
         """
-        provider_type = agent.llm_provider.lower()
+        provider_name = provider_name.lower().strip()
 
-        try:
-            if provider_type == "openrouter":
-                api_key = os.getenv("OPENROUTER_API_KEY")
-                if not api_key:
-                    raise LLMError(
-                        message="OPENROUTER_API_KEY not configured",
-                        provider="openrouter",
-                        retryable=False
-                    )
-
-                logger.info(f"🤖 Creating OpenRouter provider for model: {agent.llm_model}")
-                return OpenRouterProvider(
-                    model=agent.llm_model,
-                    api_key=api_key
+        if provider_name == "openrouter":
+            # Get API key from parameter or environment
+            api_key = api_key or os.getenv("OPENROUTER_API_KEY")
+            if not api_key:
+                raise ValueError(
+                    "OpenRouter API key not found. "
+                    "Set OPENROUTER_API_KEY environment variable or pass api_key parameter."
                 )
 
-            elif provider_type == "local":
-                base_url = os.getenv("LOCAL_LLM_BASE_URL", "http://localhost:11434/v1")
-                api_key = os.getenv("LOCAL_LLM_API_KEY")  # Optional for local
+            logger.info("🤖 LLM Factory: Creating OpenRouter provider")
+            return OpenRouterProvider(api_key=api_key, base_url=base_url)
 
-                logger.info(f"🏠 Creating Local LLM provider for model: {agent.llm_model} at {base_url}")
-                return LocalLLMProvider(
-                    model=agent.llm_model,
-                    base_url=base_url,
-                    api_key=api_key
+        elif provider_name == "local":
+            # Get base URL from parameter or environment
+            base_url = base_url or os.getenv("LOCAL_LLM_BASE_URL")
+            if not base_url:
+                # Default to Ollama's standard endpoint
+                base_url = "http://localhost:11434/v1"
+                logger.warning(
+                    f"🤖 LLM Factory: LOCAL_LLM_BASE_URL not set, using default: {base_url}"
                 )
 
-            else:
-                raise LLMError(
-                    message=f"Unknown LLM provider: {provider_type}. Supported: openrouter, local",
-                    provider=provider_type,
-                    retryable=False
-                )
+            logger.info(f"🤖 LLM Factory: Creating Local LLM provider (base_url={base_url})")
+            return LocalLLMProvider(base_url=base_url, api_key=api_key)
 
-        except Exception as e:
-            if isinstance(e, LLMError):
-                raise
-            raise LLMError(
-                message=f"Failed to create LLM provider: {e}",
-                provider=provider_type,
-                retryable=False
+        else:
+            raise ValueError(
+                f"Unknown LLM provider: '{provider_name}'. "
+                f"Supported providers: 'openrouter', 'local'"
             )
+
+    @staticmethod
+    def create_from_agent_config(
+        llm_provider: str,
+        llm_model: str,
+        api_key: Optional[str] = None,
+        base_url: Optional[str] = None,
+    ) -> tuple[LLMProvider, str]:
+        """
+        Create provider from agent configuration.
+
+        This is a convenience method for creating providers from database agent records.
+
+        Args:
+            llm_provider: Provider name from agent.llm_provider
+            llm_model: Model name from agent.llm_model
+            api_key: Optional API key override
+            base_url: Optional base URL override
+
+        Returns:
+            tuple: (LLMProvider instance, model name)
+
+        Raises:
+            ValueError: Invalid configuration
+        """
+        provider = LLMProviderFactory.create_provider(
+            provider_name=llm_provider,
+            api_key=api_key,
+            base_url=base_url,
+        )
+
+        return provider, llm_model
