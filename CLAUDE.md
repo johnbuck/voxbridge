@@ -35,13 +35,13 @@ For comprehensive architecture and patterns, see [AGENTS.md](./AGENTS.md).
 - ✅ E2E latency benchmark framework
 - ✅ TTS error handling with retry logic
 
-**Testing**: 43 tests (38 passing), 88% coverage
+**Testing**: 71 tests (66 passing), 88% coverage - includes 28 WebRTC tests (Phase 4)
 
 ### 🟢 VoxBridge 2.0 - In Progress (Oct-Nov 2025)
 
 **Branch**: `voxbridge-2.0`
 **Plan**: [docs/architecture/voxbridge-2.0-transformation-plan.md](docs/architecture/voxbridge-2.0-transformation-plan.md)
-**Status**: Phase 2 ✅ COMPLETE (Oct 27, 2025)
+**Status**: Phase 4 ✅ COMPLETE (Oct 27, 2025)
 
 **Phase 1: Core Infrastructure** ✅:
 - PostgreSQL 15 database for agents, sessions, conversations
@@ -63,7 +63,16 @@ For comprehensive architecture and patterns, see [AGENTS.md](./AGENTS.md).
 - Hybrid n8n mode (webhooks + direct LLM)
 - 90 unit tests with ~88% coverage
 
-**Upcoming**: Phase 4 (Web Voice Interface), Phase 5 (Core Refactor)
+**Phase 4: Web Voice Interface** ✅:
+- Backend WebSocket handler (`/ws/voice` endpoint)
+- Opus audio decoding, WhisperX integration
+- LLM provider routing (OpenRouter/Local/n8n)
+- Frontend WebRTC hook (useWebRTCAudio)
+- Audio capture UI (AudioControls component)
+- Real-time transcription + AI response display
+- 28 unit tests (all passing)
+
+**Upcoming**: Phase 5 (Core Refactor), Phase 6 (Extension System)
 
 ### 📚 Related Planning Documents
 
@@ -124,11 +133,15 @@ docker compose down && docker compose build --no-cache && docker compose up -d
 ## Key Files
 
 ### Core Implementation
-- **src/discord_bot.py** (1200+ lines) - Main bot, FastAPI server, metrics tracking
+- **src/discord_bot.py** (1200+ lines) - Main bot, FastAPI server, metrics tracking, `/ws/voice` endpoint
 - **src/speaker_manager.py** (800+ lines) - Speaker lock, STT→n8n, thinking indicator
 - **src/streaming_handler.py** (700+ lines) - Streaming AI responses, TTS playback
 - **src/whisper_client.py** (350+ lines) - WhisperX WebSocket client
 - **src/whisper_server.py** (400+ lines) - WhisperX server (GPU-accelerated)
+
+### Voice Module (Phase 4)
+- **src/voice/webrtc_handler.py** (456 lines) - WebSocket audio handler, Opus decoding, WhisperX integration, LLM routing
+- **src/voice/__init__.py** (7 lines) - Module initialization
 
 ### Database (VoxBridge 2.0)
 - **src/database/models.py** (170 lines) - SQLAlchemy ORM models (Agent, Session, Conversation)
@@ -147,6 +160,12 @@ docker compose down && docker compose build --no-cache && docker compose up -d
 ### Frontend
 - **frontend/src/App.tsx** - Main dashboard with real-time metrics
 - **frontend/src/components/** - UI components (MetricsCard, AudioVisualization, etc.)
+- **frontend/src/pages/VoiceChatPage.tsx** - WebRTC voice chat page with real-time transcription
+
+### Frontend WebRTC (Phase 4)
+- **frontend/src/hooks/useWebRTCAudio.ts** (344 lines) - Microphone capture, Opus encoding, WebSocket streaming
+- **frontend/src/components/AudioControls.tsx** (100 lines) - Mic button, connection status, pulse animation
+- **frontend/src/types/webrtc.ts** (80 lines) - TypeScript interfaces for WebRTC
 
 ### Configuration
 - **docker-compose.yml** - Main orchestration (4 containers: postgres + whisperx + discord + frontend)
@@ -158,11 +177,12 @@ docker compose down && docker compose build --no-cache && docker compose up -d
 - **requirements-test.txt** - Testing dependencies
 
 ### Testing
-- **tests/unit/** - Unit tests (133 total: 128 passing, 5 failing)
+- **tests/unit/** - Unit tests (161 total: 156 passing, 5 failing)
 - **tests/unit/test_llm_types.py** (350 lines, 21 tests) - LLM type validation tests
 - **tests/unit/test_llm_factory.py** (421 lines, 24 tests) - Factory pattern tests
 - **tests/unit/test_openrouter_provider.py** (772 lines, 21 tests) - OpenRouter provider tests
 - **tests/unit/test_local_llm_provider.py** (882 lines, 24 tests) - Local LLM provider tests
+- **tests/unit/test_webrtc_handler.py** (900 lines, 28 tests) - WebRTC handler tests (Phase 4)
 - **tests/integration/** - Integration tests (mock servers)
 - **tests/e2e/** - End-to-end tests (real services)
 - **tests/mocks/** - Mock servers (WhisperX, n8n, Chatterbox, Discord)
@@ -317,6 +337,9 @@ docker compose up -d
 - **GET /metrics** - Performance metrics (latency, durations, samples)
 - **GET /api/channels** - Available Discord channels
 - **WS /ws** - WebSocket for real-time events
+
+### WebRTC Voice (Phase 4)
+- **WS /ws/voice** - WebSocket for browser voice chat (Opus/WebM audio streaming)
 
 ## Code Style
 

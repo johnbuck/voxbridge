@@ -4,16 +4,18 @@
  * VoxBridge 2.0 Phase 4: Web Voice Interface
  */
 
-import { useState, useCallback, useEffect } from 'react';
-import { useQuery } from '@tanstack/react-query';
-import { api } from '@/services/api';
+import { useState, useCallback, useEffect, useRef } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { api, type Message } from '@/services/api';
 import { ConversationList } from '@/components/ConversationList';
 import { NewConversationDialog } from '@/components/NewConversationDialog';
+import { AudioControls } from '@/components/AudioControls';
 import { useToastHelpers } from '@/components/ui/toast';
+import { useWebRTCAudio, type WebRTCAudioMessage } from '@/hooks/useWebRTCAudio';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { Menu, Mic, MicOff, Volume2, VolumeX, MessageSquare, Brain } from 'lucide-react';
+import { Menu, Volume2, VolumeX, MessageSquare, Brain, AlertCircle } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 const USER_ID = 'web_user_default'; // Hardcoded until auth is implemented
@@ -22,10 +24,12 @@ export function VoiceChatPage() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [newConversationDialogOpen, setNewConversationDialogOpen] = useState(false);
-  const [isMicActive, setIsMicActive] = useState(false);
   const [isSpeakerMuted, setIsSpeakerMuted] = useState(false);
+  const [partialTranscript, setPartialTranscript] = useState<string>('');
 
   const toast = useToastHelpers();
+  const queryClient = useQueryClient();
+  const scrollAreaRef = useRef<HTMLDivElement>(null);
 
   // Fetch sessions
   const { data: sessions = [], isLoading: isLoadingSessions, refetch: refetchSessions } = useQuery({
@@ -60,6 +64,117 @@ export function VoiceChatPage() {
       setActiveSessionId(sessions[0].id);
     }
   }, [sessions, activeSessionId]);
+
+  // Handle WebRTC audio messages
+  const handleAudioMessage = useCallback(
+    async (message: WebRTCAudioMessage) => {
+      if (!activeSessionId) return;
+
+      switch (message.event) {
+        case 'partial_transcript':
+          // Update partial transcript (live transcription)
+          setPartialTranscript(message.data.text);
+          break;
+
+        case 'final_transcript':
+          // Save user message to database
+          try {
+            await api.addMessage(activeSessionId, {
+              role: 'user',
+              content: message.data.text,
+            });
+
+            // Clear partial transcript
+            setPartialTranscript('');
+
+            // Invalidate messages query to refetch
+            queryClient.invalidateQueries({ queryKey: ['messages', activeSessionId] });
+          } catch (error) {
+            console.error('[VoiceChat] Failed to save user message:', error);
+            toast.error('Failed to save message', error instanceof Error ? error.message : 'Unknown error');
+          }
+          break;
+
+        case 'ai_response_chunk':
+          // Stream AI response (update last message in real-time)
+          queryClient.setQueryData(['messages', activeSessionId], (oldData: Message[] | undefined) => {
+            if (!oldData) return oldData;
+
+            const lastMessage = oldData[oldData.length - 1];
+            if (lastMessage && lastMessage.role === 'assistant') {
+              // Append to existing assistant message
+              return [
+                ...oldData.slice(0, -1),
+                {
+                  ...lastMessage,
+                  content: lastMessage.content + message.data.text,
+                },
+              ];
+            } else {
+              // Create new assistant message
+              return [
+                ...oldData,
+                {
+                  id: Date.now(), // Temporary ID
+                  session_id: activeSessionId,
+                  role: 'assistant',
+                  content: message.data.text,
+                  timestamp: new Date().toISOString(),
+                  audio_duration_ms: null,
+                  tts_duration_ms: null,
+                  llm_latency_ms: null,
+                  total_latency_ms: null,
+                },
+              ];
+            }
+          });
+          break;
+
+        case 'ai_response_complete':
+          // Save final AI message to database
+          try {
+            await api.addMessage(activeSessionId, {
+              role: 'assistant',
+              content: message.data.text,
+            });
+
+            // Invalidate messages query to refetch (get proper ID from backend)
+            queryClient.invalidateQueries({ queryKey: ['messages', activeSessionId] });
+          } catch (error) {
+            console.error('[VoiceChat] Failed to save AI message:', error);
+            toast.error('Failed to save AI response', error instanceof Error ? error.message : 'Unknown error');
+          }
+          break;
+
+        default:
+          console.warn('[VoiceChat] Unknown message event:', message.event);
+      }
+    },
+    [activeSessionId, queryClient, toast]
+  );
+
+  // Handle WebRTC errors
+  const handleAudioError = useCallback(
+    (error: string) => {
+      toast.error('Audio Error', error);
+    },
+    [toast]
+  );
+
+  // WebRTC Audio Hook
+  const {
+    isMuted,
+    toggleMute,
+    connectionState,
+    permissionError,
+    isRecording,
+  } = useWebRTCAudio({
+    sessionId: activeSessionId,
+    onMessage: handleAudioMessage,
+    onError: handleAudioError,
+    autoStart: false, // User must click to start
+    timeslice: 100, // 100ms chunks
+  });
 
   // Handle create conversation
   const handleCreateConversation = useCallback(
@@ -170,16 +285,15 @@ export function VoiceChatPage() {
             )}
           </div>
 
-          {/* Voice Controls (Placeholder) */}
+          {/* Voice Controls */}
           <div className="flex items-center gap-2">
-            <Button
-              variant={isMicActive ? 'default' : 'outline'}
-              size="icon"
-              onClick={() => setIsMicActive(!isMicActive)}
-              title={isMicActive ? 'Mute microphone' : 'Unmute microphone'}
-            >
-              {isMicActive ? <Mic className="h-4 w-4" /> : <MicOff className="h-4 w-4" />}
-            </Button>
+            <AudioControls
+              isMuted={isMuted}
+              onToggleMute={toggleMute}
+              connectionState={connectionState}
+              permissionError={permissionError}
+              isRecording={isRecording}
+            />
             <Button
               variant={isSpeakerMuted ? 'outline' : 'default'}
               size="icon"
@@ -205,89 +319,110 @@ export function VoiceChatPage() {
               </div>
             </div>
           ) : (
-            <ScrollArea className="h-full">
+            <ScrollArea className="h-full" ref={scrollAreaRef}>
               <div className="max-w-4xl mx-auto p-6 space-y-4">
                 {isLoadingMessages ? (
                   <div className="text-center py-12 text-muted-foreground">
                     <p className="text-sm">Loading messages...</p>
                   </div>
-                ) : messages.length === 0 ? (
+                ) : messages.length === 0 && !partialTranscript ? (
                   <div className="text-center py-12 text-muted-foreground">
                     <MessageSquare className="h-12 w-12 mx-auto mb-3 opacity-50" />
                     <p className="text-sm">No messages yet</p>
                     <p className="text-xs mt-1">Start speaking to begin the conversation</p>
                   </div>
                 ) : (
-                  messages.map((message) => (
-                    <div
-                      key={message.id}
-                      className={cn(
-                        'flex',
-                        message.role === 'user' ? 'justify-start' : 'justify-end'
-                      )}
-                    >
+                  <>
+                    {messages.map((message) => (
                       <div
+                        key={message.id}
                         className={cn(
-                          'max-w-[80%] p-4 rounded-lg',
-                          message.role === 'user'
-                            ? 'bg-primary/10 border border-primary/20'
-                            : 'bg-purple-500/10 border border-purple-500/20'
+                          'flex',
+                          message.role === 'user' ? 'justify-start' : 'justify-end'
                         )}
                       >
-                        <div className="flex items-center justify-between mb-2 gap-3">
-                          <span
-                            className={cn(
-                              'text-xs font-medium',
-                              message.role === 'user' ? 'text-primary' : 'text-purple-400'
-                            )}
-                          >
-                            {message.role === 'user' ? 'You' : activeAgent?.name || 'AI Assistant'}
-                          </span>
-                          <span className="text-xs text-muted-foreground whitespace-nowrap">
-                            {formatTimestamp(message.timestamp)}
-                          </span>
-                        </div>
-                        <p className="text-sm whitespace-pre-wrap leading-relaxed">
-                          {message.content}
-                        </p>
-
-                        {/* Latency info (if available) */}
-                        {(message.llm_latency_ms || message.tts_duration_ms || message.total_latency_ms) && (
-                          <div className="mt-2 pt-2 border-t border-border/50 flex flex-wrap gap-3 text-xs text-muted-foreground">
-                            {message.llm_latency_ms && (
-                              <span>LLM: {message.llm_latency_ms}ms</span>
-                            )}
-                            {message.tts_duration_ms && (
-                              <span>TTS: {message.tts_duration_ms}ms</span>
-                            )}
-                            {message.total_latency_ms && (
-                              <span>Total: {message.total_latency_ms}ms</span>
-                            )}
+                        <div
+                          className={cn(
+                            'max-w-[80%] p-4 rounded-lg',
+                            message.role === 'user'
+                              ? 'bg-primary/10 border border-primary/20'
+                              : 'bg-purple-500/10 border border-purple-500/20'
+                          )}
+                        >
+                          <div className="flex items-center justify-between mb-2 gap-3">
+                            <span
+                              className={cn(
+                                'text-xs font-medium',
+                                message.role === 'user' ? 'text-primary' : 'text-purple-400'
+                              )}
+                            >
+                              {message.role === 'user' ? 'You' : activeAgent?.name || 'AI Assistant'}
+                            </span>
+                            <span className="text-xs text-muted-foreground whitespace-nowrap">
+                              {formatTimestamp(message.timestamp)}
+                            </span>
                           </div>
-                        )}
+                          <p className="text-sm whitespace-pre-wrap leading-relaxed">
+                            {message.content}
+                          </p>
+
+                          {/* Latency info (if available) */}
+                          {(message.llm_latency_ms || message.tts_duration_ms || message.total_latency_ms) && (
+                            <div className="mt-2 pt-2 border-t border-border/50 flex flex-wrap gap-3 text-xs text-muted-foreground">
+                              {message.llm_latency_ms && (
+                                <span>LLM: {message.llm_latency_ms}ms</span>
+                              )}
+                              {message.tts_duration_ms && (
+                                <span>TTS: {message.tts_duration_ms}ms</span>
+                              )}
+                              {message.total_latency_ms && (
+                                <span>Total: {message.total_latency_ms}ms</span>
+                              )}
+                            </div>
+                          )}
+                        </div>
                       </div>
-                    </div>
-                  ))
+                    ))}
+
+                    {/* Partial Transcript (Live Transcription) */}
+                    {partialTranscript && (
+                      <div className="flex justify-start">
+                        <div className="max-w-[80%] p-4 rounded-lg bg-primary/5 border border-primary/10">
+                          <div className="flex items-center mb-2 gap-2">
+                            <span className="text-xs font-medium text-primary">You</span>
+                            <span className="text-xs text-muted-foreground italic">(speaking...)</span>
+                          </div>
+                          <p className="text-sm text-muted-foreground whitespace-pre-wrap leading-relaxed">
+                            {partialTranscript}
+                          </p>
+                        </div>
+                      </div>
+                    )}
+                  </>
                 )}
               </div>
             </ScrollArea>
           )}
         </div>
 
-        {/* Voice Input Area (Placeholder) */}
-        <div className="border-t border-border p-4">
-          <Card>
-            <CardContent className="p-6">
-              <div className="text-center text-muted-foreground">
-                <Mic className="h-8 w-8 mx-auto mb-2 opacity-50" />
-                <p className="text-sm font-medium mb-1">Voice Controls Coming Soon</p>
-                <p className="text-xs">
-                  WebRTC voice capture and playback will be implemented in Phase 4
-                </p>
-              </div>
-            </CardContent>
-          </Card>
-        </div>
+        {/* Voice Input Status */}
+        {permissionError && (
+          <div className="border-t border-border p-4">
+            <Card className="border-red-500/20 bg-red-500/5">
+              <CardContent className="p-4">
+                <div className="flex items-start gap-3">
+                  <AlertCircle className="h-5 w-5 text-red-500 flex-shrink-0 mt-0.5" />
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium text-red-500 mb-1">Microphone Permission Required</p>
+                    <p className="text-xs text-muted-foreground">
+                      {permissionError}
+                    </p>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+        )}
       </div>
 
       {/* New Conversation Dialog */}

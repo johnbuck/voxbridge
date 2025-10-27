@@ -1081,6 +1081,73 @@ async def websocket_endpoint(websocket: WebSocket):
     finally:
         ws_manager.disconnect(websocket)
 
+@app.websocket("/ws/voice")
+async def websocket_voice_endpoint(websocket: WebSocket):
+    """
+    WebSocket endpoint for browser voice streaming (VoxBridge 2.0 Phase 4)
+
+    Protocol:
+    - Client Query Params: ?session_id={uuid}&user_id={string}
+    - Client → Server: Binary audio chunks (Opus, 100ms intervals)
+    - Server → Client: JSON events
+
+    Events emitted:
+    - partial_transcript: Real-time transcription updates
+    - final_transcript: Complete transcription
+    - ai_response_chunk: AI response text chunks
+    - ai_response_complete: AI response completion
+    - error: Error messages
+    """
+    from src.voice.webrtc_handler import WebRTCVoiceHandler
+    from uuid import UUID
+
+    try:
+        # Accept connection
+        await websocket.accept()
+        logger.info("🔌 WebSocket voice connection request received")
+
+        # Parse query parameters
+        query_params = websocket.query_params
+        session_id_str = query_params.get('session_id')
+        user_id = query_params.get('user_id')
+
+        if not session_id_str or not user_id:
+            await websocket.send_json({
+                "event": "error",
+                "data": {"message": "Missing session_id or user_id query parameters"}
+            })
+            await websocket.close()
+            return
+
+        # Parse UUID
+        try:
+            session_id = UUID(session_id_str)
+        except ValueError:
+            await websocket.send_json({
+                "event": "error",
+                "data": {"message": "Invalid session_id format (must be UUID)"}
+            })
+            await websocket.close()
+            return
+
+        logger.info(f"✅ WebSocket voice connection established: user={user_id}, session={session_id}")
+
+        # Create handler and start processing
+        handler = WebRTCVoiceHandler(websocket, user_id, session_id)
+        await handler.start()
+
+    except WebSocketDisconnect:
+        logger.info("🔌 WebSocket voice connection closed")
+    except Exception as e:
+        logger.error(f"❌ WebSocket voice error: {e}", exc_info=True)
+        try:
+            await websocket.send_json({
+                "event": "error",
+                "data": {"message": f"Server error: {str(e)}"}
+            })
+        except:
+            pass
+
 # Helper functions to broadcast events from other parts of the code
 async def broadcast_speaker_started(user_id: str, username: str):
     """Broadcast when a user starts speaking"""
@@ -1178,6 +1245,8 @@ async def start_api():
     logger.info(f"   POST /voice/speak - Speak text via TTS")
     logger.info(f"   GET  /health - Health check")
     logger.info(f"   GET  /status - Detailed status")
+    logger.info(f"   WS   /ws/events - Real-time event stream (Discord)")
+    logger.info(f"   WS   /ws/voice - Browser voice streaming (Phase 4)")
     logger.info("=" * 60)
 
     await server.serve()
