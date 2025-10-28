@@ -35,9 +35,13 @@ For more details, see:
 from src.plugins.base import PluginBase
 from src.plugins.registry import PluginRegistry, plugin, discover_plugins
 
+# Import plugins to trigger auto-registration
+from src.plugins.discord_plugin import DiscordPlugin
+
 __all__ = [
     "PluginBase",
     "PluginRegistry",
     "plugin",
     "discover_plugins",
+    "DiscordPlugin",
 ]
