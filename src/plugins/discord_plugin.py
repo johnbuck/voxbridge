@@ -1,18 +1,28 @@
 """
-Discord Bot Plugin - Phase 1: Service Layer Foundation
+Discord Bot Plugin - Phase 2: Complete Audio Pipeline Migration
 
-Phase 1 Changes (2025-10-28):
-- Added service layer dependencies (ConversationService, STTService, LLMService, TTSService)
-- Added session tracking infrastructure (active_sessions, session_timings)
-- Integrated MetricsTracker for performance monitoring
-- Enhanced cleanup in stop() method
-- Added stub methods for Phase 2 audio pipeline
-- Service initialization after agent binding in initialize()
+Phase 2 Changes (2025-10-28):
+- Migrated AudioReceiver class from discord_bot.py (lines 427-542)
+- Migrated _handle_user_speaking() from on_user_speaking_start (lines 548-710)
+- Migrated _on_transcript() callback (lines 650-710)
+- Migrated _generate_response() from generate_and_play_response (lines 711-896)
+- Migrated _play_tts() from synthesize_and_play_discord (lines 898-989)
+- Completed _cleanup_session() implementation (lines 1006-1038)
+- Updated on_voice_state_update() to register audio receiver
+- Updated on_response() hook to play TTS
+
+Integration Points (Phase 1):
+- Uses ConversationService for session/conversation management
+- Uses STTService for speech-to-text transcription
+- Uses LLMService for AI response generation with hybrid routing
+- Uses TTSService for text-to-speech synthesis
+- Uses MetricsTracker for latency monitoring
+- Uses agent configuration for LLM/TTS settings
 
 Remaining Phases:
-- Phase 2: Audio Pipeline Integration (STT callbacks, TTS playback)
-- Phase 3: Session Management (user → session mapping)
-- Phase 4: Voice State Integration (Discord voice events → audio pipeline)
+- Phase 3: API Endpoints (expose voice operations to HTTP API)
+- Phase 4: Multi-Agent Support (agent selection, routing)
+- Phase 5: Cleanup discord_bot.py (remove migrated code)
 
 Integrates Discord voice bot functionality as a VoxBridge plugin.
 Each agent can have its own Discord bot with unique token.
@@ -48,23 +58,22 @@ Usage:
     # 2. Initialize DiscordPlugin with agent and config
     # 3. Start the bot (connect to Discord)
     # 4. Handle voice connections and events
-
-Note:
-    This is a Phase 6.4 implementation demonstrating the plugin pattern.
-    Full Discord functionality migration is planned for future phases.
 """
 
 import asyncio
 import logging
+import os
 import statistics
+import tempfile
 import time
+import uuid
 from collections import deque
 from threading import Lock
-from typing import Dict, Any, Optional, List
-from uuid import UUID
+from typing import Dict, Any, Optional, List, AsyncGenerator
 
 import discord
-from discord.ext import commands
+from discord.ext import commands, voice_recv
+import httpx
 
 from src.plugins.base import PluginBase
 from src.plugins.registry import plugin
@@ -72,8 +81,11 @@ from src.plugins.registry import plugin
 # Phase 1: Import service layer dependencies
 from src.services.conversation_service import ConversationService
 from src.services.stt_service import get_stt_service
-from src.services.llm_service import get_llm_service
+from src.services.llm_service import get_llm_service, LLMConfig, ProviderType
 from src.services.tts_service import get_tts_service
+
+# LLM exceptions for error handling
+from src.llm import LLMError, LLMConnectionError, LLMTimeoutError
 
 logger = logging.getLogger(__name__)
 
@@ -348,12 +360,19 @@ class DiscordPlugin(PluginBase):
     Each instance manages one Discord bot with its own token and connections.
     Multiple agents can have separate Discord bots running concurrently.
 
+    Phase 2 Integration (Complete Audio Pipeline):
+    - AudioReceiver class for receiving Discord voice audio
+    - _handle_user_speaking() for processing audio streams
+    - _on_transcript() callback for STT transcriptions
+    - _generate_response() for LLM response generation
+    - _play_tts() for Discord voice playback
+    - _cleanup_session() for session cleanup
+
     Phase 1 Integration (Service Layer Foundation):
     - Service layer dependencies initialized after agent binding
     - Session tracking infrastructure for user → session mapping
     - MetricsTracker for performance monitoring
     - Cleanup enhanced in stop() method
-    - Stub methods prepared for Phase 2 audio pipeline
     """
 
     plugin_type = "discord"
@@ -373,7 +392,7 @@ class DiscordPlugin(PluginBase):
 
         # Agent reference
         self.agent = None
-        self.agent_id: Optional[UUID] = None
+        self.agent_id: Optional[uuid.UUID] = None
         self.agent_name: Optional[str] = None
 
         # Connection state
@@ -396,7 +415,154 @@ class DiscordPlugin(PluginBase):
         # Phase 1: Metrics tracker for performance monitoring
         self.metrics = MetricsTracker()
 
+        # Phase 2: Audio receiver instances (one per voice client)
+        self.audio_receivers: Dict[int, 'AudioReceiver'] = {}  # guild_id → AudioReceiver
+
         logger.info("🤖 DiscordPlugin instance created")
+
+    # ============================================================
+    # PHASE 2: AUDIO RECEIVER CLASS (Migrated from discord_bot.py)
+    # ============================================================
+
+    class AudioReceiver(voice_recv.AudioSink):
+        """
+        Custom audio sink to receive voice data from Discord and route to STTService.
+
+        Phase 2: Nested class inside DiscordPlugin for per-plugin audio handling.
+
+        Original source: discord_bot.py lines 427-542
+        """
+
+        def __init__(self, plugin: 'DiscordPlugin', voice_client: discord.VoiceClient):
+            """
+            Initialize audio receiver.
+
+            Args:
+                plugin: Parent DiscordPlugin instance
+                voice_client: Discord voice client connection
+            """
+            super().__init__()
+            self.plugin = plugin  # Reference to parent plugin (Phase 2 integration)
+            self.vc = voice_client  # Use 'vc' to avoid conflict with parent class property
+            self.user_buffers: Dict[str, asyncio.Queue] = {}  # user_id → audio chunk queue
+            self.user_tasks: Dict[str, asyncio.Task] = {}    # user_id → processing task
+            self.active_users = set()  # Users currently being processed
+
+        def write(self, user, data: voice_recv.VoiceData):
+            """
+            Receive audio data from Discord.
+
+            Phase 2: Uses plugin.bot.loop instead of global bot.loop
+
+            Args:
+                user: Discord user sending audio
+                data: VoiceData object containing Opus packet
+            """
+            if not user:
+                return
+
+            user_id = str(user.id)
+            username = user.name if hasattr(user, 'name') else str(user.id)
+
+            # Extract Opus audio bytes from VoiceData object
+            opus_packet = data.opus
+
+            if not opus_packet:
+                return
+
+            # Create buffer for this user if not exists
+            if user_id not in self.user_buffers:
+                logger.info(f"📥 New audio stream from user {user_id} ({username})")
+                # Bounded queue prevents memory issues - 100 packets @ 20ms = 2 seconds of audio
+                max_queue_size = int(os.getenv('DISCORD_AUDIO_QUEUE_SIZE', '100'))
+                self.user_buffers[user_id] = asyncio.Queue(maxsize=max_queue_size)
+
+                # Create async generator for this user's audio stream
+                async def audio_stream_generator(uid):
+                    """Generate audio chunks from queue"""
+                    queue = self.user_buffers[uid]
+                    try:
+                        while True:
+                            chunk = await queue.get()
+                            if chunk is None:  # Sentinel value to stop
+                                break
+                            yield chunk
+                    except Exception as e:
+                        logger.error(f"❌ Error in audio stream generator for {uid}: {e}")
+
+                # Start processing this user's audio
+                if user_id not in self.active_users:
+                    self.active_users.add(user_id)
+                    stream_gen = audio_stream_generator(user_id)
+
+                    # Phase 2: Use plugin's bot loop and _handle_user_speaking method
+                    future = asyncio.run_coroutine_threadsafe(
+                        self.plugin._handle_user_speaking(user, stream_gen, self.vc),
+                        self.plugin.bot.loop
+                    )
+                    self.user_tasks[user_id] = future
+
+            # Add Opus packet to user's queue
+            try:
+                self.user_buffers[user_id].put_nowait(opus_packet)
+            except asyncio.QueueFull:
+                logger.warning(f"⚠️ Audio buffer full for user {user_id}, dropping packet")
+
+        def wants_opus(self) -> bool:
+            """Return True to receive Opus packets (not decoded PCM)"""
+            return True
+
+        def cleanup_user(self, user_id: str):
+            """
+            Cleanup a specific user's audio stream.
+
+            Args:
+                user_id: Discord user ID to cleanup
+            """
+            logger.info(f"🧹 Cleaning up audio stream for user {user_id}")
+
+            # Send sentinel to stop generator
+            if user_id in self.user_buffers:
+                try:
+                    self.user_buffers[user_id].put_nowait(None)
+                except:
+                    pass
+                del self.user_buffers[user_id]
+
+            # Cancel task
+            if user_id in self.user_tasks:
+                task = self.user_tasks[user_id]
+                if not task.done():
+                    task.cancel()
+                del self.user_tasks[user_id]
+
+            # Remove from active users
+            self.active_users.discard(user_id)
+
+        def cleanup(self):
+            """Cleanup audio sink (all users)"""
+            logger.info("🧹 Cleaning up audio receiver")
+
+            # Send sentinel values to stop all generators
+            for user_id, queue in self.user_buffers.items():
+                try:
+                    queue.put_nowait(None)  # Sentinel to stop generator
+                except:
+                    pass
+
+            # Cancel all user tasks
+            for task in self.user_tasks.values():
+                if not task.done():
+                    task.cancel()
+
+            # Clear all data
+            self.user_buffers.clear()
+            self.user_tasks.clear()
+            self.active_users.clear()
+
+    # ============================================================
+    # CONFIGURATION & INITIALIZATION
+    # ============================================================
 
     def validate_config(self, config: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -529,7 +695,7 @@ class DiscordPlugin(PluginBase):
             """
             Handle voice state changes (user joins/leaves voice channel).
 
-            Phase 1: Basic logging only. Phase 2 will add audio pipeline integration.
+            Phase 2: Registers audio receiver when user joins voice channel.
             """
             # Skip if bot's own state changed
             if member.id == self.bot.user.id:
@@ -545,15 +711,19 @@ class DiscordPlugin(PluginBase):
                 # Auto-join if enabled and not already in a voice channel
                 if self.auto_join and after.channel.guild.id not in self.voice_clients:
                     try:
-                        voice_client = await after.channel.connect()
+                        # Phase 2: Connect with VoiceRecvClient for audio receiving
+                        voice_client = await after.channel.connect(cls=voice_recv.VoiceRecvClient)
                         self.voice_clients[after.channel.guild.id] = voice_client
                         logger.info(
                             f"✅ Bot joined voice channel '{after.channel.name}' "
                             f"(agent: {self.agent_name})"
                         )
 
-                        # Phase 2 TODO: Start audio receiving for this user
-                        # await self._start_audio_receiving(member, voice_client)
+                        # Phase 2: Register audio receiver for this voice client
+                        receiver = self.AudioReceiver(self, voice_client)
+                        voice_client.listen(receiver)
+                        self.audio_receivers[after.channel.guild.id] = receiver
+                        logger.info(f"🎤 Registered audio receiver for guild {after.channel.guild.id}")
 
                     except Exception as e:
                         logger.error(
@@ -576,13 +746,18 @@ class DiscordPlugin(PluginBase):
                         # Check if bot is alone
                         members_in_channel = [m for m in before.channel.members if not m.bot]
                         if len(members_in_channel) == 0:
+                            # Phase 2: Cleanup audio receiver before disconnecting
+                            if guild_id in self.audio_receivers:
+                                self.audio_receivers[guild_id].cleanup()
+                                del self.audio_receivers[guild_id]
+
                             await voice_client.disconnect()
                             del self.voice_clients[guild_id]
                             logger.info(
                                 f"🚪 Bot left voice channel '{before.channel.name}' (no users remaining)"
                             )
 
-                # Phase 1: Clean up user's session
+                # Phase 2: Clean up user's session
                 user_id = str(member.id)
                 if user_id in self.active_sessions:
                     session_id = self.active_sessions[user_id]
@@ -592,6 +767,10 @@ class DiscordPlugin(PluginBase):
         async def on_command_error(ctx, error):
             """Handle command errors"""
             logger.error(f"❌ Command error in agent '{self.agent_name}': {error}", exc_info=error)
+
+    # ============================================================
+    # LIFECYCLE METHODS
+    # ============================================================
 
     async def start(self) -> None:
         """
@@ -635,7 +814,7 @@ class DiscordPlugin(PluginBase):
         """
         Stop Discord bot (disconnect from Discord).
 
-        Phase 1 Enhancement: Clean up all active sessions and service connections.
+        Phase 2 Enhancement: Clean up audio receivers and active sessions.
         """
         if not self.bot:
             logger.warning(f"⚠️  Discord bot for agent '{self.agent_name}' not initialized")
@@ -643,7 +822,17 @@ class DiscordPlugin(PluginBase):
 
         logger.info(f"🛑 Stopping Discord bot for agent '{self.agent_name}'")
 
-        # Phase 1: Clean up active sessions before disconnecting voice
+        # Phase 2: Clean up audio receivers
+        for guild_id, receiver in list(self.audio_receivers.items()):
+            try:
+                receiver.cleanup()
+                logger.info(f"✅ Cleaned up audio receiver for guild {guild_id}")
+            except Exception as e:
+                logger.error(f"❌ Error cleaning up audio receiver for guild {guild_id}: {e}")
+
+        self.audio_receivers.clear()
+
+        # Phase 2: Clean up active sessions before disconnecting voice
         for user_id in list(self.active_sessions.keys()):
             session_id = self.active_sessions.get(user_id)
             if session_id:
@@ -687,6 +876,10 @@ class DiscordPlugin(PluginBase):
 
         self.running = False
 
+    # ============================================================
+    # PLUGIN HOOKS
+    # ============================================================
+
     async def on_message(self, session_id: str, text: str, metadata: Dict[str, Any]) -> None:
         """
         Handle incoming message event.
@@ -707,17 +900,15 @@ class DiscordPlugin(PluginBase):
         """
         Handle agent response event (play TTS audio in Discord voice).
 
-        Phase 1: Logging only. Phase 2 will implement TTS playback.
+        Phase 2: Implements TTS playback via Discord voice.
 
         Args:
             session_id: Session UUID
             text: Response text from agent
-            metadata: Response metadata (may include audio_url, guild_id, channel_id)
+            metadata: Response metadata (may include guild_id, channel_id)
         """
         # Extract voice channel information from metadata
         guild_id = metadata.get('guild_id')
-        channel_id = metadata.get('channel_id')
-        audio_url = metadata.get('audio_url')
 
         if not guild_id or guild_id not in self.voice_clients:
             logger.warning(
@@ -727,93 +918,575 @@ class DiscordPlugin(PluginBase):
 
         voice_client = self.voice_clients[guild_id]
 
-        # Phase 2 TODO: Implement TTS audio playback via Discord voice
-        # This will use tts_service.synthesize_speech() and play via voice_client
-        logger.info(
-            f"🔊 [TODO Phase 2] Play TTS audio in Discord voice channel "
-            f"(guild: {guild_id}, channel: {channel_id}, agent: {self.agent_name})"
-        )
+        # Phase 2: Play TTS audio via Discord voice
+        await self._play_tts(text, voice_client, session_id)
 
     # ============================================================
-    # PHASE 1: STUB METHODS FOR PHASE 2
+    # PHASE 2: AUDIO PIPELINE METHODS (Migrated from discord_bot.py)
     # ============================================================
+
+    async def _handle_user_speaking(
+        self,
+        user: discord.User,
+        audio_stream: AsyncGenerator,
+        voice_client: discord.VoiceClient
+    ) -> None:
+        """
+        Handle when a user starts speaking in Discord voice.
+
+        Phase 2: Full audio receiving pipeline
+        - Creates session via ConversationService (Phase 1 integration)
+        - Connects to STT service (Phase 1 integration)
+        - Streams audio to WhisperX
+        - Handles silence detection
+
+        Original source: discord_bot.py on_user_speaking_start (lines 548-710)
+
+        Args:
+            user: Discord user who is speaking
+            audio_stream: Async generator yielding audio chunks
+            voice_client: Voice client connection
+        """
+        user_id = str(user.id)
+        username = user.name
+
+        logger.info(f"🎤 {username} ({user_id}) started speaking")
+
+        try:
+            # Record pipeline start time
+            t_start = time.time()
+            session_id = str(uuid.uuid4())
+            self.active_sessions[user_id] = session_id
+
+            # Initialize session timing tracker (Phase 1 integration)
+            self.session_timings[session_id] = {
+                't_start': t_start,
+                't_whisper_connected': None,
+                't_first_partial': None,
+                't_transcription_complete': None
+            }
+
+            logger.info(f"📝 Created session {session_id[:8]}... for Discord user {username}")
+
+            # TODO Phase 2 Tests: Broadcast speaker_started event via WebSocket
+            # await broadcast_speaker_started(user_id, username)
+
+            # Phase 1 integration: Create session in database via ConversationService
+            session = await self.conversation_service.get_or_create_session(
+                session_id=session_id,
+                user_id=user_id,
+                agent_id=str(self.agent_id),
+                channel_type="discord",
+                user_name=username,
+                title=f"Discord conversation with {username}"
+            )
+
+            # Phase 1 integration: Connect STT service for this session
+            t_before_whisper = time.time()
+            whisper_url = os.getenv('WHISPER_SERVER_URL', 'ws://whisperx:4901')
+            success = await self.stt_service.connect(session_id, whisper_url)
+
+            if not success:
+                logger.error(f"❌ Failed to connect STT for session {session_id[:8]}...")
+                await self._cleanup_session(user_id, session_id)
+                return
+
+            t_after_whisper = time.time()
+            whisper_latency = t_after_whisper - t_before_whisper
+            self.session_timings[session_id]['t_whisper_connected'] = t_after_whisper
+            logger.info(f"⏱️ LATENCY [speech start → WhisperX connected]: {whisper_latency:.3f}s")
+            self.metrics.record_whisper_connection_latency(whisper_latency)
+
+            # Phase 2: Register STT callback (routes to _on_transcript)
+            await self.stt_service.register_callback(
+                session_id=session_id,
+                callback=lambda text, is_final, metadata: self._on_transcript(
+                    session_id, user_id, username, text, is_final, metadata
+                )
+            )
+
+            # Silence detection configuration
+            silence_threshold_ms = int(os.getenv('SILENCE_THRESHOLD_MS', '600'))  # 600ms default
+            max_speaking_time_ms = int(os.getenv('MAX_SPEAKING_TIME_MS', '45000'))  # 45s default
+
+            # Track audio timing for silence detection
+            last_audio_time = time.time()
+            silence_detection_task = None
+            finalized = False
+
+            async def check_silence():
+                """Background task to detect silence and trigger finalization"""
+                nonlocal finalized
+                check_interval = 0.1  # Check every 100ms
+
+                while not finalized:
+                    await asyncio.sleep(check_interval)
+
+                    # Calculate elapsed time since last audio
+                    elapsed_ms = (time.time() - last_audio_time) * 1000
+                    speaking_duration_ms = (time.time() - t_start) * 1000
+
+                    # Check for silence threshold
+                    if elapsed_ms >= silence_threshold_ms:
+                        logger.info(f"🔇 Silence detected after {elapsed_ms:.0f}ms for {username}")
+                        self.metrics.record_silence_detection_latency(elapsed_ms)
+
+                        # Finalize transcript
+                        finalized = True
+                        success = await self.stt_service.finalize_transcript(session_id)
+                        if success:
+                            logger.info(f"✅ Triggered final transcript for {username}")
+                        else:
+                            logger.warning(f"⚠️ Failed to finalize transcript for {username}")
+                        break
+
+                    # Check for max speaking time (safety limit)
+                    if speaking_duration_ms >= max_speaking_time_ms:
+                        logger.warning(f"⏰ Max speaking time ({max_speaking_time_ms}ms) reached for {username}")
+
+                        # Force finalization
+                        finalized = True
+                        success = await self.stt_service.finalize_transcript(session_id)
+                        if success:
+                            logger.info(f"✅ Triggered final transcript (max time) for {username}")
+                        break
+
+            # Start silence detection task
+            silence_detection_task = asyncio.create_task(check_silence())
+
+            # Stream audio to STT with silence tracking
+            try:
+                async for audio_chunk in audio_stream:
+                    # Update last audio timestamp
+                    last_audio_time = time.time()
+
+                    # Phase 1 integration: Send audio to STTService
+                    await self.stt_service.send_audio(session_id, audio_chunk)
+            finally:
+                # Ensure finalization happens even if stream ends abruptly
+                if not finalized:
+                    logger.info(f"🔚 Audio stream ended for {username}, finalizing...")
+                    await self.stt_service.finalize_transcript(session_id)
+                    finalized = True
+
+                # Cancel silence detection task
+                if silence_detection_task and not silence_detection_task.done():
+                    silence_detection_task.cancel()
+                    try:
+                        await silence_detection_task
+                    except asyncio.CancelledError:
+                        pass
+
+        except Exception as e:
+            logger.error(f"❌ Error in _handle_user_speaking for {username}: {e}", exc_info=True)
+            # Cleanup on error
+            if user_id in self.active_sessions:
+                session_id = self.active_sessions[user_id]
+                await self._cleanup_session(user_id, session_id)
+
+    async def _on_transcript(
+        self,
+        session_id: str,
+        user_id: str,
+        username: str,
+        text: str,
+        is_final: bool,
+        metadata: Dict
+    ) -> None:
+        """
+        Callback when STT service produces a transcript.
+
+        Phase 2: Complete transcript handling
+        - Tracks latency metrics (Phase 1 integration)
+        - Saves user message to database (Phase 1 integration)
+        - Triggers LLM response generation
+
+        Original source: discord_bot.py on_stt_transcript (embedded in on_user_speaking_start, lines ~650-710)
+
+        Args:
+            session_id: Session UUID
+            user_id: Discord user ID
+            username: Discord username
+            text: Transcribed text
+            is_final: Whether this is a final transcript
+            metadata: STT metadata (confidence, etc.)
+        """
+        if not is_final:
+            # Partial transcript - log and broadcast
+            logger.info(f"🔄 Partial (session={session_id[:8]}...): \"{text}\" (user={username})")
+
+            # Record first partial latency (Phase 1 integration)
+            if session_id in self.session_timings:
+                timings = self.session_timings[session_id]
+                if timings['t_first_partial'] is None and timings['t_whisper_connected']:
+                    t_now = time.time()
+                    timings['t_first_partial'] = t_now
+                    latency = t_now - timings['t_whisper_connected']
+                    logger.info(f"⏱️ LATENCY [WhisperX connected → first partial]: {latency:.3f}s")
+                    self.metrics.record_first_partial_transcript_latency(latency)
+
+            # TODO Phase 2 Tests: Broadcast partial transcript via WebSocket
+            # await broadcast_partial_transcript(user_id, username, text)
+            return
+
+        # Final transcript
+        logger.info(f"✅ Final transcript (session={session_id[:8]}...): \"{text}\" (user={username})")
+
+        # Record transcription duration (Phase 1 integration)
+        if session_id in self.session_timings:
+            timings = self.session_timings[session_id]
+            t_now = time.time()
+            timings['t_transcription_complete'] = t_now
+
+            if timings['t_first_partial']:
+                duration = t_now - timings['t_first_partial']
+                logger.info(f"⏱️ LATENCY [first partial → transcription complete]: {duration:.3f}s")
+                self.metrics.record_transcription_duration(duration)
+
+        # TODO Phase 2 Tests: Broadcast final transcript via WebSocket
+        # await broadcast_final_transcript(user_id, username, text)
+        self.metrics.record_transcript()
+
+        # Phase 1 integration: Add user message to conversation
+        await self.conversation_service.add_message(
+            session_id=session_id,
+            role='user',
+            content=text,
+            metadata={'stt_confidence': metadata.get('confidence')}
+        )
+
+        # Phase 2: Generate LLM response and play TTS
+        # Extract guild_id from voice_client for TTS playback
+        guild_id = None
+        for gid, vc in self.voice_clients.items():
+            guild_id = gid
+            break  # Get first (only) voice client for this user
+
+        await self._generate_response(session_id, user_id, username, text, guild_id)
+
+    async def _generate_response(
+        self,
+        session_id: str,
+        user_id: str,
+        username: str,
+        user_text: str,
+        guild_id: Optional[int]
+    ) -> None:
+        """
+        Generate AI response and play via TTS.
+
+        Phase 2: Complete LLM + TTS pipeline
+        - Gets conversation context (Phase 1 integration)
+        - Routes to LLM service (OpenRouter → Local → n8n fallback)
+        - Streams response chunks
+        - Synthesizes and plays TTS
+
+        Original source: discord_bot.py generate_and_play_response (lines 711-896)
+
+        Args:
+            session_id: Session UUID
+            user_id: Discord user ID
+            username: Discord username
+            user_text: User's transcribed text
+            guild_id: Discord guild ID (for voice playback)
+        """
+        try:
+            t_llm_start = time.time()
+
+            # Phase 1 integration: Get conversation context from ConversationService
+            messages = await self.conversation_service.get_conversation_context(
+                session_id=session_id,
+                limit=10,
+                include_system_prompt=True
+            )
+
+            # Phase 1 integration: Use agent config from self.agent
+            # Convert to LLM format
+            llm_messages = [{'role': msg.role, 'content': msg.content} for msg in messages]
+
+            # Build LLM config (Phase 1 integration)
+            llm_config = LLMConfig(
+                provider=ProviderType(self.agent.llm_provider),
+                model=self.agent.llm_model,
+                temperature=self.agent.temperature,
+                system_prompt=self.agent.system_prompt
+            )
+
+            logger.info(f"🤖 Generating LLM response (session={session_id[:8]}..., provider={llm_config.provider.value})")
+
+            # Stream response from LLM (Phase 1 integration)
+            full_response = ""
+            first_chunk = True
+
+            async def on_llm_chunk(chunk: str):
+                nonlocal full_response, first_chunk
+                full_response += chunk
+
+                # Record first chunk latency (Phase 1 integration)
+                if first_chunk:
+                    t_first_chunk = time.time()
+                    latency = t_first_chunk - t_llm_start
+                    logger.info(f"⏱️ LATENCY [LLM first chunk]: {latency:.3f}s")
+                    self.metrics.record_n8n_first_chunk_latency(latency)
+                    first_chunk = False
+
+            try:
+                # Phase 1 integration: Use LLMService
+                await self.llm_service.generate_response(
+                    session_id=session_id,
+                    messages=llm_messages,
+                    config=llm_config,
+                    stream=True,
+                    callback=on_llm_chunk
+                )
+
+                # Record total LLM latency (Phase 1 integration)
+                t_llm_complete = time.time()
+                llm_duration = t_llm_complete - t_llm_start
+                logger.info(f"⏱️ LATENCY [total LLM generation]: {llm_duration:.3f}s")
+                self.metrics.record_ai_generation_latency(llm_duration)
+
+            except (LLMError, LLMConnectionError, LLMTimeoutError) as e:
+                # LLM providers unavailable - fall back to n8n webhook
+                n8n_webhook_url = os.getenv('N8N_WEBHOOK_URL')
+
+                if not n8n_webhook_url:
+                    logger.error(f"❌ LLM providers unavailable and no N8N webhook configured: {e}")
+                    raise
+
+                logger.warning(f"⚠️ LLM providers unavailable, falling back to n8n webhook: {e}")
+                logger.info(f"🌐 Calling n8n webhook: {n8n_webhook_url}")
+
+                try:
+                    # Call n8n webhook with conversation context
+                    async with httpx.AsyncClient(timeout=60.0) as client:
+                        payload = {
+                            'sessionId': session_id,
+                            'userId': user_id,
+                            'username': username,
+                            'text': user_text,
+                            'conversationHistory': [
+                                {'role': msg['role'], 'content': msg['content']}
+                                for msg in llm_messages
+                            ],
+                            'agentConfig': {
+                                'name': self.agent.name,
+                                'systemPrompt': self.agent.system_prompt,
+                                'temperature': self.agent.temperature,
+                                'model': self.agent.llm_model
+                            }
+                        }
+
+                        response = await client.post(n8n_webhook_url, json=payload)
+                        response.raise_for_status()
+
+                        t_n8n_complete = time.time()
+                        n8n_duration = t_n8n_complete - t_llm_start
+                        logger.info(f"⏱️ LATENCY [n8n webhook]: {n8n_duration:.3f}s")
+                        self.metrics.record_ai_generation_latency(n8n_duration)
+
+                        # Parse n8n response
+                        response_data = response.json()
+
+                        # Handle various n8n response formats
+                        if isinstance(response_data, dict):
+                            full_response = (
+                                response_data.get('response') or
+                                response_data.get('output') or
+                                response_data.get('text') or
+                                str(response_data)
+                            )
+                        elif isinstance(response_data, str):
+                            full_response = response_data
+                        else:
+                            full_response = str(response_data)
+
+                        logger.info(f"✅ n8n response received: {len(full_response)} chars")
+
+                except Exception as n8n_error:
+                    logger.error(f"❌ n8n webhook fallback failed: {n8n_error}", exc_info=True)
+                    raise LLMError(f"Both LLM providers and n8n webhook failed. LLM: {e}, n8n: {n8n_error}") from n8n_error
+
+            # Phase 1 integration: Add assistant message to conversation
+            await self.conversation_service.add_message(
+                session_id=session_id,
+                role='assistant',
+                content=full_response
+            )
+
+            # TODO Phase 2 Tests: Broadcast AI response via WebSocket
+            # await broadcast_ai_response(full_response, is_final=True)
+
+            # Phase 2: Synthesize and play TTS
+            if guild_id and guild_id in self.voice_clients:
+                voice_client = self.voice_clients[guild_id]
+                await self._play_tts(full_response, voice_client, session_id)
+            else:
+                logger.warning(f"⚠️ Cannot play TTS: no voice client for guild {guild_id}")
+
+        except Exception as e:
+            logger.error(f"❌ Error generating LLM response (session={session_id[:8]}...): {e}", exc_info=True)
+            self.metrics.record_error()
+
+    async def _play_tts(
+        self,
+        text: str,
+        voice_client: discord.VoiceClient,
+        session_id: str
+    ) -> Optional[str]:
+        """
+        Synthesize speech and play in Discord voice channel.
+
+        Phase 2: Complete TTS pipeline
+        - Synthesizes speech via TTSService (Phase 1 integration)
+        - Saves to temp WAV file
+        - Plays via discord.FFmpegPCMAudio
+        - Tracks TTS and playback latency
+
+        Original source: discord_bot.py synthesize_and_play_discord (lines 898-989)
+
+        Args:
+            text: Text to synthesize
+            voice_client: Discord voice client
+            session_id: Session UUID for metrics tracking
+
+        Returns:
+            Path to temp audio file, or None on error
+        """
+        if not voice_client or not voice_client.is_connected():
+            logger.warning("⚠️ Not in voice channel, cannot play TTS")
+            return None
+
+        try:
+            t_tts_start = time.time()
+
+            # Phase 1 integration: Synthesize using TTSService (non-streaming for Discord)
+            audio_bytes = await self.tts_service.synthesize_speech(
+                session_id=session_id,
+                text=text,
+                voice_id=self.agent.tts_voice or os.getenv('CHATTERBOX_VOICE_ID', 'default'),
+                speed=self.agent.tts_rate or 1.0,
+                stream=False,  # Discord needs complete audio file
+                callback=None
+            )
+
+            if not audio_bytes:
+                logger.error("❌ TTS synthesis failed, no audio received")
+                return None
+
+            t_tts_complete = time.time()
+            tts_duration = t_tts_complete - t_tts_start
+            logger.info(f"⏱️ LATENCY [TTS generation]: {tts_duration:.3f}s")
+            self.metrics.record_tts_generation_latency(tts_duration)
+
+            # Save to temp file and play
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.wav') as f:
+                f.write(audio_bytes)
+                temp_path = f.name
+
+            try:
+                t_playback_start = time.time()
+
+                # Wait for current audio to finish if playing
+                while voice_client.is_playing():
+                    await asyncio.sleep(0.1)
+
+                # Create FFmpeg audio source
+                t_ffmpeg_start = time.time()
+                before_options = '-loglevel error'
+                options = '-vn -ac 2 -ar 48000'
+                audio_source = discord.FFmpegPCMAudio(temp_path, before_options=before_options, options=options)
+                t_ffmpeg_end = time.time()
+
+                ffmpeg_latency_ms = (t_ffmpeg_end - t_ffmpeg_start) * 1000
+                if ffmpeg_latency_ms > 1.0:
+                    logger.info(f"⏱️ LATENCY [FFmpeg processing]: {ffmpeg_latency_ms:.2f}ms")
+                    self.metrics.record_ffmpeg_processing_latency(ffmpeg_latency_ms)
+
+                # Play audio
+                voice_client.play(audio_source)
+                logger.info(f"🔊 Playing TTS audio ({len(audio_bytes):,} bytes)")
+
+                # Wait for playback to complete
+                while voice_client.is_playing():
+                    await asyncio.sleep(0.1)
+
+                t_playback_complete = time.time()
+                playback_duration = t_playback_complete - t_playback_start
+                logger.info(f"⏱️ LATENCY [audio playback]: {playback_duration:.3f}s")
+                self.metrics.record_audio_playback_latency(playback_duration)
+
+                # Record total pipeline latency (Phase 1 integration)
+                if session_id in self.session_timings:
+                    t_start = self.session_timings[session_id]['t_start']
+                    total_latency = t_playback_complete - t_start
+                    logger.info(f"⏱️ ⭐⭐⭐ TOTAL PIPELINE LATENCY: {total_latency:.3f}s")
+                    self.metrics.record_total_pipeline_latency(total_latency)
+
+                return temp_path
+
+            finally:
+                # Cleanup temp file
+                try:
+                    os.unlink(temp_path)
+                except Exception as e:
+                    logger.warning(f"⚠️ Failed to delete temp file {temp_path}: {e}")
+
+        except Exception as e:
+            logger.error(f"❌ Error with TTS playback: {e}", exc_info=True)
+            return None
 
     async def _cleanup_session(self, user_id: str, session_id: str) -> None:
         """
         Clean up session resources when user leaves or session ends.
 
-        Phase 1: Stub implementation (basic session removal).
-        Phase 2: Will add STT disconnection, conversation finalization.
+        Phase 2: Complete cleanup implementation
+        - Ends session in ConversationService (Phase 1 integration)
+        - Disconnects STT service (Phase 1 integration)
+        - Clears session tracking dictionaries
+        - Logs metrics summary
+
+        Original source: discord_bot.py cleanup_session (lines 1006-1038)
 
         Args:
             user_id: Discord user ID
             session_id: Session UUID
         """
         logger.info(
-            f"🔄 Cleaning up session for user {user_id} (session: {session_id[:8]}...)"
+            f"🧹 Cleaning up session for user {user_id} (session: {session_id[:8]}...)"
         )
 
-        # Remove from active sessions
-        if user_id in self.active_sessions:
-            del self.active_sessions[user_id]
+        try:
+            # Phase 1 integration: Disconnect STT
+            if self.stt_service:
+                await self.stt_service.disconnect(session_id)
 
-        # Remove timing metadata
-        if session_id in self.session_timings:
-            del self.session_timings[session_id]
+            # Phase 1 integration: End session in database (mark inactive)
+            if self.conversation_service:
+                await self.conversation_service.end_session(session_id, persist=True)
 
-        # Phase 2 TODO: Disconnect STT service
-        # if self.stt_service and await self.stt_service.is_connected(session_id):
-        #     await self.stt_service.disconnect(session_id)
+            # Remove from active sessions
+            if user_id in self.active_sessions:
+                del self.active_sessions[user_id]
 
-        # Phase 2 TODO: End conversation session
-        # if self.conversation_service:
-        #     await self.conversation_service.end_session(session_id, persist=True)
+            # Remove timing data
+            if session_id in self.session_timings:
+                del self.session_timings[session_id]
 
-        logger.info(f"✅ Session cleanup complete for user {user_id}")
+            # Phase 2: Cleanup audio receiver for this user
+            # Find guild_id for this user's voice connection
+            for guild_id, receiver in self.audio_receivers.items():
+                if user_id in receiver.active_users:
+                    receiver.cleanup_user(user_id)
+                    break
 
-    async def _handle_user_speaking(
-        self,
-        user: discord.User,
-        audio_data: bytes,
-        voice_client: discord.VoiceClient
-    ) -> None:
-        """
-        Handle audio data from user speaking in voice channel.
+            # TODO Phase 2 Tests: Broadcast speaker_stopped event
+            # await broadcast_speaker_stopped(user_id, username, duration_ms)
 
-        Phase 1: Stub implementation (logging only).
-        Phase 2: Will implement full STT → LLM → TTS pipeline.
+            logger.info(f"✅ Session cleanup complete for user {user_id}")
 
-        Args:
-            user: Discord user who is speaking
-            audio_data: Raw audio bytes from Discord
-            voice_client: Voice client connection
-        """
-        user_id = str(user.id)
-
-        # Phase 2 TODO: Get or create session
-        # session_id = self.active_sessions.get(user_id)
-        # if not session_id:
-        #     session_id = str(uuid.uuid4())
-        #     session = await self.conversation_service.get_or_create_session(
-        #         session_id=session_id,
-        #         user_id=user_id,
-        #         agent_id=str(self.agent_id),
-        #         channel_type="discord",
-        #         user_name=user.name
-        #     )
-        #     self.active_sessions[user_id] = session_id
-
-        # Phase 2 TODO: Send audio to STT service
-        # if self.stt_service:
-        #     if not await self.stt_service.is_connected(session_id):
-        #         await self.stt_service.connect(session_id)
-        #         await self.stt_service.register_callback(session_id, self._on_transcript)
-        #     await self.stt_service.send_audio(session_id, audio_data)
-
-        logger.debug(
-            f"🎤 [TODO Phase 2] Audio received from {user.name} "
-            f"({len(audio_data)} bytes)"
-        )
+        except Exception as e:
+            logger.error(f"❌ Error cleaning up session {session_id[:8]}...: {e}", exc_info=True)
 
     # ============================================================
     # UTILITY METHODS
@@ -851,3 +1524,33 @@ class DiscordPlugin(PluginBase):
             'active_sessions': len(self.active_sessions),  # Phase 1
             'metrics': self.metrics.get_metrics() if self.metrics else {},  # Phase 1
         }
+
+
+# ============================================================
+# TODO: PHASE 2 TESTING TASKS
+# ============================================================
+#
+# TODO Phase 2 Tests:
+# - Test audio receiving from multiple users simultaneously
+# - Test STT transcript callback flow (partial → final)
+# - Test LLM generation with OpenRouter → Local → n8n fallback
+# - Test TTS synthesis and Discord voice playback
+# - Test session cleanup on user leave
+# - Test silence detection triggering finalization
+# - Test max speaking time safety limit
+# - Test metrics tracking for all pipeline stages
+# - Test error handling in audio pipeline
+# - Test concurrent sessions (multiple users in same channel)
+#
+# Test Scenarios:
+# 1. Single user speaks → transcription → LLM → TTS playback
+# 2. Multiple users speak sequentially
+# 3. User leaves mid-transcription (cleanup)
+# 4. Silence detection timeout
+# 5. Max speaking time reached
+# 6. LLM provider failures (test n8n fallback)
+# 7. TTS synthesis failures
+# 8. Voice client disconnect during playback
+# 9. Audio buffer overflow (queue full)
+# 10. WebSocket broadcast integration
+#
