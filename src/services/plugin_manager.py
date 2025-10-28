@@ -420,6 +420,103 @@ class PluginManager:
         """
         return dict(self.active_plugins)
 
+    # ============================================================
+    # PHASE 3: DISCORD PLUGIN VOICE CONTROL API METHODS
+    # ============================================================
+
+    def get_discord_plugin_by_agent(self, agent_id: UUID) -> Optional['PluginBase']:
+        """
+        Get Discord plugin instance for an agent.
+
+        Phase 3: HTTP API routing
+
+        Args:
+            agent_id: Agent UUID
+
+        Returns:
+            DiscordPlugin instance or None
+        """
+        if agent_id not in self.active_plugins:
+            return None
+
+        plugins = self.active_plugins[agent_id]
+        return plugins.get('discord')
+
+    async def discord_join_voice(
+        self,
+        agent_id: UUID,
+        guild_id: int,
+        channel_id: int
+    ) -> Dict[str, Any]:
+        """
+        Join Discord voice channel via plugin.
+
+        Phase 3: HTTP API entry point
+
+        Args:
+            agent_id: Agent UUID
+            guild_id: Discord guild ID
+            channel_id: Discord channel ID
+
+        Returns:
+            Connection status dict
+
+        Raises:
+            ValueError: If plugin not found or invalid parameters
+        """
+        plugin = self.get_discord_plugin_by_agent(agent_id)
+        if not plugin:
+            raise ValueError(f"Discord plugin not found for agent {agent_id}")
+
+        return await plugin.join_voice_channel(guild_id, channel_id)
+
+    async def discord_leave_voice(
+        self,
+        agent_id: UUID,
+        guild_id: int
+    ) -> Dict[str, Any]:
+        """
+        Leave Discord voice channel via plugin.
+
+        Phase 3: HTTP API entry point
+
+        Args:
+            agent_id: Agent UUID
+            guild_id: Discord guild ID
+
+        Returns:
+            Disconnection status dict
+
+        Raises:
+            ValueError: If plugin not found
+        """
+        plugin = self.get_discord_plugin_by_agent(agent_id)
+        if not plugin:
+            raise ValueError(f"Discord plugin not found for agent {agent_id}")
+
+        return await plugin.leave_voice_channel(guild_id)
+
+    def discord_get_voice_status(self, agent_id: UUID) -> Dict[str, Any]:
+        """
+        Get Discord voice status via plugin.
+
+        Phase 3: HTTP API entry point
+
+        Args:
+            agent_id: Agent UUID
+
+        Returns:
+            Voice status dict
+
+        Raises:
+            ValueError: If plugin not found
+        """
+        plugin = self.get_discord_plugin_by_agent(agent_id)
+        if not plugin:
+            raise ValueError(f"Discord plugin not found for agent {agent_id}")
+
+        return plugin.get_voice_status()
+
     async def start_resource_monitoring(self) -> None:
         """
         Start the resource monitor background task.

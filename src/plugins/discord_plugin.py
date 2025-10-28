@@ -1489,6 +1489,156 @@ class DiscordPlugin(PluginBase):
             logger.error(f"❌ Error cleaning up session {session_id[:8]}...: {e}", exc_info=True)
 
     # ============================================================
+    # PHASE 3: HTTP API VOICE CONTROL METHODS
+    # ============================================================
+
+    async def join_voice_channel(
+        self,
+        guild_id: int,
+        channel_id: int
+    ) -> Dict[str, Any]:
+        """
+        Join a Discord voice channel.
+
+        Phase 3: HTTP API integration
+
+        Args:
+            guild_id: Discord guild (server) ID
+            channel_id: Discord voice channel ID
+
+        Returns:
+            Dict with connection status
+
+        Raises:
+            ValueError: If already connected to voice in this guild
+            RuntimeError: If connection fails
+        """
+        # Check if already connected
+        if guild_id in self.voice_clients:
+            raise ValueError(f"Already connected to voice channel in guild {guild_id}")
+
+        # Find guild and channel
+        guild = self.bot.get_guild(guild_id)
+        if not guild:
+            raise ValueError(f"Guild {guild_id} not found")
+
+        channel = guild.get_channel(channel_id)
+        if not channel:
+            raise ValueError(f"Channel {channel_id} not found in guild {guild_id}")
+
+        # Connect to voice channel
+        try:
+            voice_client = await channel.connect(cls=voice_recv.VoiceRecvClient)
+            self.voice_clients[guild_id] = voice_client
+
+            # Register AudioReceiver (Phase 2 integration)
+            receiver = self.AudioReceiver(self, voice_client)
+            voice_client.listen(receiver)
+            self.audio_receivers[guild_id] = receiver
+
+            logger.info(
+                f"✅ Joined voice channel '{channel.name}' in guild '{guild.name}' "
+                f"(agent: {self.agent_name})"
+            )
+
+            return {
+                'success': True,
+                'guild_id': guild_id,
+                'guild_name': guild.name,
+                'channel_id': channel_id,
+                'channel_name': channel.name,
+                'agent_id': str(self.agent_id),
+                'agent_name': self.agent_name,
+            }
+        except Exception as e:
+            logger.error(f"❌ Failed to join voice channel: {e}", exc_info=True)
+            raise RuntimeError(f"Failed to join voice channel: {e}")
+
+    async def leave_voice_channel(
+        self,
+        guild_id: int
+    ) -> Dict[str, Any]:
+        """
+        Leave Discord voice channel in a guild.
+
+        Phase 3: HTTP API integration
+
+        Args:
+            guild_id: Discord guild (server) ID
+
+        Returns:
+            Dict with disconnection status
+
+        Raises:
+            ValueError: If not connected to voice in this guild
+        """
+        if guild_id not in self.voice_clients:
+            raise ValueError(f"Not connected to voice channel in guild {guild_id}")
+
+        voice_client = self.voice_clients[guild_id]
+
+        try:
+            # Cleanup active sessions for this guild's users
+            sessions_to_cleanup = []
+            for user_id, session_id in list(self.active_sessions.items()):
+                # For now, cleanup all sessions when leaving voice
+                # TODO: Track guild per session for more granular cleanup
+                sessions_to_cleanup.append((user_id, session_id))
+
+            for user_id, session_id in sessions_to_cleanup:
+                await self._cleanup_session(user_id, session_id)
+
+            # Cleanup audio receiver before disconnecting
+            if guild_id in self.audio_receivers:
+                self.audio_receivers[guild_id].cleanup()
+                del self.audio_receivers[guild_id]
+
+            # Disconnect voice client
+            await voice_client.disconnect()
+            del self.voice_clients[guild_id]
+
+            logger.info(f"✅ Left voice channel in guild {guild_id} (agent: {self.agent_name})")
+
+            return {
+                'success': True,
+                'guild_id': guild_id,
+                'agent_id': str(self.agent_id),
+                'agent_name': self.agent_name,
+            }
+        except Exception as e:
+            logger.error(f"❌ Failed to leave voice channel: {e}", exc_info=True)
+            raise RuntimeError(f"Failed to leave voice channel: {e}")
+
+    def get_voice_status(self) -> Dict[str, Any]:
+        """
+        Get current voice connection status.
+
+        Phase 3: HTTP API integration
+
+        Returns:
+            Dict with voice connection details
+        """
+        connections = []
+        for guild_id, voice_client in self.voice_clients.items():
+            guild = voice_client.guild
+            channel = voice_client.channel
+
+            connections.append({
+                'guild_id': guild_id,
+                'guild_name': guild.name if guild else None,
+                'channel_id': channel.id if channel else None,
+                'channel_name': channel.name if channel else None,
+                'connected': voice_client.is_connected(),
+            })
+
+        return {
+            'agent_id': str(self.agent_id),
+            'agent_name': self.agent_name,
+            'connections': connections,
+            'active_sessions': len(self.active_sessions),
+        }
+
+    # ============================================================
     # UTILITY METHODS
     # ============================================================
 

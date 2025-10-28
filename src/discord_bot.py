@@ -36,6 +36,7 @@ from src.services.tts_service import get_tts_service, TTSService
 from src.services.plugin_manager import get_plugin_manager
 from src.routes.agent_routes import router as agent_router
 from src.routes.session_routes import router as session_router
+from src.routes.discord_plugin_routes import router as discord_plugin_router
 
 # LLM exceptions for error handling
 from src.llm import LLMError, LLMConnectionError, LLMTimeoutError
@@ -369,6 +370,9 @@ app.include_router(agent_router)
 
 # Include session/conversation management routes (VoxBridge 2.0 Phase 4)
 app.include_router(session_router)
+
+# Include Discord plugin voice control routes (VoxBridge 2.0 Phase 3)
+app.include_router(discord_plugin_router)
 
 # Pydantic models for API
 class JoinVoiceRequest(BaseModel):
