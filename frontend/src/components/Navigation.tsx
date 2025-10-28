@@ -1,5 +1,5 @@
 import { Link, useLocation } from 'wouter';
-import { Home, Bot, Mic, Volume2, MessageSquare, Brain } from 'lucide-react';
+import { Home, Bot, Mic, Volume2, MessageSquare, Brain, Plug } from 'lucide-react';
 import { cn } from '../lib/utils';
 
 export default function Navigation() {
@@ -17,6 +17,12 @@ export default function Navigation() {
       label: 'Agents',
       icon: Brain,
       description: 'Manage AI Agents'
+    },
+    {
+      path: '/plugins',
+      label: 'Plugins',
+      icon: Plug,
+      description: 'Plugin Management & Monitoring'
     },
     {
       path: '/voice-chat',

@@ -1,13 +1,42 @@
 #!/usr/bin/env python3
 """
 ============================================================
-VoxBridge - Discord Voice Bridge Service (Phase 5.6 Refactored)
+VoxBridge - Discord Voice Bridge Service (Phase 6.4.1 Refactored)
 Bridges Discord voice channels to STT/LLM/TTS processing:
 - Join/leave voice channels
 - Speech-to-Text (WhisperX via STTService)
 - LLM generation (via LLMService with hybrid routing)
 - Text-to-Speech (Chatterbox via TTSService)
 - Session-based architecture with ConversationService
+
+Phase 6.4.1: FastAPI decoupled to src/api/server.py
+============================================================
+
+⚠️  DEPRECATION NOTICE (Phase 6.4.1 Batch 2a)
+============================================================
+
+This Discord bot implementation contains LEGACY HANDLERS that are
+DEPRECATED and will be removed in VoxBridge 3.0.
+
+NEW USERS: Set USE_LEGACY_DISCORD_BOT=false (default)
+           to use the new plugin-based Discord bot at
+           src/plugins/discord_plugin.py
+
+EXISTING USERS: Migrate to plugin-based bot by:
+  1. Set USE_LEGACY_DISCORD_BOT=false in .env
+  2. Restart container: docker compose restart voxbridge-discord
+  3. See docs/MIGRATION_GUIDE.md for complete migration steps
+
+ROLLBACK: Set USE_LEGACY_DISCORD_BOT=true if issues arise
+
+The plugin-based architecture provides:
+  - Better separation of concerns (API ↔ Discord bot)
+  - Easier testing with bridge pattern
+  - Extensibility for new platforms (Telegram, Slack, etc.)
+  - Independent deployment (API can run without Discord)
+
+Migration Guide: /home/wiley/Docker/voxbridge/docs/MIGRATION_GUIDE.md
+
 ============================================================
 """
 
@@ -16,30 +45,29 @@ import logging
 import os
 import signal
 import tempfile
+import time
 import uuid
 from datetime import datetime
 from typing import Optional, Dict
 
 import discord
 from discord.ext import commands, voice_recv
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
-from pydantic import BaseModel
 import httpx
 import uvicorn
 from dotenv import load_dotenv
 
 # VoxBridge 2.0 Service Layer
 from src.services.conversation_service import ConversationService
-from src.services.stt_service import get_stt_service, STTService
-from src.services.llm_service import get_llm_service, LLMService, LLMConfig, ProviderType
-from src.services.tts_service import get_tts_service, TTSService
-from src.services.plugin_manager import get_plugin_manager
-from src.routes.agent_routes import router as agent_router
-from src.routes.session_routes import router as session_router
-from src.routes.discord_plugin_routes import router as discord_plugin_router
+from src.services.stt_service import get_stt_service
+from src.services.llm_service import get_llm_service, LLMConfig, ProviderType
+from src.services.tts_service import get_tts_service
+from src.services.agent_service import AgentService
 
 # LLM exceptions for error handling
 from src.llm import LLMError, LLMConnectionError, LLMTimeoutError
+
+# Import FastAPI app from decoupled module (Phase 6.4.1)
+from src.api.server import app, get_ws_manager, get_metrics_tracker, set_bot_bridge
 
 # Load environment variables
 load_dotenv()
@@ -50,6 +78,25 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+# ============================================================
+# PHASE 6.4.1 BATCH 2a: GRACEFUL DEPRECATION TOGGLE
+# ============================================================
+
+# Legacy mode toggle - allows rollback to old Discord bot voice handlers
+USE_LEGACY_DISCORD_BOT = os.getenv("USE_LEGACY_DISCORD_BOT", "false").lower() == "true"
+
+if USE_LEGACY_DISCORD_BOT:
+    logger.warning("=" * 60)
+    logger.warning("⚠️  LEGACY MODE: Using old Discord bot voice handlers")
+    logger.warning("⚠️  This mode is DEPRECATED and will be removed in VoxBridge 3.0")
+    logger.warning("⚠️  Set USE_LEGACY_DISCORD_BOT=false to use new plugin-based bot")
+    logger.warning("=" * 60)
+else:
+    logger.info("=" * 60)
+    logger.info("✅ Using new plugin-based Discord bot (recommended)")
+    logger.info("💡 Legacy voice handlers are disabled")
+    logger.info("=" * 60)
 
 # ============================================================
 # CONFIGURATION
@@ -63,269 +110,12 @@ if not DISCORD_TOKEN:
     exit(1)
 
 # ============================================================
-# METRICS TRACKING (Keep existing implementation)
+# METRICS TRACKING (Imported from API module - Phase 6.4.1)
 # ============================================================
 
-import time
-import statistics
-from collections import deque
-from threading import Lock
-
-class MetricsTracker:
-    """Track performance metrics for the application"""
-
-    def __init__(self, max_samples=100):
-        self.max_samples = max_samples
-
-        # Legacy metrics
-        self.latencies = deque(maxlen=max_samples)
-        self.n8n_response_latencies = deque(maxlen=max_samples)  # LLM → first response
-        self.n8n_first_chunk_latencies = deque(maxlen=max_samples)  # LLM → first chunk
-        self.tts_first_byte_latencies = deque(maxlen=max_samples)  # response complete → first audio byte
-
-        # Phase 1: Speech → Transcription
-        self.whisper_connection_latencies = deque(maxlen=max_samples)  # user starts speaking → WhisperX connected
-        self.first_partial_transcript_latencies = deque(maxlen=max_samples)  # WhisperX connected → first partial
-        self.transcription_duration_latencies = deque(maxlen=max_samples)  # first partial → final transcript
-        self.silence_detection_latencies = deque(maxlen=max_samples)  # last audio → silence detected (ms)
-
-        # Phase 2: AI Processing
-        self.ai_generation_latencies = deque(maxlen=max_samples)  # webhook sent → response received
-        self.response_parsing_latencies = deque(maxlen=max_samples)  # response received → text extracted (ms)
-
-        # Phase 3: TTS Generation
-        self.tts_queue_latencies = deque(maxlen=max_samples)  # text ready → TTS request sent
-        self.tts_generation_latencies = deque(maxlen=max_samples)  # TTS sent → all audio downloaded
-
-        # Phase 4: Audio Playback
-        self.audio_playback_latencies = deque(maxlen=max_samples)  # audio ready → playback complete
-        self.ffmpeg_processing_latencies = deque(maxlen=max_samples)  # FFmpeg conversion time (ms)
-
-        # End-to-End
-        self.total_pipeline_latencies = deque(maxlen=max_samples)  # user starts speaking → audio playback complete
-        self.time_to_first_audio_latencies = deque(maxlen=max_samples)  # user starts speaking → first audio byte plays
-
-        # UX Enhancement
-        self.thinking_indicator_durations = deque(maxlen=max_samples)  # thinking sound duration (gap filled)
-
-        # Counters
-        self.transcript_count = 0
-        self.error_count = 0
-        self.total_requests = 0
-        self.start_time = time.time()
-        self.lock = Lock()
-
-    def record_latency(self, latency_ms: float):
-        """Record a latency measurement (overall transcript latency)"""
-        with self.lock:
-            self.latencies.append(latency_ms)
-            self.total_requests += 1
-
-    def record_n8n_response_latency(self, latency_s: float):
-        """Record LLM response latency (time to first response)"""
-        with self.lock:
-            self.n8n_response_latencies.append(latency_s)
-
-    def record_n8n_first_chunk_latency(self, latency_s: float):
-        """Record LLM first chunk latency (time to first text chunk)"""
-        with self.lock:
-            self.n8n_first_chunk_latencies.append(latency_s)
-
-    def record_tts_first_byte_latency(self, latency_s: float):
-        """Record TTS first byte latency (time to first audio byte from Chatterbox)"""
-        with self.lock:
-            self.tts_first_byte_latencies.append(latency_s)
-
-    # Phase 1: Speech → Transcription recording methods
-    def record_whisper_connection_latency(self, latency_s: float):
-        """Record WhisperX connection latency (user starts speaking → connected)"""
-        with self.lock:
-            self.whisper_connection_latencies.append(latency_s)
-
-    def record_first_partial_transcript_latency(self, latency_s: float):
-        """Record first partial transcript latency (WhisperX connected → first partial)"""
-        with self.lock:
-            self.first_partial_transcript_latencies.append(latency_s)
-
-    def record_transcription_duration(self, latency_s: float):
-        """Record transcription duration (first partial → final transcript)"""
-        with self.lock:
-            self.transcription_duration_latencies.append(latency_s)
-
-    def record_silence_detection_latency(self, latency_ms: float):
-        """Record silence detection latency (last audio → silence detected) in ms"""
-        with self.lock:
-            self.silence_detection_latencies.append(latency_ms)
-
-    # Phase 2: AI Processing recording methods
-    def record_ai_generation_latency(self, latency_s: float):
-        """Record AI generation latency (webhook sent → response received)"""
-        with self.lock:
-            self.ai_generation_latencies.append(latency_s)
-
-    def record_response_parsing_latency(self, latency_ms: float):
-        """Record response parsing latency (response received → text extracted) in ms"""
-        with self.lock:
-            self.response_parsing_latencies.append(latency_ms)
-
-    # Phase 3: TTS Generation recording methods
-    def record_tts_queue_latency(self, latency_s: float):
-        """Record TTS queue latency (text ready → TTS request sent)"""
-        with self.lock:
-            self.tts_queue_latencies.append(latency_s)
-
-    def record_tts_generation_latency(self, latency_s: float):
-        """Record TTS generation latency (TTS sent → all audio downloaded)"""
-        with self.lock:
-            self.tts_generation_latencies.append(latency_s)
-
-    # Phase 4: Audio Playback recording methods
-    def record_audio_playback_latency(self, latency_s: float):
-        """Record audio playback latency (audio ready → playback complete)"""
-        with self.lock:
-            self.audio_playback_latencies.append(latency_s)
-
-    def record_ffmpeg_processing_latency(self, latency_ms: float):
-        """Record FFmpeg processing latency (conversion time) in ms"""
-        with self.lock:
-            self.ffmpeg_processing_latencies.append(latency_ms)
-
-    # End-to-End recording methods
-    def record_total_pipeline_latency(self, latency_s: float):
-        """Record total pipeline latency (user starts speaking → audio playback complete)"""
-        with self.lock:
-            self.total_pipeline_latencies.append(latency_s)
-
-    def record_time_to_first_audio(self, latency_s: float):
-        """Record time to first audio (user starts speaking → first audio byte plays)"""
-        with self.lock:
-            self.time_to_first_audio_latencies.append(latency_s)
-
-    def record_thinking_indicator_duration(self, duration_s: float):
-        """Record thinking indicator duration (gap filled between transcript and TTS)"""
-        with self.lock:
-            self.thinking_indicator_durations.append(duration_s)
-
-    def record_transcript(self):
-        """Record a transcript completion"""
-        with self.lock:
-            self.transcript_count += 1
-
-    def record_error(self):
-        """Record an error"""
-        with self.lock:
-            self.error_count += 1
-            self.total_requests += 1
-
-    def _calc_stats(self, latencies_deque) -> dict:
-        """Calculate statistics for a latency deque"""
-        if not latencies_deque:
-            return {"avg": 0, "p50": 0, "p95": 0, "p99": 0}
-
-        sorted_latencies = sorted(latencies_deque)
-        return {
-            "avg": round(statistics.mean(sorted_latencies), 3),
-            "p50": round(statistics.median(sorted_latencies), 3),
-            "p95": round(sorted_latencies[int(len(sorted_latencies) * 0.95)], 3) if len(sorted_latencies) > 1 else round(sorted_latencies[0], 3),
-            "p99": round(sorted_latencies[int(len(sorted_latencies) * 0.99)], 3) if len(sorted_latencies) > 1 else round(sorted_latencies[0], 3)
-        }
-
-    def get_metrics(self) -> dict:
-        """Get current metrics snapshot"""
-        with self.lock:
-            # Overall transcript latency (ms) - legacy
-            if not self.latencies:
-                latency_stats = {"avg": 0, "p50": 0, "p95": 0, "p99": 0}
-            else:
-                sorted_latencies = sorted(self.latencies)
-                latency_stats = {
-                    "avg": int(statistics.mean(sorted_latencies)),
-                    "p50": int(statistics.median(sorted_latencies)),
-                    "p95": int(sorted_latencies[int(len(sorted_latencies) * 0.95)]) if len(sorted_latencies) > 1 else int(sorted_latencies[0]),
-                    "p99": int(sorted_latencies[int(len(sorted_latencies) * 0.99)]) if len(sorted_latencies) > 1 else int(sorted_latencies[0])
-                }
-
-            # Legacy detailed latencies (seconds)
-            n8n_response_stats = self._calc_stats(self.n8n_response_latencies)
-            n8n_first_chunk_stats = self._calc_stats(self.n8n_first_chunk_latencies)
-            tts_first_byte_stats = self._calc_stats(self.tts_first_byte_latencies)
-
-            # Phase 1: Speech → Transcription (seconds)
-            whisper_connection_stats = self._calc_stats(self.whisper_connection_latencies)
-            first_partial_stats = self._calc_stats(self.first_partial_transcript_latencies)
-            transcription_duration_stats = self._calc_stats(self.transcription_duration_latencies)
-
-            # Silence detection in ms - convert to int stats
-            silence_detection_stats = self._calc_stats(self.silence_detection_latencies)
-            if silence_detection_stats["avg"] > 0:
-                silence_detection_stats = {k: int(v) for k, v in silence_detection_stats.items()}
-
-            # Phase 2: AI Processing
-            ai_generation_stats = self._calc_stats(self.ai_generation_latencies)
-            response_parsing_stats = self._calc_stats(self.response_parsing_latencies)
-            if response_parsing_stats["avg"] > 0:
-                response_parsing_stats = {k: int(v) for k, v in response_parsing_stats.items()}
-
-            # Phase 3: TTS Generation (seconds)
-            tts_queue_stats = self._calc_stats(self.tts_queue_latencies)
-            tts_generation_stats = self._calc_stats(self.tts_generation_latencies)
-
-            # Phase 4: Audio Playback (seconds)
-            audio_playback_stats = self._calc_stats(self.audio_playback_latencies)
-            ffmpeg_processing_stats = self._calc_stats(self.ffmpeg_processing_latencies)
-            if ffmpeg_processing_stats["avg"] > 0:
-                ffmpeg_processing_stats = {k: int(v) for k, v in ffmpeg_processing_stats.items()}
-
-            # End-to-End (seconds)
-            total_pipeline_stats = self._calc_stats(self.total_pipeline_latencies)
-            time_to_first_audio_stats = self._calc_stats(self.time_to_first_audio_latencies)
-
-            # UX Enhancement (seconds)
-            thinking_indicator_stats = self._calc_stats(self.thinking_indicator_durations)
-
-            error_rate = self.error_count / self.total_requests if self.total_requests > 0 else 0.0
-            uptime = int(time.time() - self.start_time)
-
-            return {
-                # Legacy metrics
-                "latency": latency_stats,
-                "n8nResponseLatency": n8n_response_stats,
-                "n8nFirstChunkLatency": n8n_first_chunk_stats,
-                "ttsFirstByteLatency": tts_first_byte_stats,
-
-                # Phase 1: Speech → Transcription
-                "whisperConnectionLatency": whisper_connection_stats,
-                "firstPartialTranscriptLatency": first_partial_stats,
-                "transcriptionDuration": transcription_duration_stats,
-                "silenceDetectionLatency": silence_detection_stats,
-
-                # Phase 2: AI Processing
-                "aiGenerationLatency": ai_generation_stats,
-                "responseParsingLatency": response_parsing_stats,
-
-                # Phase 3: TTS Generation
-                "ttsQueueLatency": tts_queue_stats,
-                "ttsGenerationLatency": tts_generation_stats,
-
-                # Phase 4: Audio Playback
-                "audioPlaybackLatency": audio_playback_stats,
-                "ffmpegProcessingLatency": ffmpeg_processing_stats,
-
-                # End-to-End
-                "totalPipelineLatency": total_pipeline_stats,
-                "timeToFirstAudio": time_to_first_audio_stats,
-
-                # UX Enhancement
-                "thinkingIndicatorDuration": thinking_indicator_stats,
-
-                # Counters
-                "transcriptCount": self.transcript_count,
-                "errorRate": error_rate,
-                "uptime": uptime
-            }
-
-# Global metrics tracker
-metrics_tracker = MetricsTracker()
+# Get metrics tracker from API module
+metrics_tracker = get_metrics_tracker()
+ws_manager = get_ws_manager()
 
 # ============================================================
 # DISCORD BOT SETUP
@@ -346,115 +136,17 @@ voice_client: Optional[discord.VoiceClient] = None
 # SERVICE LAYER INITIALIZATION (VoxBridge 2.0)
 # ============================================================
 
-# Initialize services
+# Initialize services (shared with API module)
 conversation_service = ConversationService()
 stt_service = get_stt_service()
 llm_service = get_llm_service()
 tts_service = get_tts_service()
-plugin_manager = get_plugin_manager()
 
 # Active sessions: Discord user_id → session_id
 active_discord_sessions: Dict[str, str] = {}
 
 # Session timing tracking for metrics
 session_timings: Dict[str, Dict[str, float]] = {}
-
-# ============================================================
-# FAST API SETUP
-# ============================================================
-
-app = FastAPI(title="VoxBridge API")
-
-# Include agent management routes (VoxBridge 2.0)
-app.include_router(agent_router)
-
-# Include session/conversation management routes (VoxBridge 2.0 Phase 4)
-app.include_router(session_router)
-
-# Include Discord plugin voice control routes (VoxBridge 2.0 Phase 3)
-app.include_router(discord_plugin_router)
-
-# Pydantic models for API
-class JoinVoiceRequest(BaseModel):
-    channelId: str
-    guildId: str
-
-class SpeakRequest(BaseModel):
-    output: dict
-    options: dict = {}
-
-# ============================================================
-# SERVICE STARTUP/SHUTDOWN
-# ============================================================
-
-@app.on_event("startup")
-async def startup_services():
-    """Start background service tasks"""
-    logger.info("🚀 Starting VoxBridge services...")
-
-    # Start existing services
-    await conversation_service.start()
-    await plugin_manager.start_resource_monitoring()
-
-    # NEW Phase 4 Batch 1: Initialize plugins for all agents
-    try:
-        from src.services.agent_service import AgentService
-
-        logger.info("🔌 Initializing plugins for all agents...")
-        agents = await AgentService.get_all_agents()
-
-        if not agents:
-            logger.info("  ℹ️  No agents found - plugins will be initialized when agents are created")
-
-        initialized_count = 0
-        failed_count = 0
-
-        for agent in agents:
-            if agent.plugins:
-                logger.info(f"  🔌 Initializing plugins for agent '{agent.name}'...")
-                try:
-                    # Phase 4: Add 30-second timeout per agent plugin initialization
-                    results = await asyncio.wait_for(
-                        plugin_manager.initialize_agent_plugins(agent),
-                        timeout=30.0
-                    )
-
-                    for plugin_type, success in results.items():
-                        if success:
-                            status = "✅"
-                            initialized_count += 1
-                            logger.info(f"    {status} {plugin_type} plugin initialized")
-                        else:
-                            status = "❌"
-                            failed_count += 1
-                            logger.error(f"    {status} {plugin_type} plugin failed to initialize")
-                except asyncio.TimeoutError:
-                    logger.error(f"    ⏱️ Plugin initialization timeout for agent '{agent.name}' (30s)")
-                    failed_count += 1
-
-        if initialized_count > 0:
-            logger.info(f"✅ Initialized {initialized_count} plugins across {len(agents)} agents")
-        if failed_count > 0:
-            logger.warning(f"⚠️  {failed_count} plugins failed to initialize")
-
-    except Exception as e:
-        logger.error(f"❌ Error during plugin initialization: {e}", exc_info=True)
-        # Don't crash app - continue startup even if plugins fail
-
-    logger.info("✅ VoxBridge services started")
-
-@app.on_event("shutdown")
-async def shutdown_services():
-    """Cleanup services on shutdown"""
-    logger.info("🛑 Shutting down services...")
-
-    await conversation_service.stop()
-    await llm_service.close()
-    await tts_service.close()
-    await stt_service.shutdown()
-    await plugin_manager.shutdown()
-
-    logger.info("✅ Services shutdown complete")
 
 # ============================================================
 # DISCORD BOT EVENTS
@@ -468,6 +160,16 @@ async def on_ready():
     logger.info(f"🎙️ Voice service ready with VoxBridge 2.0 service layer")
     logger.info("=" * 60)
 
+    # Register bridge functions for API module (Phase 6.4.1)
+    set_bot_bridge({
+        'handle_join_voice': handle_join_voice,
+        'handle_leave_voice': handle_leave_voice,
+        'get_bot_status': get_bot_status,
+        'get_detailed_status': get_detailed_status,
+        'get_discord_channels': get_discord_channels
+    })
+    logger.info("✅ Bot bridge functions registered with API module")
+
 @bot.event
 async def on_error(event, *args, **kwargs):
     """Bot error handler"""
@@ -477,6 +179,11 @@ async def on_error(event, *args, **kwargs):
 # VOICE AUDIO RECEIVER (Refactored for Service Layer)
 # ============================================================
 
+# ⚠️ DEPRECATED (Phase 6.4.1 Batch 2a)
+# This legacy AudioReceiver class is deprecated and will be removed in VoxBridge 3.0
+# Use the new plugin-based Discord bot instead (set USE_LEGACY_DISCORD_BOT=false)
+#
+# Rollback path: Set USE_LEGACY_DISCORD_BOT=true to re-enable legacy handlers
 class AudioReceiver(voice_recv.AudioSink):
     """Custom audio sink to receive voice data and route to STTService"""
 
@@ -496,6 +203,11 @@ class AudioReceiver(voice_recv.AudioSink):
             user: Discord user sending audio
             data: VoiceData object containing Opus packet
         """
+        # Phase 6.4.1 Batch 2a: Disable in new mode
+        if not USE_LEGACY_DISCORD_BOT:
+            logger.debug("🚫 Legacy AudioReceiver.write() disabled - using plugin system")
+            return
+
         if not user:
             return
 
@@ -598,6 +310,11 @@ audio_receiver: Optional[AudioReceiver] = None
 # VOICE PROCESSING (VoxBridge 2.0 Service Integration)
 # ============================================================
 
+# ⚠️ DEPRECATED (Phase 6.4.1 Batch 2a)
+# This legacy voice processing function is deprecated and will be removed in VoxBridge 3.0
+# Use the new plugin-based Discord bot instead (set USE_LEGACY_DISCORD_BOT=false)
+#
+# Rollback path: Set USE_LEGACY_DISCORD_BOT=true to re-enable legacy handlers
 async def on_user_speaking_start(user_id: str, username: str, audio_stream):
     """
     Handle user starting to speak (VoxBridge 2.0 service integration)
@@ -609,6 +326,11 @@ async def on_user_speaking_start(user_id: str, username: str, audio_stream):
         username: Discord username
         audio_stream: Async generator of audio chunks
     """
+    # Phase 6.4.1 Batch 2a: Disable in new mode
+    if not USE_LEGACY_DISCORD_BOT:
+        logger.debug(f"🚫 Legacy on_user_speaking_start() disabled for {username} - using plugin system")
+        return
+
     logger.info(f"🎤 {username} ({user_id}) started speaking")
 
     try:
@@ -761,6 +483,11 @@ async def on_user_speaking_start(user_id: str, username: str, audio_stream):
             session_id = active_discord_sessions[user_id]
             await cleanup_session(user_id, session_id)
 
+# ⚠️ DEPRECATED (Phase 6.4.1 Batch 2a)
+# This legacy STT callback is deprecated and will be removed in VoxBridge 3.0
+# Use the new plugin-based Discord bot instead (set USE_LEGACY_DISCORD_BOT=false)
+#
+# Rollback path: Set USE_LEGACY_DISCORD_BOT=true to re-enable legacy handlers
 async def on_stt_transcript(session_id: str, user_id: str, username: str, text: str, is_final: bool, metadata: Dict):
     """
     Callback for STT transcriptions (VoxBridge 2.0)
@@ -773,6 +500,11 @@ async def on_stt_transcript(session_id: str, user_id: str, username: str, text: 
         is_final: Whether this is a final transcript
         metadata: STT metadata (confidence, etc.)
     """
+    # Phase 6.4.1 Batch 2a: Disable in new mode
+    if not USE_LEGACY_DISCORD_BOT:
+        logger.debug(f"🚫 Legacy on_stt_transcript() disabled for {username} - using plugin system")
+        return
+
     if not is_final:
         # Partial transcript - log and broadcast
         logger.info(f"🔄 Partial (session={session_id[:8]}...): \"{text}\" (user={username})")
@@ -820,6 +552,11 @@ async def on_stt_transcript(session_id: str, user_id: str, username: str, text: 
     # Generate LLM response
     await generate_and_play_response(session_id, user_id, username, text)
 
+# ⚠️ DEPRECATED (Phase 6.4.1 Batch 2a)
+# This legacy LLM generation function is deprecated and will be removed in VoxBridge 3.0
+# Use the new plugin-based Discord bot instead (set USE_LEGACY_DISCORD_BOT=false)
+#
+# Rollback path: Set USE_LEGACY_DISCORD_BOT=true to re-enable legacy handlers
 async def generate_and_play_response(session_id: str, user_id: str, username: str, user_text: str):
     """
     Generate LLM response and play via TTS (VoxBridge 2.0)
@@ -830,6 +567,11 @@ async def generate_and_play_response(session_id: str, user_id: str, username: st
         username: Discord username
         user_text: User's transcribed text
     """
+    # Phase 6.4.1 Batch 2a: Disable in new mode
+    if not USE_LEGACY_DISCORD_BOT:
+        logger.debug(f"🚫 Legacy generate_and_play_response() disabled for {username} - using plugin system")
+        return
+
     try:
         t_llm_start = time.time()
 
@@ -965,6 +707,11 @@ async def generate_and_play_response(session_id: str, user_id: str, username: st
         logger.error(f"❌ Error generating LLM response (session={session_id[:8]}...): {e}", exc_info=True)
         metrics_tracker.record_error()
 
+# ⚠️ DEPRECATED (Phase 6.4.1 Batch 2a)
+# This legacy TTS playback function is deprecated and will be removed in VoxBridge 3.0
+# Use the new plugin-based Discord bot instead (set USE_LEGACY_DISCORD_BOT=false)
+#
+# Rollback path: Set USE_LEGACY_DISCORD_BOT=true to re-enable legacy handlers
 async def synthesize_and_play_discord(session_id: str, user_id: str, username: str, text: str, agent):
     """
     Synthesize speech and play in Discord voice channel (VoxBridge 2.0)
@@ -976,6 +723,11 @@ async def synthesize_and_play_discord(session_id: str, user_id: str, username: s
         text: Text to synthesize
         agent: Agent model with TTS settings
     """
+    # Phase 6.4.1 Batch 2a: Disable in new mode
+    if not USE_LEGACY_DISCORD_BOT:
+        logger.debug(f"🚫 Legacy synthesize_and_play_discord() disabled for {username} - using plugin system")
+        return
+
     if not voice_client or not voice_client.is_connected():
         logger.warning("⚠️ Not in voice channel, cannot play TTS")
         return
@@ -1056,6 +808,11 @@ async def synthesize_and_play_discord(session_id: str, user_id: str, username: s
     except Exception as e:
         logger.error(f"❌ Error with TTS playback: {e}", exc_info=True)
 
+# ⚠️ DEPRECATED (Phase 6.4.1 Batch 2a)
+# This legacy session cleanup function is deprecated and will be removed in VoxBridge 3.0
+# Use the new plugin-based Discord bot instead (set USE_LEGACY_DISCORD_BOT=false)
+#
+# Rollback path: Set USE_LEGACY_DISCORD_BOT=true to re-enable legacy handlers
 async def cleanup_session(user_id: str, session_id: str):
     """
     Cleanup session when user stops speaking
@@ -1064,6 +821,11 @@ async def cleanup_session(user_id: str, session_id: str):
         user_id: Discord user ID
         session_id: Session UUID
     """
+    # Phase 6.4.1 Batch 2a: Disable in new mode
+    if not USE_LEGACY_DISCORD_BOT:
+        logger.debug(f"🚫 Legacy cleanup_session() disabled for user {user_id} - using plugin system")
+        return
+
     logger.info(f"🧹 Cleaning up session {session_id[:8]}... for user {user_id}")
 
     try:
@@ -1091,11 +853,15 @@ async def cleanup_session(user_id: str, session_id: str):
         logger.error(f"❌ Error cleaning up session {session_id[:8]}...: {e}", exc_info=True)
 
 # ============================================================
-# VOICE CHANNEL OPERATIONS
+# VOICE CHANNEL OPERATIONS (Bridge functions for API module)
 # ============================================================
 
-@app.post("/voice/join")
-async def join_voice(request: JoinVoiceRequest):
+# ⚠️ DEPRECATED (Phase 6.4.1 Batch 2a)
+# This legacy voice join handler is deprecated and will be removed in VoxBridge 3.0
+# Use the new plugin-based Discord bot instead (set USE_LEGACY_DISCORD_BOT=false)
+#
+# Rollback path: Set USE_LEGACY_DISCORD_BOT=true to re-enable legacy handlers
+async def handle_join_voice(request):
     """
     Join a Discord voice channel
 
@@ -1105,6 +871,11 @@ async def join_voice(request: JoinVoiceRequest):
     Returns:
         Success response with channel info
     """
+    # Phase 6.4.1 Batch 2a: Disable in new mode
+    if not USE_LEGACY_DISCORD_BOT:
+        logger.warning("🚫 Legacy handle_join_voice() disabled - using plugin system")
+        raise RuntimeError("Legacy voice handlers disabled. Set USE_LEGACY_DISCORD_BOT=true to re-enable.")
+
     global voice_client, audio_receiver
 
     logger.info(f"📞 JOIN request - Channel: {request.channelId}, Guild: {request.guildId}")
@@ -1118,7 +889,7 @@ async def join_voice(request: JoinVoiceRequest):
             channel = await bot.fetch_channel(int(request.channelId))
 
         if not isinstance(channel, discord.VoiceChannel):
-            raise HTTPException(status_code=400, detail="Invalid voice channel")
+            raise ValueError("Invalid voice channel")
 
         logger.info(f"   ✅ Channel found: {channel.name}")
 
@@ -1143,22 +914,31 @@ async def join_voice(request: JoinVoiceRequest):
 
     except Exception as e:
         logger.error(f"❌ Error joining voice channel: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise
 
-@app.post("/voice/leave")
-async def leave_voice():
+# ⚠️ DEPRECATED (Phase 6.4.1 Batch 2a)
+# This legacy voice leave handler is deprecated and will be removed in VoxBridge 3.0
+# Use the new plugin-based Discord bot instead (set USE_LEGACY_DISCORD_BOT=false)
+#
+# Rollback path: Set USE_LEGACY_DISCORD_BOT=true to re-enable legacy handlers
+async def handle_leave_voice():
     """
     Leave the current voice channel
 
     Returns:
         Success response
     """
+    # Phase 6.4.1 Batch 2a: Disable in new mode
+    if not USE_LEGACY_DISCORD_BOT:
+        logger.warning("🚫 Legacy handle_leave_voice() disabled - using plugin system")
+        raise RuntimeError("Legacy voice handlers disabled. Set USE_LEGACY_DISCORD_BOT=true to re-enable.")
+
     global voice_client, audio_receiver
 
     logger.info("📞 LEAVE request received")
 
     if not voice_client:
-        raise HTTPException(status_code=400, detail="Not currently in a voice channel")
+        raise ValueError("Not currently in a voice channel")
 
     try:
         # Cleanup all active sessions
@@ -1180,25 +960,21 @@ async def leave_voice():
 
     except Exception as e:
         logger.error(f"❌ Error leaving voice channel: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise
 
 # ============================================================
-# HEALTH & STATUS ENDPOINTS
+# STATUS BRIDGE FUNCTIONS (For API module)
 # ============================================================
 
-@app.get("/health")
-async def health_check():
-    """Health check endpoint"""
+def get_bot_status():
+    """Get basic bot status for health check"""
     return {
-        "status": "ok",
-        "botReady": bot.is_ready(),
-        "inVoiceChannel": voice_client is not None and voice_client.is_connected(),
-        "activeSessions": len(active_discord_sessions),
-        "timestamp": datetime.now().isoformat()
+        "ready": bot.is_ready(),
+        "in_voice": voice_client is not None and voice_client.is_connected(),
+        "active_sessions": len(active_discord_sessions)
     }
 
-@app.get("/status")
-async def get_status():
+async def get_detailed_status(llm_service, tts_service, stt_service, conversation_service):
     """Detailed status information"""
     # Get channel info if connected
     channel_info = {
@@ -1326,8 +1102,7 @@ async def get_status():
         }
     }
 
-@app.get("/api/channels")
-async def get_channels():
+async def get_discord_channels():
     """
     Get list of available voice channels across all guilds
 
@@ -1335,7 +1110,7 @@ async def get_channels():
         List of guilds with their voice channels
     """
     if not bot.is_ready():
-        raise HTTPException(status_code=503, detail="Bot not ready")
+        raise RuntimeError("Bot not ready")
 
     guilds_data = []
     for guild in bot.guilds:
@@ -1355,190 +1130,11 @@ async def get_channels():
 
     return {"guilds": guilds_data}
 
-@app.get("/api/metrics")
-async def get_metrics():
-    """
-    Get performance metrics
-
-    Returns:
-        Performance metrics including latency, counts, error rate
-    """
-    return metrics_tracker.get_metrics()
-
-@app.get("/api/plugins/stats")
-async def get_plugin_stats():
-    """
-    Get plugin system statistics including resource usage
-
-    Returns:
-        Plugin manager stats with resource monitoring data
-    """
-    return plugin_manager.get_stats()
-
 # ============================================================
-# WEBSOCKET CONNECTION MANAGER
+# WEBSOCKET BROADCAST HELPERS
 # ============================================================
 
-class ConnectionManager:
-    """Manage WebSocket connections for real-time updates"""
-
-    def __init__(self):
-        self.active_connections: list[WebSocket] = []
-
-    async def connect(self, websocket: WebSocket):
-        await websocket.accept()
-        self.active_connections.append(websocket)
-        logger.info(f"🔌 WebSocket client connected (total: {len(self.active_connections)})")
-
-    def disconnect(self, websocket: WebSocket):
-        if websocket in self.active_connections:
-            self.active_connections.remove(websocket)
-        logger.info(f"🔌 WebSocket client disconnected (total: {len(self.active_connections)})")
-
-    async def broadcast(self, message: dict):
-        """Broadcast message to all connected clients"""
-        event_type = message.get('event', 'unknown')
-        num_clients = len(self.active_connections)
-        logger.info(f"📤 Broadcasting {event_type} to {num_clients} client(s)")
-
-        dead_connections = []
-        success_count = 0
-        for connection in self.active_connections:
-            try:
-                await connection.send_json(message)
-                success_count += 1
-            except Exception as e:
-                logger.error(f"❌ Error sending to WebSocket client: {e}")
-                dead_connections.append(connection)
-
-        # Log results
-        if success_count > 0:
-            logger.info(f"✅ Sent {event_type} to {success_count}/{num_clients} client(s)")
-        if dead_connections:
-            logger.warning(f"⚠️ Removed {len(dead_connections)} dead connection(s)")
-
-        # Remove dead connections
-        for connection in dead_connections:
-            self.disconnect(connection)
-
-# Initialize connection manager
-ws_manager = ConnectionManager()
-
-# Set WebSocket manager for agent routes (VoxBridge 2.0)
-from src.routes.agent_routes import set_websocket_manager
-set_websocket_manager(ws_manager)
-
-@app.websocket("/ws/events")
-async def websocket_endpoint(websocket: WebSocket):
-    """
-    WebSocket endpoint for real-time event streaming
-
-    Events emitted:
-    - speaker_started: User begins speaking
-    - speaker_stopped: User stops speaking
-    - partial_transcript: Partial transcription update
-    - final_transcript: Final transcription result
-    - ai_response: AI response text
-    - status_update: General status update
-    """
-    await ws_manager.connect(websocket)
-
-    try:
-        # Send initial status
-        await websocket.send_json({
-            "event": "status_update",
-            "data": {
-                "connected": True,
-                "timestamp": datetime.now().isoformat()
-            }
-        })
-
-        # Keep connection alive
-        while True:
-            try:
-                # Wait for any client messages (ping/pong)
-                data = await websocket.receive_text()
-
-                # Echo back for ping/pong
-                if data == "ping":
-                    await websocket.send_json({"type": "pong"})
-
-            except WebSocketDisconnect:
-                break
-
-    except Exception as e:
-        logger.error(f"❌ WebSocket error: {e}")
-    finally:
-        ws_manager.disconnect(websocket)
-
-@app.websocket("/ws/voice")
-async def websocket_voice_endpoint(websocket: WebSocket):
-    """
-    WebSocket endpoint for browser voice streaming (VoxBridge 2.0 Phase 4)
-
-    Protocol:
-    - Client Query Params: ?session_id={uuid}&user_id={string}
-    - Client → Server: Binary audio chunks (Opus, 100ms intervals)
-    - Server → Client: JSON events
-
-    Events emitted:
-    - partial_transcript: Real-time transcription updates
-    - final_transcript: Complete transcription
-    - ai_response_chunk: AI response text chunks
-    - ai_response_complete: AI response completion
-    - error: Error messages
-    """
-    from src.voice.webrtc_handler import WebRTCVoiceHandler
-    from uuid import UUID
-
-    try:
-        # Accept connection
-        await websocket.accept()
-        logger.info("🔌 WebSocket voice connection request received")
-
-        # Parse query parameters
-        query_params = websocket.query_params
-        session_id_str = query_params.get('session_id')
-        user_id = query_params.get('user_id')
-
-        if not session_id_str or not user_id:
-            await websocket.send_json({
-                "event": "error",
-                "data": {"message": "Missing session_id or user_id query parameters"}
-            })
-            await websocket.close()
-            return
-
-        # Parse UUID
-        try:
-            session_id = UUID(session_id_str)
-        except ValueError:
-            await websocket.send_json({
-                "event": "error",
-                "data": {"message": "Invalid session_id format (must be UUID)"}
-            })
-            await websocket.close()
-            return
-
-        logger.info(f"✅ WebSocket voice connection established: user={user_id}, session={session_id}")
-
-        # Create handler and start processing
-        handler = WebRTCVoiceHandler(websocket, user_id, session_id)
-        await handler.start()
-
-    except WebSocketDisconnect:
-        logger.info("🔌 WebSocket voice connection closed")
-    except Exception as e:
-        logger.error(f"❌ WebSocket voice error: {e}", exc_info=True)
-        try:
-            await websocket.send_json({
-                "event": "error",
-                "data": {"message": f"Server error: {str(e)}"}
-            })
-        except:
-            pass
-
-# Helper functions to broadcast events from other parts of the code
+# Helper functions to broadcast events via API module WebSocket manager
 async def broadcast_speaker_started(user_id: str, username: str):
     """Broadcast when a user starts speaking"""
     await ws_manager.broadcast({
@@ -1610,19 +1206,14 @@ async def start_bot():
     await bot.start(DISCORD_TOKEN)
 
 async def start_api():
-    """Start FastAPI server"""
+    """Start FastAPI server (from API module)"""
     config = uvicorn.Config(app, host="0.0.0.0", port=PORT, log_level="info")
     server = uvicorn.Server(config)
 
     logger.info("=" * 60)
-    logger.info(f"🚀 Voice bot API listening on port {PORT}")
-    logger.info(f"📍 Endpoints available:")
-    logger.info(f"   POST /voice/join - Join voice channel")
-    logger.info(f"   POST /voice/leave - Leave voice channel")
-    logger.info(f"   GET  /health - Health check")
-    logger.info(f"   GET  /status - Detailed status")
-    logger.info(f"   WS   /ws/events - Real-time event stream (Discord)")
-    logger.info(f"   WS   /ws/voice - Browser voice streaming (Phase 4)")
+    logger.info(f"🚀 VoxBridge API listening on port {PORT}")
+    logger.info(f"📍 API module: src/api/server.py")
+    logger.info(f"📍 Bot module: src/discord_bot.py")
     logger.info("=" * 60)
 
     await server.serve()

@@ -648,6 +648,9 @@ class DiscordPlugin(PluginBase):
         # Register event handlers
         self._register_event_handlers()
 
+        # Phase 4 Batch 3: Register slash commands for agent management
+        self._register_slash_commands()
+
         # Phase 1: Initialize service layer dependencies
         # These are singletons shared across plugins but each plugin maintains its own reference
         try:
@@ -677,6 +680,8 @@ class DiscordPlugin(PluginBase):
 
     def _register_event_handlers(self):
         """Register Discord event handlers for this bot instance"""
+        # Import plugin manager for agent routing
+        from src.services.plugin_manager import get_plugin_manager
 
         @self.bot.event
         async def on_ready():
@@ -690,22 +695,46 @@ class DiscordPlugin(PluginBase):
             for guild in self.bot.guilds:
                 logger.info(f"  📍 Connected to guild: {guild.name} (ID: {guild.id})")
 
+            # Sync slash commands with Discord
+            try:
+                await self.bot.tree.sync()
+                logger.info("✅ Discord slash commands synced")
+            except Exception as e:
+                logger.error(f"❌ Failed to sync Discord commands: {e}", exc_info=True)
+
         @self.bot.event
         async def on_voice_state_update(member, before, after):
             """
             Handle voice state changes (user joins/leaves voice channel).
 
             Phase 2: Registers audio receiver when user joins voice channel.
+            Phase 4 Batch 3: Routes voice events to default agent only.
             """
             # Skip if bot's own state changed
             if member.id == self.bot.user.id:
+                return
+
+            # Phase 4 Batch 3: Check if this plugin belongs to the default agent
+            plugin_manager = get_plugin_manager()
+            default_agent_id = await plugin_manager.get_default_agent_id()
+
+            if not default_agent_id:
+                logger.debug("⚠️  No default agent configured, skipping voice event")
+                return
+
+            # Only handle events for this plugin's agent if it's the default
+            if default_agent_id != self.agent_id:
+                logger.debug(
+                    f"🚫 Ignoring voice event - this plugin is for agent {self.agent_name} "
+                    f"but default agent is {default_agent_id}"
+                )
                 return
 
             # User joined voice channel
             if before.channel is None and after.channel is not None:
                 logger.info(
                     f"🎤 {member.name} joined voice channel '{after.channel.name}' "
-                    f"in guild '{after.channel.guild.name}'"
+                    f"in guild '{after.channel.guild.name}' (agent: {self.agent_name})"
                 )
 
                 # Auto-join if enabled and not already in a voice channel
@@ -767,6 +796,167 @@ class DiscordPlugin(PluginBase):
         async def on_command_error(ctx, error):
             """Handle command errors"""
             logger.error(f"❌ Command error in agent '{self.agent_name}': {error}", exc_info=error)
+
+    def _register_slash_commands(self):
+        """
+        Register Discord slash commands for agent management.
+
+        Phase 4 Batch 3: Agent routing and selection commands
+        """
+        from discord import app_commands
+        from src.services.agent_service import AgentService
+        from src.services.plugin_manager import get_plugin_manager
+
+        @self.bot.tree.command(name="agent", description="Manage AI agent selection")
+        @app_commands.describe(
+            action="Action: list (show agents), current (show default), select (switch agent)",
+            name="Agent name (required for 'select' action)"
+        )
+        async def agent_command(
+            interaction: discord.Interaction,
+            action: str,
+            name: str = None
+        ):
+            """
+            Agent management slash command.
+
+            Usage:
+                /agent list - Show all available agents
+                /agent current - Show current default agent
+                /agent select <name> - Switch to a different agent
+            """
+            try:
+                if action == "list":
+                    # List all available agents
+                    agents = await AgentService.get_all_agents()
+
+                    if not agents:
+                        await interaction.response.send_message("❌ No agents available")
+                        return
+
+                    # Build agent list message
+                    agent_list = "🤖 **Available Agents:**\n\n"
+                    for agent in agents:
+                        # Mark default agent with star
+                        is_default = "⭐ " if agent.is_default else ""
+                        # Mark agents with Discord plugin enabled
+                        has_discord = "🔌 " if agent.plugins.get('discord', {}).get('enabled') else ""
+
+                        agent_list += f"{is_default}{has_discord}**{agent.name}**\n"
+                        # Show truncated system prompt
+                        prompt_preview = agent.system_prompt[:100].replace('\n', ' ')
+                        agent_list += f"  _{prompt_preview}..._\n"
+                        agent_list += f"  Provider: {agent.llm_provider} | Model: {agent.llm_model}\n\n"
+
+                    agent_list += "\n💡 **Tips:**\n"
+                    agent_list += "• ⭐ = Default agent\n"
+                    agent_list += "• 🔌 = Discord plugin enabled\n"
+                    agent_list += "• Use `/agent select <name>` to switch agents\n"
+
+                    await interaction.response.send_message(agent_list)
+                    logger.info(f"📋 Listed {len(agents)} agents for user {interaction.user.name}")
+
+                elif action == "select":
+                    if not name:
+                        await interaction.response.send_message("❌ Please provide an agent name: `/agent select <name>`")
+                        return
+
+                    # Find agent by name (case-insensitive)
+                    agent = await AgentService.get_agent_by_name(name)
+
+                    if not agent:
+                        # Try case-insensitive search
+                        all_agents = await AgentService.get_all_agents()
+                        for a in all_agents:
+                            if a.name.lower() == name.lower():
+                                agent = a
+                                break
+
+                    if not agent:
+                        await interaction.response.send_message(
+                            f"❌ Agent '{name}' not found. Use `/agent list` to see available agents."
+                        )
+                        return
+
+                    # Check if agent has Discord plugin enabled
+                    if not agent.plugins.get('discord', {}).get('enabled'):
+                        await interaction.response.send_message(
+                            f"❌ Agent '{agent.name}' does not have Discord plugin enabled.\n"
+                            f"Please enable the Discord plugin for this agent first."
+                        )
+                        return
+
+                    # Set as default agent
+                    updated_agent = await AgentService.set_default_agent(agent.id)
+
+                    if not updated_agent:
+                        await interaction.response.send_message(f"❌ Failed to switch to agent '{name}'")
+                        return
+
+                    # Invalidate plugin manager cache
+                    plugin_manager = get_plugin_manager()
+                    plugin_manager.invalidate_agent_cache()
+
+                    # Build success message
+                    prompt_preview = updated_agent.system_prompt[:150].replace('\n', ' ')
+                    success_msg = (
+                        f"✅ **Switched to agent: {updated_agent.name}**\n\n"
+                        f"_{prompt_preview}..._\n\n"
+                        f"**Configuration:**\n"
+                        f"• Provider: {updated_agent.llm_provider}\n"
+                        f"• Model: {updated_agent.llm_model}\n"
+                        f"• Temperature: {updated_agent.temperature}\n"
+                        f"• TTS Voice: {updated_agent.tts_voice or 'default'}\n"
+                    )
+
+                    await interaction.response.send_message(success_msg)
+                    logger.info(
+                        f"🔄 Agent switched to '{updated_agent.name}' by user {interaction.user.name} "
+                        f"(ID: {interaction.user.id})"
+                    )
+
+                elif action == "current":
+                    # Show current default agent
+                    default_agent = await AgentService.get_default_agent()
+
+                    if not default_agent:
+                        await interaction.response.send_message(
+                            "❌ No default agent set. Use `/agent select <name>` to set one."
+                        )
+                        return
+
+                    # Build current agent message
+                    prompt_preview = default_agent.system_prompt[:150].replace('\n', ' ')
+                    current_msg = (
+                        f"🤖 **Current Default Agent: {default_agent.name}**\n\n"
+                        f"_{prompt_preview}..._\n\n"
+                        f"**Configuration:**\n"
+                        f"• Provider: {default_agent.llm_provider}\n"
+                        f"• Model: {default_agent.llm_model}\n"
+                        f"• Temperature: {default_agent.temperature}\n"
+                        f"• TTS Voice: {default_agent.tts_voice or 'default'}\n\n"
+                        f"💡 Use `/agent list` to see all agents or `/agent select <name>` to switch."
+                    )
+
+                    await interaction.response.send_message(current_msg)
+                    logger.info(f"ℹ️  Showed current agent to user {interaction.user.name}")
+
+                else:
+                    await interaction.response.send_message(
+                        "❌ Invalid action. Use:\n"
+                        "• `/agent list` - Show all agents\n"
+                        "• `/agent current` - Show default agent\n"
+                        "• `/agent select <name>` - Switch to agent"
+                    )
+
+            except Exception as e:
+                logger.error(f"❌ Error in agent command: {e}", exc_info=True)
+                error_msg = f"❌ Error executing command: {str(e)}"
+                try:
+                    await interaction.response.send_message(error_msg)
+                except:
+                    # Interaction already responded, try followup
+                    await interaction.followup.send(error_msg)
 
     # ============================================================
     # LIFECYCLE METHODS

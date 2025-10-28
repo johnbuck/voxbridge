@@ -63,15 +63,13 @@ services:
     ports:
       - "4900:4900"
     volumes:
-      - ./src/discord_bot.py:/app/src/discord_bot.py              # Live code updates
-      - ./src/whisper_client.py:/app/src/whisper_client.py        # Live code updates
-      - ./src/speaker_manager.py:/app/src/speaker_manager.py      # Live code updates
-      - ./src/streaming_handler.py:/app/src/streaming_handler.py  # Live code updates
+      - ./src:/app/src                                            # Mount entire src directory for live updates
       - ./requirements-bot.txt:/app/requirements-bot.txt          # For reference
       - ./assets:/app/assets                                      # Thinking indicator sound effects
     environment:
       # Discord
       - DISCORD_TOKEN=${DISCORD_TOKEN}
+      - USE_LEGACY_DISCORD_BOT=${USE_LEGACY_DISCORD_BOT:-false}
 
       # WhisperX Configuration - Connect to whisperx container
       - WHISPER_SERVER_URL=ws://whisperx:4901

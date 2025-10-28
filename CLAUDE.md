@@ -41,7 +41,7 @@ For comprehensive architecture and patterns, see [AGENTS.md](./AGENTS.md).
 
 **Branch**: `voxbridge-2.0`
 **Plan**: [docs/architecture/voxbridge-2.0-transformation-plan.md](docs/architecture/voxbridge-2.0-transformation-plan.md)
-**Status**: Phase 4 ✅ COMPLETE (Oct 27, 2025)
+**Status**: Phase 5 ✅ COMPLETE (Oct 28, 2025)
 
 **Phase 1: Core Infrastructure** ✅:
 - PostgreSQL 15 database for agents, sessions, conversations
@@ -72,7 +72,15 @@ For comprehensive architecture and patterns, see [AGENTS.md](./AGENTS.md).
 - Real-time transcription + AI response display
 - 28 unit tests (all passing)
 
-**Upcoming**: Phase 5 (Core Refactor), Phase 6 (Extension System)
+**Phase 5: Core Voice Pipeline Refactor** ✅:
+- 4 new services (2,342 lines): ConversationService, STTService, LLMService, TTSService
+- Refactored WebRTC handler + Discord bot to use service layer
+- Deleted old files: speaker_manager.py, whisper_client.py, streaming_handler.py
+- Net code reduction: -272 lines (22% smaller)
+- 99 unit tests with 90%+ coverage
+- ~300ms latency reduction per conversation turn
+
+**Upcoming**: Phase 6 (Extension System), Phase 7 (Documentation), Phase 8 (Testing & Migration)
 
 ### 📚 Related Planning Documents
 
@@ -123,24 +131,92 @@ docker compose down && docker compose build --no-cache && docker compose up -d
 - `voxbridge-discord` (port 4900) - Discord.py bot with FastAPI + streaming responses
 - `voxbridge-frontend` (port 4903) - React monitoring dashboard ✅ **DEPLOYED**
 
+**Service Layer Architecture (Phase 5):**
+
+VoxBridge 2.0 introduces a service-oriented architecture with 4 core services:
+
+1. **ConversationService** (`src/services/conversation_service.py`, 643 lines)
+   - Session management with UUID routing
+   - In-memory conversation context caching (15-minute TTL)
+   - PostgreSQL persistence for agents/sessions/conversations
+   - Background cache cleanup task
+
+2. **STTService** (`src/services/stt_service.py`, 586 lines)
+   - WhisperX WebSocket abstraction
+   - Per-session connection pooling
+   - Auto-reconnect with exponential backoff
+   - Async callback system for transcriptions
+
+3. **LLMService** (`src/services/llm_service.py`, 499 lines)
+   - Hybrid LLM routing (OpenRouter + Local LLM)
+   - Streaming support via async callbacks
+   - Fallback chain (OpenRouter → Local)
+   - HTTP connection pooling
+
+4. **TTSService** (`src/services/tts_service.py`, 614 lines)
+   - Chatterbox TTS abstraction
+   - Streaming and buffered synthesis modes
+   - Health monitoring and metrics
+   - Per-session TTS tracking
+
+**Key Benefits:**
+- Multi-user concurrent support (no global speaker lock)
+- Connection pooling and resource efficiency
+- Database-backed session persistence
+- Per-agent LLM provider/model/voice configuration
+- 90%+ test coverage
+- ~300ms latency reduction per conversation turn
+
 **Key Integration Points:**
 - Discord → PostgreSQL: Async SQLAlchemy (agent/session storage)
-- Discord → WhisperX: WebSocket at `ws://whisperx:4901`
-- Discord → Chatterbox TTS: HTTP at `http://chatterbox:4800`
-- Discord → n8n: HTTP streaming webhook (`N8N_WEBHOOK_URL`)
+- Discord → Services: ConversationService, STTService, LLMService, TTSService
+- Services → WhisperX: WebSocket at `ws://whisperx:4901`
+- Services → Chatterbox TTS: HTTP at `http://chatterbox:4800`
+- Services → LLM Providers: OpenRouter API, Local LLM (Ollama/vLLM)
 - Frontend → Discord: WebSocket at `ws://localhost:4900/ws`
 
 ## Key Files
 
-### Core Implementation
-- **src/discord_bot.py** (1200+ lines) - Main bot, FastAPI server, metrics tracking, `/ws/voice` endpoint
-- **src/speaker_manager.py** (800+ lines) - Speaker lock, STT→n8n, thinking indicator
-- **src/streaming_handler.py** (700+ lines) - Streaming AI responses, TTS playback
-- **src/whisper_client.py** (350+ lines) - WhisperX WebSocket client
-- **src/whisper_server.py** (400+ lines) - WhisperX server (GPU-accelerated)
+### Core Application (Phase 6.4.1 - NEW)
 
-### Voice Module (Phase 4)
-- **src/voice/webrtc_handler.py** (456 lines) - WebSocket audio handler, Opus decoding, WhisperX integration, LLM routing
+**API Server**:
+- **src/api/server.py** (715 lines) - Standalone FastAPI application
+  - All HTTP routes (voice, agents, plugins, metrics)
+  - WebSocket manager for real-time events
+  - Bridge pattern for Discord bot communication
+  - Startup/shutdown hooks
+- **src/api/__init__.py** (11 lines) - Module exports and bridge initialization
+
+**Discord Bot** (Legacy):
+- **src/discord_bot.py** (1,145 lines) - Legacy Discord bot (USE_LEGACY_DISCORD_BOT=true)
+  - Reduced from 1,680 lines after FastAPI extraction (Phase 6.4.1 Batch 1)
+  - Contains bridge functions for API integration
+  - Service layer integration (Phase 5)
+  - **⚠️ DEPRECATED** - Will be removed in VoxBridge 3.0
+
+**Plugins** (Phase 6.4.1):
+- **src/plugins/discord_plugin.py** (1,706 lines) - NEW Plugin-based Discord bot
+  - Complete voice pipeline (AudioReceiver, STT, LLM, TTS)
+  - Agent routing with slash commands (`/agent list`, `/agent select`)
+  - Resource monitoring integration
+  - Bridge pattern registration with API server
+- **src/plugins/base.py** (71 lines) - PluginBase abstract class
+- **src/plugins/registry.py** (153 lines) - PluginRegistry (singleton pattern)
+- **src/services/plugin_manager.py** (621 lines) - PluginManager orchestration
+
+**WhisperX Server**:
+- **src/whisper_server.py** (400+ lines) - WhisperX STT server (GPU-accelerated)
+
+### Services (Phase 5)
+- **src/services/conversation_service.py** (643 lines) - Session management + caching
+- **src/services/stt_service.py** (586 lines) - WhisperX abstraction
+- **src/services/llm_service.py** (499 lines) - LLM provider routing
+- **src/services/tts_service.py** (614 lines) - Chatterbox abstraction
+- **src/services/agent_service.py** (340 lines) - Agent CRUD operations
+- **src/services/plugin_manager.py** (621 lines) - Plugin orchestration (Phase 6.4.1)
+
+### Voice Module (Phase 4 + Phase 5)
+- **src/voice/webrtc_handler.py** (590 lines) - Refactored to use service layer ✅ (Phase 5)
 - **src/voice/__init__.py** (7 lines) - Module initialization
 
 ### Database (VoxBridge 2.0)
@@ -158,14 +234,24 @@ docker compose down && docker compose build --no-cache && docker compose up -d
 - **src/llm/__init__.py** (25 lines) - Package exports
 
 ### Frontend
-- **frontend/src/App.tsx** - Main dashboard with real-time metrics
-- **frontend/src/components/** - UI components (MetricsCard, AudioVisualization, etc.)
-- **frontend/src/pages/VoiceChatPage.tsx** - WebRTC voice chat page with real-time transcription
 
-### Frontend WebRTC (Phase 4)
-- **frontend/src/hooks/useWebRTCAudio.ts** (344 lines) - Microphone capture, Opus encoding, WebSocket streaming
-- **frontend/src/components/AudioControls.tsx** (100 lines) - Mic button, connection status, pulse animation
-- **frontend/src/types/webrtc.ts** (80 lines) - TypeScript interfaces for WebRTC
+**Core Pages**:
+- **frontend/src/App.tsx** - Main dashboard with real-time metrics
+- **frontend/src/pages/VoiceChatPage.tsx** - WebRTC voice chat page with real-time transcription
+- **frontend/src/pages/AgentsPage.tsx** (280 lines) - Agent management UI (Phase 2)
+- **frontend/src/pages/PluginsPage.tsx** (216 lines) - Plugin management UI (Phase 6.4.1 Batch 2b)
+
+**Components**:
+- **frontend/src/components/** - UI components (MetricsCard, AudioVisualization, etc.)
+- **frontend/src/components/AudioControls.tsx** (100 lines) - Mic button, connection status, pulse animation (Phase 4)
+- **frontend/src/components/PluginStatusCard.tsx** (166 lines) - Plugin status display (Phase 6.4.1 Batch 2b)
+
+**Hooks & Services**:
+- **frontend/src/hooks/useWebRTCAudio.ts** (344 lines) - Microphone capture, Opus encoding, WebSocket streaming (Phase 4)
+- **frontend/src/services/plugins.ts** (103 lines) - Plugin API client (Phase 6.4.1 Batch 2b)
+
+**Types**:
+- **frontend/src/types/webrtc.ts** (80 lines) - TypeScript interfaces for WebRTC (Phase 4)
 
 ### Configuration
 - **docker-compose.yml** - Main orchestration (4 containers: postgres + whisperx + discord + frontend)
@@ -177,17 +263,21 @@ docker compose down && docker compose build --no-cache && docker compose up -d
 - **requirements-test.txt** - Testing dependencies
 
 ### Testing
-- **tests/unit/** - Unit tests (161 total: 156 passing, 5 failing)
+- **tests/unit/** - Unit tests (260 total: 255+ passing)
 - **tests/unit/test_llm_types.py** (350 lines, 21 tests) - LLM type validation tests
 - **tests/unit/test_llm_factory.py** (421 lines, 24 tests) - Factory pattern tests
 - **tests/unit/test_openrouter_provider.py** (772 lines, 21 tests) - OpenRouter provider tests
 - **tests/unit/test_local_llm_provider.py** (882 lines, 24 tests) - Local LLM provider tests
 - **tests/unit/test_webrtc_handler.py** (900 lines, 28 tests) - WebRTC handler tests (Phase 4)
+- **tests/unit/services/test_conversation_service.py** (1,128 lines, 25 tests) - ConversationService tests (Phase 5)
+- **tests/unit/services/test_stt_service.py** (784 lines, 27 tests) - STTService tests (Phase 5)
+- **tests/unit/services/test_llm_service.py** (742 lines, 23 tests) - LLMService tests (Phase 5)
+- **tests/unit/services/test_tts_service.py** (735 lines, 24 tests) - TTSService tests (Phase 5)
 - **tests/integration/** - Integration tests (mock servers)
 - **tests/e2e/** - End-to-end tests (real services)
 - **tests/mocks/** - Mock servers (WhisperX, n8n, Chatterbox, Discord)
 - **tests/fixtures/** - Test data (audio, transcripts, TTS samples)
-- **Coverage**: ~88% overall, ~88% LLM module coverage
+- **Coverage**: 90%+ overall, ~88% LLM module coverage, 90%+ services coverage
 
 ## Environment Variables
 
@@ -204,6 +294,14 @@ docker compose down && docker compose build --no-cache && docker compose up -d
 - `DATABASE_URL` - Auto-constructed from above or override
 - `OPENROUTER_API_KEY` - Optional: OpenRouter API key for LLM provider
 - `LOCAL_LLM_BASE_URL` - Optional: Local LLM endpoint (e.g., http://localhost:11434/v1)
+
+**Discord Bot Mode (Phase 6.4.1 Batch 2a):**
+- `USE_LEGACY_DISCORD_BOT` - Toggle between new plugin-based bot (false) and legacy handlers (true)
+  - **Default**: `false` (recommended - uses new plugin system)
+  - **Legacy Mode**: Set to `true` to re-enable legacy Discord bot handlers
+  - **Deprecated**: Legacy mode will be removed in VoxBridge 3.0
+  - **Use Case**: Temporary rollback if issues arise with plugin system
+  - **Migration Guide**: See [docs/MIGRATION_GUIDE.md](docs/MIGRATION_GUIDE.md)
 
 **Optional (with defaults):**
 - `WHISPER_SERVER_URL=ws://whisperx:4901` - WhisperX WebSocket
