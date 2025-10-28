@@ -5,6 +5,7 @@ Business logic for managing AI agents in VoxBridge 2.0.
 Provides CRUD operations with validation and database interaction.
 """
 
+import logging
 from typing import List, Optional
 from uuid import UUID
 from sqlalchemy import select
@@ -12,6 +13,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.database.models import Agent
 from src.database.session import get_db_session
+from src.plugins.encryption import PluginEncryption, PluginEncryptionError
+
+logger = logging.getLogger(__name__)
 
 
 class AgentService:
@@ -30,6 +34,7 @@ class AgentService:
         tts_voice: Optional[str] = None,
         tts_rate: float = 1.0,
         tts_pitch: float = 1.0,
+        plugins: Optional[dict] = None,
     ) -> Agent:
         """
         Create a new agent.
@@ -40,12 +45,13 @@ class AgentService:
             temperature: LLM temperature (0.0-1.0)
             llm_provider: LLM provider ('openrouter' or 'local')
             llm_model: Model identifier
-            use_n8n: Use n8n webhook instead of direct LLM
-            n8n_webhook_url: Per-agent n8n webhook URL (optional)
+            use_n8n: Use n8n webhook instead of direct LLM (DEPRECATED - use plugins)
+            n8n_webhook_url: Per-agent n8n webhook URL (DEPRECATED - use plugins)
             is_default: Mark as default agent
             tts_voice: TTS voice ID (optional)
             tts_rate: TTS speech rate (0.5-2.0)
             tts_pitch: TTS pitch adjustment (0.5-2.0)
+            plugins: Plugin configurations (dict mapping plugin_type -> config)
 
         Returns:
             Created Agent instance
@@ -67,6 +73,19 @@ class AgentService:
         if not 0.5 <= tts_pitch <= 2.0:
             raise ValueError("TTS pitch must be between 0.5 and 2.0")
 
+        # Encrypt sensitive plugin fields
+        encrypted_plugins = {}
+        if plugins:
+            for plugin_type, plugin_config in plugins.items():
+                try:
+                    encrypted_plugins[plugin_type] = PluginEncryption.encrypt_config(
+                        plugin_type, plugin_config
+                    )
+                except PluginEncryptionError as e:
+                    logger.warning(f"⚠️ Could not encrypt {plugin_type} plugin config: {e}")
+                    # Fall back to unencrypted if encryption fails (e.g., key not configured)
+                    encrypted_plugins[plugin_type] = plugin_config
+
         async with get_db_session() as session:
             # If setting as default, unset any existing default
             if is_default:
@@ -77,7 +96,7 @@ class AgentService:
                 for existing_default in existing_defaults:
                     existing_default.is_default = False
 
-            # Create agent
+            # Create agent with encrypted plugins
             agent = Agent(
                 name=name,
                 system_prompt=system_prompt,
@@ -90,6 +109,7 @@ class AgentService:
                 tts_voice=tts_voice,
                 tts_rate=tts_rate,
                 tts_pitch=tts_pitch,
+                plugins=encrypted_plugins,
             )
 
             session.add(agent)
@@ -157,6 +177,7 @@ class AgentService:
         tts_voice: Optional[str] = None,
         tts_rate: Optional[float] = None,
         tts_pitch: Optional[float] = None,
+        plugins: Optional[dict] = None,
     ) -> Optional[Agent]:
         """
         Update agent fields.
@@ -171,6 +192,7 @@ class AgentService:
             tts_voice: New TTS voice (optional)
             tts_rate: New TTS rate (optional)
             tts_pitch: New TTS pitch (optional)
+            plugins: New plugin configurations (optional)
 
         Returns:
             Updated Agent instance or None if not found
@@ -238,6 +260,21 @@ class AgentService:
                 if not 0.5 <= tts_pitch <= 2.0:
                     raise ValueError("TTS pitch must be between 0.5 and 2.0")
                 agent.tts_pitch = tts_pitch
+
+            if plugins is not None:
+                # Encrypt sensitive plugin fields before updating
+                encrypted_plugins = {}
+                for plugin_type, plugin_config in plugins.items():
+                    try:
+                        encrypted_plugins[plugin_type] = PluginEncryption.encrypt_config(
+                            plugin_type, plugin_config
+                        )
+                    except PluginEncryptionError as e:
+                        logger.warning(f"⚠️ Could not encrypt {plugin_type} plugin config: {e}")
+                        # Fall back to unencrypted if encryption fails
+                        encrypted_plugins[plugin_type] = plugin_config
+
+                agent.plugins = encrypted_plugins
 
             await session.commit()
             await session.refresh(agent)

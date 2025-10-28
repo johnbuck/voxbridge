@@ -107,6 +107,13 @@ services:
 
       # Database Configuration
       - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-voxbridge}:${POSTGRES_PASSWORD:-voxbridge_dev_password}@postgres:5432/${POSTGRES_DB:-voxbridge}
+
+      # LLM Provider Configuration (VoxBridge 2.0 Phase 3)
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+      - LOCAL_LLM_BASE_URL=${LOCAL_LLM_BASE_URL}
+
+      # Plugin System Security (VoxBridge 2.0 Phase 6)
+      - PLUGIN_ENCRYPTION_KEY=${PLUGIN_ENCRYPTION_KEY}
     depends_on:
       postgres:
         condition: service_healthy

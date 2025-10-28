@@ -1,9 +1,9 @@
 # VoxBridge 2.0 Transformation - Progress Tracking
 
 **Created**: October 26, 2025
-**Last Updated**: October 26, 2025 (20:00 UTC)
-**Status**: Phase 2 ✅ COMPLETE, Phase 3 Ready to Begin
-**Overall Progress**: 25% (2/8 phases complete)
+**Last Updated**: October 28, 2025 (18:50 UTC)
+**Status**: Phase 6 🚧 IN PROGRESS - Plugin System (Sub-phases 6.1-6.2 Complete)
+**Overall Progress**: 68.75% (5.33/8 phases complete) + Bonus Features
 
 ---
 
@@ -13,12 +13,16 @@
 |-------|--------|----------|-----------------|----------|
 | Phase 1: Core Infrastructure | ✅ Complete | 2 days | Oct 26, 2025 | 100% |
 | Phase 2: Agent Management | ✅ Complete | 4 hours | Oct 26, 2025 | 100% |
-| Phase 3: LLM Provider Abstraction | 📋 Planned | 2 days | - | 0% |
-| Phase 4: Web Voice Interface | 📋 Planned | 2-3 days | - | 0% |
-| Phase 5: Core Refactor | 📋 Planned | 2-3 days | - | 0% |
-| Phase 6: Extension System | 📋 Planned | 2 days | - | 0% |
+| Phase 3: LLM Provider Abstraction | ✅ Complete | 2 days | Oct 27, 2025 | 100% |
+| Phase 4: Web Voice Interface | ✅ Complete | 2 days | Oct 27, 2025 | 100% |
+| Phase 5: Core Voice Refactor | ✅ Complete | 2 days | Oct 28, 2025 | 100% |
+| Phase 6: Plugin System | 🚧 In Progress | 2-3 days | - | 33% (2/6 sub-phases) |
 | Phase 7: Documentation Overhaul | 📋 Planned | 1 day | - | 0% |
 | Phase 8: Testing & Migration | 📋 Planned | 1 day | - | 0% |
+
+**Bonus Features** (Oct 28, 2025):
+- ⭐ WebRTC TTS Integration (Chatterbox audio playback)
+- ⭐ Agent Enhancements (default selection + per-agent webhooks)
 
 ---
 
@@ -232,31 +236,373 @@ src/database/
 
 ---
 
+## ✅ Phase 3: LLM Provider Abstraction
+
+**Status**: ✅ COMPLETE
+**Duration**: 2 days (Oct 27, 2025)
+**Dependencies**: Phases 1-2 ✅
+**Lead**: voxbridge-2.0-orchestrator
+
+### Deliverables ✅
+
+#### LLM Provider System (5 modules, 866 lines) ✅
+- ✅ `src/llm/base.py` (66 lines) - Abstract LLMProvider class with generate_stream() and health_check()
+- ✅ `src/llm/types.py` (54 lines) - Pydantic models (LLMMessage, LLMRequest, LLMError)
+- ✅ `src/llm/openrouter.py` (262 lines) - OpenRouter.ai provider with SSE streaming
+- ✅ `src/llm/local_llm.py` (264 lines) - Local LLM provider (Ollama, vLLM, LM Studio)
+- ✅ `src/llm/factory.py` (110 lines) - LLM provider factory with agent configuration
+- ✅ `src/llm/__init__.py` (25 lines) - Package exports
+
+#### Testing ✅
+- ✅ 90 unit tests (~88% coverage)
+  - test_llm_types.py: 21 tests (Pydantic validation)
+  - test_llm_factory.py: 24 tests (Factory pattern)
+  - test_openrouter_provider.py: 21 tests (OpenRouter integration)
+  - test_local_llm_provider.py: 24 tests (Local LLM integration)
+
+### Commits
+- `ef4fcce` - feat(phase3): implement LLM provider abstraction with hybrid routing
+
+---
+
+## ✅ Phase 4: Web Voice Interface
+
+**Status**: ✅ COMPLETE
+**Duration**: 2 days (Oct 27, 2025)
+**Dependencies**: Phases 1-3 ✅
+**Lead**: voxbridge-2.0-orchestrator
+
+### Deliverables ✅
+
+#### Backend WebSocket Handler ✅
+- ✅ `src/voice/webrtc_handler.py` (456 lines) - WebSocket audio handler
+  - Opus audio decoding (opuslib)
+  - WhisperX streaming integration
+  - LLM provider routing (OpenRouter/Local/n8n)
+  - Database persistence (conversations table)
+
+#### Frontend Components ✅
+- ✅ `frontend/src/hooks/useWebRTCAudio.ts` (344 lines) - Microphone capture, Opus encoding
+- ✅ `frontend/src/components/AudioControls.tsx` (100 lines) - Mic button, connection status
+- ✅ `frontend/src/types/webrtc.ts` (80 lines) - TypeScript interfaces
+
+#### Testing ✅
+- ✅ 28 unit tests (all passing)
+- ✅ Real-time transcription verified
+- ✅ Streaming AI responses verified
+
+### Commits
+- `604d40d` - feat(phase4): add conversation management UI
+
+---
+
+## ✅ Phase 5: Core Voice Pipeline Refactor
+
+**Status**: ✅ COMPLETE
+**Duration**: 2 days (Oct 27-28, 2025)
+**Dependencies**: Phases 1-4 ✅
+**Lead**: voxbridge-2.0-orchestrator
+
+### Deliverables ✅
+
+#### Service Layer (4 services, 2,342 lines) ✅
+- ✅ `src/services/conversation_service.py` (643 lines)
+  - Session management with UUID routing
+  - In-memory caching with 15-minute TTL
+  - Background cleanup task
+  - Integration with PostgreSQL
+
+- ✅ `src/services/stt_service.py` (586 lines)
+  - WhisperX WebSocket abstraction
+  - Per-session connection pooling
+  - Auto-reconnect with exponential backoff
+  - Async callback system
+
+- ✅ `src/services/llm_service.py` (499 lines)
+  - Hybrid LLM routing (OpenRouter + Local)
+  - Streaming support via callbacks
+  - Fallback chain logic
+  - HTTP connection pooling
+
+- ✅ `src/services/tts_service.py` (614 lines)
+  - Chatterbox TTS abstraction
+  - Streaming and buffered synthesis
+  - Health monitoring
+  - Metrics tracking
+
+#### Handler Integration ✅
+- ✅ `src/voice/webrtc_handler.py` (590 lines)
+  - Refactored to use service layer
+  - Multi-session support
+  - Removed inline WhisperX/Chatterbox calls
+
+- ✅ `src/discord_bot.py` (1,031 lines)
+  - Refactored from SpeakerManager architecture
+  - Service-based voice pipeline
+  - All metrics tracking preserved
+
+#### Cleanup ✅
+- ✅ Deleted `src/speaker_manager.py` (800+ lines)
+- ✅ Deleted `src/whisper_client.py` (226 lines)
+- ✅ Deleted `src/streaming_handler.py` (700+ lines)
+- ✅ Net reduction: -272 lines (22% smaller)
+
+#### Testing ✅
+- ✅ 99 unit tests (target: 90%+ coverage)
+  - ConversationService: 25 tests
+  - STTService: 27 tests
+  - LLMService: 23 tests
+  - TTSService: 24 tests
+- ✅ Integration tested (Discord bot running)
+
+### Design Decisions Made ✅
+
+| Decision | Choice | Rationale |
+|----------|--------|-----------|
+| Concurrency | Simple async/await (no queues) | Simpler, sufficient for current load |
+| Migration | Delete old files immediately | Use git for rollback if needed |
+| Context Cache | In-memory with TTL | Fast, no database overhead |
+| Connection Pooling | Singleton services | Efficient resource usage |
+
+### Files Created (16 files, ~6,777 lines) ✅
+
+```
+src/services/
+├── __init__.py
+├── conversation_service.py (643 lines)
+├── stt_service.py (586 lines)
+├── llm_service.py (499 lines)
+└── tts_service.py (614 lines)
+
+tests/unit/services/
+├── test_conversation_service.py (1,128 lines)
+├── test_stt_service.py (784 lines)
+├── test_llm_service.py (742 lines)
+└── test_tts_service.py (735 lines)
+
+docs/
+├── PHASE_5_5_REFACTOR_SUMMARY.md
+├── DISCORD_BOT_MIGRATION_NOTES.md
+└── progress/phase-5-plan.md
+```
+
+### Files Modified (5 files)
+
+- `src/voice/webrtc_handler.py` - Service integration
+- `src/discord_bot.py` - Service integration (replaced)
+- `src/llm/__init__.py` - Added exception exports
+- `tests/conftest.py` - Added service fixtures
+- `docs/progress/voxbridge-2.0-progress.md` - This file
+
+### Commits
+
+- (No commit yet - Phase 5 work in voxbridge-2.0 branch, pending final commit)
+
+### Performance Improvements ✅
+
+**Estimated latency reduction per conversation turn**: ~300ms
+- Context retrieval: 50ms → 5ms (90% reduction via caching)
+- LLM connection: 200ms → 50ms (75% reduction via provider reuse)
+- TTS connection: 100ms → 20ms (80% reduction via HTTP pooling)
+
+### Success Metrics ✅
+
+- ✅ All 4 services implemented
+- ✅ WebRTC handler refactored
+- ✅ Discord bot refactored
+- ✅ Old files removed
+- ✅ 99 unit tests (exceeds target)
+- ✅ Integration tested (bot running)
+- ✅ Documentation updated
+
+---
+
+## 🚧 Phase 6: Plugin System (In Progress)
+
+**Status**: 🚧 IN PROGRESS (2/6 sub-phases complete)
+**Duration**: 2-3 days (Oct 28, 2025 onwards)
+**Dependencies**: Phases 1-5 ✅
+**Lead**: voxbridge-2.0-orchestrator
+
+### Overview
+
+Plugin system to transform Discord/n8n from core functionality to optional plugins. Enables third-party extensibility and per-agent plugin configuration.
+
+**Key Innovation**: Each agent can have its own Discord bot with unique token stored in agent.plugins JSONB column.
+
+### Sub-Phases
+
+| Sub-Phase | Status | Description | Completion |
+|-----------|--------|-------------|------------|
+| 6.1: Architecture | ✅ Complete | Plugin base class, registry, manager | Oct 28, 2025 |
+| 6.2: Security | ✅ Complete | Encryption for sensitive fields | Oct 28, 2025 |
+| 6.3: Monitoring | 📋 Planned | Resource limits per plugin | - |
+| 6.4: Discord Plugin | 📋 Planned | Discord bot as plugin | - |
+| 6.5: n8n Plugin | 📋 Planned | n8n webhook as plugin | - |
+| 6.6: Documentation | 📋 Planned | Plugin development guide | - |
+
+---
+
+### ✅ Phase 6.1: Plugin Architecture
+
+**Status**: ✅ COMPLETE
+**Duration**: 4 hours (Oct 28, 2025)
+**Lead**: voxbridge-2.0-orchestrator
+
+#### Deliverables ✅
+
+**Core Plugin System** (3 files, 630 lines):
+- ✅ `src/plugins/base.py` (172 lines) - PluginBase abstract class
+  - Lifecycle methods: validate_config(), initialize(), start(), stop()
+  - Event hooks: on_message(), on_response()
+  - Running state tracking
+- ✅ `src/plugins/registry.py` (206 lines) - Global plugin registry
+  - @plugin decorator for auto-registration
+  - discover_plugins() for dynamic loading
+  - Thread-safe plugin lookup
+- ✅ `src/services/plugin_manager.py` (452 lines) - Singleton plugin manager
+  - Per-agent plugin lifecycle management
+  - Event dispatching (dispatch_message, dispatch_response)
+  - Error tracking and metrics
+
+**Database Migration**:
+- ✅ `alembic/versions/004_add_plugin_system.py` - Added plugins JSONB column
+  - GIN index for fast JSONB queries
+  - Migrated existing n8n config to plugin format
+  - Backward compatible (kept use_n8n and n8n_webhook_url)
+
+**Model Updates**:
+- ✅ `src/database/models.py` - Added plugins JSONB column to Agent model
+- ✅ `src/services/agent_service.py` - Updated create/update to support plugins parameter
+
+#### Design Decisions ✅
+
+| Decision | Choice | Rationale |
+|----------|--------|-----------|
+| Storage | JSONB column | Schema-free, third-party extensibility |
+| Registration | @plugin decorator | Flask-style, simple for third parties |
+| Plugin Instance | One per agent | Isolated state, per-agent configuration |
+| Config Validation | Per-plugin validate_config() | Plugin-specific rules |
+
+---
+
+### ✅ Phase 6.2: Plugin Security & Encryption
+
+**Status**: ✅ COMPLETE
+**Duration**: 6 hours (Oct 28, 2025)
+**Lead**: voxbridge-2.0-orchestrator
+
+#### Deliverables ✅
+
+**Encryption System** (1 file, 325 lines):
+- ✅ `src/plugins/encryption.py` - PluginEncryption class
+  - Fernet symmetric encryption (cryptography library)
+  - Field-level encryption (only sensitive fields)
+  - Encrypted marker: `__encrypted__:<base64_bytes>`
+  - Support for custom plugin registration
+  - Graceful degradation when key missing
+
+**Sensitive Fields Protected**:
+```python
+SENSITIVE_FIELDS = {
+    'discord': {'bot_token'},
+    'n8n': {'webhook_url'},
+    'slack': {'bot_token', 'signing_secret', 'app_token'},
+    'telegram': {'bot_token'},
+    'whatsapp': {'api_key', 'phone_number'},
+    'api': {'api_key', 'api_secret', 'oauth_token'},
+}
+```
+
+**Service Integration**:
+- ✅ `src/services/agent_service.py` - Encrypt on create/update (lines 76-112, 264-277)
+- ✅ `src/services/plugin_manager.py` - Decrypt on initialize (lines 91-124)
+
+**Configuration**:
+- ✅ Added `cryptography>=41.0.0` to `requirements-bot.txt`
+- ✅ Added `PLUGIN_ENCRYPTION_KEY` to `.env.example` with generation instructions
+- ✅ Added environment variable to `docker-compose.yml`
+- ✅ Generated encryption key and added to `.env`
+
+**Data Migration Tool**:
+- ✅ `src/database/migrate_encrypt_plugins.py` (264 lines)
+  - Dry-run mode by default (safe testing)
+  - `--apply` flag for actual database updates
+  - Detects already-encrypted values (idempotent)
+  - Comprehensive logging and error handling
+
+#### Testing ✅
+
+**Unit Tests** (1 file, 708 lines):
+- ✅ `tests/unit/test_plugin_encryption.py` - 32 tests, all passing
+  - Basic encryption/decryption (6 tests)
+  - Edge cases (4 tests)
+  - Error handling (4 tests)
+  - Custom plugin registration (3 tests)
+  - Utility functions (5 tests)
+  - Key generation (2 tests)
+  - Additional coverage (8 tests)
+- ✅ **93% code coverage** of encryption module
+
+**Migration Verification**:
+- ✅ Dry-run: Found 1 agent with plugins (n8n Test Agent)
+- ✅ Applied: Successfully encrypted webhook_url field
+- ✅ Verified: All 32 encryption tests passing
+
+#### Security Features ✅
+
+1. **Field-Level Encryption**: Only sensitive fields encrypted (bot_token, api_key, etc.)
+2. **Queryable Metadata**: Non-sensitive fields remain plaintext for database queries
+3. **Idempotent**: Already encrypted values are not re-encrypted
+4. **Graceful Degradation**: Falls back to unencrypted if key not configured (logs warning)
+5. **Custom Plugin Support**: Third parties can register sensitive fields
+
+#### Files Created (3 files, ~1,297 lines)
+
+**Encryption System**:
+- `src/plugins/encryption.py` (325 lines)
+- `src/database/migrate_encrypt_plugins.py` (264 lines)
+- `tests/unit/test_plugin_encryption.py` (708 lines)
+
+#### Files Modified (4 files)
+
+- `src/services/agent_service.py` - Encrypt plugins on create/update
+- `src/services/plugin_manager.py` - Decrypt plugins on initialize
+- `requirements-bot.txt` - Added cryptography dependency
+- `.env.example` - Added PLUGIN_ENCRYPTION_KEY documentation
+- `docker-compose.yml` - Added PLUGIN_ENCRYPTION_KEY environment variable
+- `.env` - Added generated encryption key
+
+#### Performance
+
+- Encryption overhead: <1ms per plugin config
+- Decryption overhead: <1ms per plugin initialization
+- Fernet instance caching for optimal performance
+
+---
+
 ## 📋 Upcoming Phases (Planned)
 
-### Phase 3: LLM Provider Abstraction (2 days)
-- Abstract LLMProvider base class
-- OpenRouter implementation
-- Local LLM implementation
-- Provider factory pattern
+### Phase 6.3: Resource Monitoring (0.5 days)
+- PluginResourceMonitor class
+- CPU/memory tracking per plugin
+- Resource limit alerts
+- Plugin killing on exceed
 
-### Phase 4: Web Voice Interface (2-3 days)
-- WebRTC browser client
-- Audio capture/playback
-- Voice activity detection
-- Session management UI
+### Phase 6.4: Discord Plugin (1 day)
+- Discord bot as plugin (refactor from discord_bot.py)
+- Support multiple bot instances (one per agent)
+- Per-agent Discord configuration
 
-### Phase 5: Core Refactor (2-3 days)
-- Decouple from Discord
-- Session-based routing
-- Remove speaker lock
-- Multi-user support
+### Phase 6.5: n8n Plugin (0.5 days)
+- n8n webhook as plugin (refactor from existing code)
+- Per-agent webhook URLs
+- Fallback mode support
 
-### Phase 6: Extension System (2 days)
-- Extension interface design
-- Discord extension (migrate existing code)
-- n8n extension
-- Extension marketplace UI
+### Phase 6.6: Plugin Documentation (0.5 days)
+- Plugin Development Guide
+- Plugin User Guide
+- Security best practices
 
 ### Phase 7: Documentation Overhaul (1 day)
 - API documentation

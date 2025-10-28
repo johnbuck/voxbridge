@@ -23,7 +23,7 @@ from sqlalchemy import (
     ForeignKey,
     Integer,
 )
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import declarative_base, relationship
 from sqlalchemy.sql import func
 
@@ -60,12 +60,15 @@ class Agent(Base):
     tts_rate = Column(Float, nullable=False, default=1.0)  # Speech rate (0.5-2.0)
     tts_pitch = Column(Float, nullable=False, default=1.0)  # Pitch (0.5-2.0)
 
-    # VoxBridge 2.0 Phase 3: LLM Routing
+    # VoxBridge 2.0 Phase 3: LLM Routing (DEPRECATED - use plugins instead)
     use_n8n = Column(Boolean, nullable=False, default=False)  # Use n8n webhook instead of direct LLM
     n8n_webhook_url = Column(String(500), nullable=True)  # Per-agent n8n webhook URL
 
     # VoxBridge 2.0 Phase 5: Default Agent Selection
     is_default = Column(Boolean, nullable=False, default=False, index=True)  # Mark as default agent
+
+    # VoxBridge 2.0 Phase 6: Plugin System
+    plugins = Column(JSONB, nullable=False, default={})  # Plugin configurations (discord, n8n, slack, etc.)
 
     # Metadata
     created_at = Column(DateTime(timezone=True), server_default=func.now())
