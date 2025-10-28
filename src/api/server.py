@@ -532,15 +532,247 @@ async def get_metrics():
     """
     return metrics_tracker.get_metrics()
 
+@app.get("/api/plugins")
+async def get_plugins():
+    """
+    Get list of all active plugins with status and resource usage
+
+    Returns:
+        Dict with list of active plugins
+
+    Example response:
+        {
+            "plugins": [
+                {
+                    "plugin_type": "discord",
+                    "agent_id": "uuid",
+                    "agent_name": "Auren",
+                    "status": "running",
+                    "enabled": true,
+                    "resource_usage": {
+                        "cpu_percent": 2.5,
+                        "memory_mb": 45.3
+                    }
+                }
+            ]
+        }
+    """
+    from src.services.agent_service import AgentService
+
+    plugins = []
+
+    # Iterate through all active plugins
+    for agent_id, agent_plugins in plugin_manager.active_plugins.items():
+        for plugin_type, plugin_instance in agent_plugins.items():
+            # Get agent details
+            try:
+                agent = await AgentService.get_agent(agent_id)
+                agent_name = agent.name if agent else "Unknown"
+            except Exception as e:
+                logger.error(f"❌ Error getting agent {agent_id}: {e}")
+                agent_name = "Unknown"
+
+            # Get resource usage from monitor
+            resource_usage = None
+            if plugin_manager.resource_monitor:
+                stats = plugin_manager.resource_monitor.get_plugin_stats(agent_id, plugin_type)
+                if stats:
+                    resource_usage = {
+                        "cpu_percent": round(stats.cpu_percent, 2),
+                        "memory_mb": round(stats.memory_mb, 2)
+                    }
+                    if stats.gpu_memory_mb is not None:
+                        resource_usage["gpu_memory_mb"] = round(stats.gpu_memory_mb, 2)
+
+            plugins.append({
+                "plugin_type": plugin_type,
+                "agent_id": str(agent_id),
+                "agent_name": agent_name,
+                "status": "running",  # If in active_plugins, it's running
+                "enabled": True,
+                "resource_usage": resource_usage,
+                "uptime_seconds": getattr(plugin_instance, 'uptime_seconds', None)
+            })
+
+    return {"plugins": plugins}
+
 @app.get("/api/plugins/stats")
 async def get_plugin_stats():
     """
     Get plugin system statistics including resource usage
 
     Returns:
-        Plugin manager stats with resource monitoring data
+        Plugin manager stats transformed for frontend consumption
+
+    Example response:
+        {
+            "total_plugins": 5,
+            "active_plugins": 5,
+            "failed_plugins": 0,
+            "plugins_by_type": {"discord": 3, "n8n": 2},
+            "resource_usage": {
+                "total_cpu_percent": 12.5,
+                "total_memory_mb": 128.4
+            }
+        }
     """
-    return plugin_manager.get_stats()
+    # Get raw stats from plugin manager
+    raw_stats = plugin_manager.get_stats()
+
+    # Transform to frontend format
+    resource_monitoring = raw_stats.get('resource_monitoring', {})
+
+    return {
+        "total_plugins": raw_stats.get('total_plugins', 0),
+        "active_plugins": raw_stats.get('total_plugins', 0),  # All plugins in active_plugins are active
+        "failed_plugins": sum(raw_stats.get('error_counts', {}).values()),
+        "plugins_by_type": raw_stats.get('plugins_by_type', {}),
+        "resource_usage": {
+            "total_cpu_percent": resource_monitoring.get('total_cpu_percent', 0),
+            "total_memory_mb": resource_monitoring.get('total_memory_mb', 0),
+            "total_gpu_memory_mb": resource_monitoring.get('total_gpu_memory_mb')
+        }
+    }
+
+@app.post("/api/plugins/{plugin_type}/start")
+async def start_plugin(plugin_type: str, request: dict):
+    """
+    Start a plugin for a specific agent
+
+    Args:
+        plugin_type: Type of plugin (discord, n8n, etc.)
+        request: JSON body with agent_id
+
+    Returns:
+        Success message or error
+
+    Example request:
+        POST /api/plugins/discord/start
+        {"agent_id": "uuid-here"}
+    """
+    from src.services.agent_service import AgentService
+
+    try:
+        agent_id_str = request.get("agent_id")
+        if not agent_id_str:
+            return {"error": "Missing agent_id in request body"}, 400
+
+        # Get agent
+        from uuid import UUID
+        agent_id = UUID(agent_id_str)
+        agent = await AgentService.get_agent(agent_id)
+
+        if not agent:
+            return {"error": f"Agent {agent_id} not found"}, 404
+
+        # Check if plugin is configured for this agent
+        if not agent.plugins or plugin_type not in agent.plugins:
+            return {"error": f"Plugin {plugin_type} not configured for agent {agent.name}"}, 400
+
+        # Initialize the plugin
+        results = await plugin_manager.initialize_agent_plugins(agent)
+
+        if plugin_type in results and results[plugin_type]:
+            logger.info(f"✅ Started {plugin_type} plugin for agent {agent.name}")
+            return {
+                "success": True,
+                "message": f"Started {plugin_type} plugin for {agent.name}"
+            }
+        else:
+            logger.error(f"❌ Failed to start {plugin_type} plugin for agent {agent.name}")
+            return {"error": f"Failed to start {plugin_type} plugin"}, 500
+
+    except Exception as e:
+        logger.error(f"❌ Error starting plugin: {e}", exc_info=True)
+        return {"error": str(e)}, 500
+
+@app.post("/api/plugins/{plugin_type}/stop")
+async def stop_plugin(plugin_type: str, request: dict):
+    """
+    Stop a plugin for a specific agent
+
+    Args:
+        plugin_type: Type of plugin (discord, n8n, etc.)
+        request: JSON body with agent_id
+
+    Returns:
+        Success message or error
+    """
+    from uuid import UUID
+
+    try:
+        agent_id_str = request.get("agent_id")
+        if not agent_id_str:
+            return {"error": "Missing agent_id in request body"}, 400
+
+        agent_id = UUID(agent_id_str)
+
+        # Stop the plugin
+        results = await plugin_manager.stop_agent_plugins(agent_id)
+
+        if plugin_type in results and results[plugin_type]:
+            logger.info(f"✅ Stopped {plugin_type} plugin for agent {agent_id}")
+            return {
+                "success": True,
+                "message": f"Stopped {plugin_type} plugin"
+            }
+        else:
+            logger.warning(f"⚠️ Plugin {plugin_type} was not running for agent {agent_id}")
+            return {
+                "success": True,
+                "message": f"Plugin {plugin_type} was not running"
+            }
+
+    except Exception as e:
+        logger.error(f"❌ Error stopping plugin: {e}", exc_info=True)
+        return {"error": str(e)}, 500
+
+@app.post("/api/plugins/{plugin_type}/restart")
+async def restart_plugin(plugin_type: str, request: dict):
+    """
+    Restart a plugin for a specific agent
+
+    Args:
+        plugin_type: Type of plugin (discord, n8n, etc.)
+        request: JSON body with agent_id
+
+    Returns:
+        Success message or error
+    """
+    from src.services.agent_service import AgentService
+    from uuid import UUID
+
+    try:
+        agent_id_str = request.get("agent_id")
+        if not agent_id_str:
+            return {"error": "Missing agent_id in request body"}, 400
+
+        agent_id = UUID(agent_id_str)
+        agent = await AgentService.get_agent(agent_id)
+
+        if not agent:
+            return {"error": f"Agent {agent_id} not found"}, 404
+
+        # Stop the plugin
+        stop_results = await plugin_manager.stop_agent_plugins(agent_id)
+        logger.info(f"🛑 Stopped {plugin_type} plugin for agent {agent.name}")
+
+        # Start the plugin
+        start_results = await plugin_manager.initialize_agent_plugins(agent)
+
+        if plugin_type in start_results and start_results[plugin_type]:
+            logger.info(f"✅ Restarted {plugin_type} plugin for agent {agent.name}")
+            return {
+                "success": True,
+                "message": f"Restarted {plugin_type} plugin for {agent.name}"
+            }
+        else:
+            logger.error(f"❌ Failed to restart {plugin_type} plugin for agent {agent.name}")
+            return {"error": f"Failed to restart {plugin_type} plugin"}, 500
+
+    except Exception as e:
+        logger.error(f"❌ Error restarting plugin: {e}", exc_info=True)
+        return {"error": str(e)}, 500
 
 # ============================================================
 # WEBSOCKET CONNECTION MANAGER
