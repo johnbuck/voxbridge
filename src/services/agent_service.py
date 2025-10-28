@@ -116,6 +116,29 @@ class AgentService:
             await session.commit()
             await session.refresh(agent)
 
+        # NEW Phase 4 Batch 1: Initialize plugins if enabled
+        if plugins:
+            logger.info(f"🔌 Initializing plugins for new agent '{agent.name}'...")
+            from src.services.plugin_manager import get_plugin_manager
+
+            plugin_manager = get_plugin_manager()
+
+            try:
+                results = await plugin_manager.initialize_agent_plugins(agent)
+
+                for plugin_type, success in results.items():
+                    status = "✅" if success else "❌"
+                    logger.info(f"  {status} {plugin_type}: {'Success' if success else 'Failed'}")
+
+                # Invalidate default agent cache
+                plugin_manager.invalidate_agent_cache()
+
+            except Exception as e:
+                logger.error(f"❌ Plugin initialization failed for agent '{agent.name}': {e}", exc_info=True)
+                # Don't rollback agent creation - plugins can be initialized later
+
+        logger.info(f"✅ Created agent: {agent.name} (ID: {agent.id})")
+
         return agent
 
     @staticmethod
@@ -181,6 +204,8 @@ class AgentService:
     ) -> Optional[Agent]:
         """
         Update agent fields.
+
+        Phase 4 Batch 1: Restarts plugins if plugin config changed
 
         Args:
             agent_id: Agent UUID
@@ -261,6 +286,8 @@ class AgentService:
                     raise ValueError("TTS pitch must be between 0.5 and 2.0")
                 agent.tts_pitch = tts_pitch
 
+            # NEW Phase 4 Batch 1: Handle plugin config updates
+            plugins_changed = False
             if plugins is not None:
                 # Encrypt sensitive plugin fields before updating
                 encrypted_plugins = {}
@@ -275,11 +302,37 @@ class AgentService:
                         encrypted_plugins[plugin_type] = plugin_config
 
                 agent.plugins = encrypted_plugins
+                plugins_changed = True
 
             await session.commit()
             await session.refresh(agent)
 
-            return agent
+        # NEW Phase 4 Batch 1: Restart plugins if config changed
+        if plugins_changed:
+            logger.info(f"🔄 Plugin config changed for agent '{agent.name}' - restarting plugins...")
+            from src.services.plugin_manager import get_plugin_manager
+
+            plugin_manager = get_plugin_manager()
+
+            try:
+                # Stop existing plugins
+                stop_results = await plugin_manager.stop_agent_plugins(agent.id)
+                for plugin_type, success in stop_results.items():
+                    logger.info(f"  🛑 Stopped {plugin_type}: {'Success' if success else 'Failed'}")
+
+                # Reinitialize with new config
+                init_results = await plugin_manager.initialize_agent_plugins(agent)
+                for plugin_type, success in init_results.items():
+                    status = "✅" if success else "❌"
+                    logger.info(f"  {status} Restarted {plugin_type}: {'Success' if success else 'Failed'}")
+
+                # Invalidate default agent cache
+                plugin_manager.invalidate_agent_cache()
+
+            except Exception as e:
+                logger.error(f"❌ Plugin restart failed for agent '{agent.name}': {e}", exc_info=True)
+
+        return agent
 
     @staticmethod
     async def get_default_agent() -> Optional[Agent]:
@@ -334,6 +387,8 @@ class AgentService:
         """
         Delete agent by ID.
 
+        Phase 4 Batch 1: Invalidates default agent cache
+
         Args:
             agent_id: Agent UUID
 
@@ -350,4 +405,10 @@ class AgentService:
             await session.delete(agent)
             await session.commit()
 
-            return True
+        # NEW Phase 4 Batch 1: Invalidate default agent cache after deletion
+        from src.services.plugin_manager import get_plugin_manager
+
+        plugin_manager = get_plugin_manager()
+        plugin_manager.invalidate_agent_cache()
+
+        return True

@@ -390,9 +390,58 @@ class SpeakRequest(BaseModel):
 @app.on_event("startup")
 async def startup_services():
     """Start background service tasks"""
+    logger.info("🚀 Starting VoxBridge services...")
+
+    # Start existing services
     await conversation_service.start()
     await plugin_manager.start_resource_monitoring()
-    logger.info("✅ Services started")
+
+    # NEW Phase 4 Batch 1: Initialize plugins for all agents
+    try:
+        from src.services.agent_service import AgentService
+
+        logger.info("🔌 Initializing plugins for all agents...")
+        agents = await AgentService.get_all_agents()
+
+        if not agents:
+            logger.info("  ℹ️  No agents found - plugins will be initialized when agents are created")
+
+        initialized_count = 0
+        failed_count = 0
+
+        for agent in agents:
+            if agent.plugins:
+                logger.info(f"  🔌 Initializing plugins for agent '{agent.name}'...")
+                try:
+                    # Phase 4: Add 30-second timeout per agent plugin initialization
+                    results = await asyncio.wait_for(
+                        plugin_manager.initialize_agent_plugins(agent),
+                        timeout=30.0
+                    )
+
+                    for plugin_type, success in results.items():
+                        if success:
+                            status = "✅"
+                            initialized_count += 1
+                            logger.info(f"    {status} {plugin_type} plugin initialized")
+                        else:
+                            status = "❌"
+                            failed_count += 1
+                            logger.error(f"    {status} {plugin_type} plugin failed to initialize")
+                except asyncio.TimeoutError:
+                    logger.error(f"    ⏱️ Plugin initialization timeout for agent '{agent.name}' (30s)")
+                    failed_count += 1
+
+        if initialized_count > 0:
+            logger.info(f"✅ Initialized {initialized_count} plugins across {len(agents)} agents")
+        if failed_count > 0:
+            logger.warning(f"⚠️  {failed_count} plugins failed to initialize")
+
+    except Exception as e:
+        logger.error(f"❌ Error during plugin initialization: {e}", exc_info=True)
+        # Don't crash app - continue startup even if plugins fail
+
+    logger.info("✅ VoxBridge services started")
 
 @app.on_event("shutdown")
 async def shutdown_services():

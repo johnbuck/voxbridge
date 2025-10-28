@@ -32,6 +32,8 @@ class PluginManager:
     """
     Service for managing plugin lifecycle across all agents.
 
+    Phase 4 Batch 1: Adds default agent caching for fast agent selection
+
     Usage:
         # Initialize manager
         manager = PluginManager()
@@ -56,6 +58,11 @@ class PluginManager:
 
         # Resource monitor (singleton)
         self.resource_monitor = get_resource_monitor()
+
+        # NEW Phase 4 Batch 1: Default agent cache
+        self._default_agent_id: Optional[UUID] = None
+        self._default_agent_cache_time: Optional[float] = None
+        self._agent_cache_ttl: float = 300.0  # 5 minutes
 
         logger.info("🔌 PluginManager initialized")
 
@@ -560,6 +567,58 @@ class PluginManager:
         await self.stop_resource_monitoring()
 
         logger.info("✅ All plugins shut down")
+
+    async def get_default_agent_id(self) -> Optional[UUID]:
+        """
+        Get default agent ID with caching for low latency.
+
+        Phase 4 Batch 1: Cached in-memory, refreshes every 5 minutes
+
+        Returns:
+            Default agent UUID or None
+        """
+        import time
+
+        # Check cache
+        if self._default_agent_id and self._default_agent_cache_time:
+            age = time.time() - self._default_agent_cache_time
+            if age < self._agent_cache_ttl:
+                return self._default_agent_id
+
+        # Cache miss - query database
+        from src.services.agent_service import AgentService
+
+        try:
+            default_agent = await AgentService.get_default_agent()
+            if default_agent:
+                self._default_agent_id = default_agent.id
+                self._default_agent_cache_time = time.time()
+                logger.info(f"📌 Cached default agent: {default_agent.name} (ID: {default_agent.id})")
+                return default_agent.id
+            else:
+                # No default agent - return first agent with Discord plugin
+                agents = await AgentService.get_all_agents()
+                for agent in agents:
+                    if agent.plugins.get('discord', {}).get('enabled'):
+                        self._default_agent_id = agent.id
+                        self._default_agent_cache_time = time.time()
+                        logger.info(f"📌 No default agent - using first Discord agent: {agent.name}")
+                        return agent.id
+
+                return None
+        except Exception as e:
+            logger.error(f"❌ Error getting default agent: {e}", exc_info=True)
+            return None
+
+    def invalidate_agent_cache(self):
+        """
+        Invalidate default agent cache.
+
+        Phase 4 Batch 1: Call this when agents are created/updated/deleted
+        """
+        self._default_agent_id = None
+        self._default_agent_cache_time = None
+        logger.info("🔄 Invalidated default agent cache")
 
     def get_stats(self) -> Dict[str, Any]:
         """
