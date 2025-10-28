@@ -23,6 +23,7 @@ from uuid import UUID
 
 from src.plugins import PluginRegistry, PluginBase
 from src.plugins.encryption import PluginEncryption, PluginEncryptionError
+from src.services.plugin_resource_monitor import get_resource_monitor
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +53,9 @@ class PluginManager:
 
         # Track plugin errors for monitoring
         self.error_counts: Dict[str, int] = {}
+
+        # Resource monitor (singleton)
+        self.resource_monitor = get_resource_monitor()
 
         logger.info("🔌 PluginManager initialized")
 
@@ -141,6 +145,9 @@ class PluginManager:
 
                 self.active_plugins[agent.id][plugin_type] = plugin
 
+                # Register with resource monitor
+                self.resource_monitor.register_plugin(agent.id, plugin_type, plugin)
+
                 logger.info(
                     f"✅ Plugin {plugin_type} started for agent {agent.name}"
                 )
@@ -190,6 +197,9 @@ class PluginManager:
                     exc_info=True
                 )
                 results[plugin_type] = False
+            finally:
+                # Unregister from resource monitor
+                self.resource_monitor.unregister_plugin(agent_id, plugin_type)
 
         # Remove from active plugins
         del self.active_plugins[agent_id]
@@ -410,6 +420,28 @@ class PluginManager:
         """
         return dict(self.active_plugins)
 
+    async def start_resource_monitoring(self) -> None:
+        """
+        Start the resource monitor background task.
+
+        Called during application startup.
+
+        Example:
+            await plugin_manager.start_resource_monitoring()
+        """
+        await self.resource_monitor.start()
+
+    async def stop_resource_monitoring(self) -> None:
+        """
+        Stop the resource monitor background task.
+
+        Called during application shutdown.
+
+        Example:
+            await plugin_manager.stop_resource_monitoring()
+        """
+        await self.resource_monitor.stop()
+
     async def shutdown(self) -> None:
         """
         Shutdown all plugins for all agents.
@@ -427,14 +459,17 @@ class PluginManager:
         for agent_id in agent_ids:
             await self.stop_agent_plugins(agent_id)
 
+        # Stop resource monitoring
+        await self.stop_resource_monitoring()
+
         logger.info("✅ All plugins shut down")
 
     def get_stats(self) -> Dict[str, Any]:
         """
-        Get plugin manager statistics.
+        Get plugin manager statistics including resource usage.
 
         Returns:
-            Dict with statistics (active agents, plugins, errors)
+            Dict with statistics (active agents, plugins, errors, resources)
 
         Example:
             stats = manager.get_stats()
@@ -442,7 +477,8 @@ class PluginManager:
             #     'active_agents': 3,
             #     'total_plugins': 5,
             #     'plugins_by_type': {'discord': 2, 'n8n': 3},
-            #     'error_counts': {'discord': 1}
+            #     'error_counts': {'discord': 1},
+            #     'resource_monitoring': {...}
             # }
         """
         plugins_by_type: Dict[str, int] = {}
@@ -456,6 +492,7 @@ class PluginManager:
             'total_plugins': sum(len(plugins) for plugins in self.active_plugins.values()),
             'plugins_by_type': plugins_by_type,
             'error_counts': dict(self.error_counts),
+            'resource_monitoring': self.resource_monitor.get_stats(),
         }
 
 

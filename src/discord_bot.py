@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """
 ============================================================
-VoxBridge - Discord Voice Bridge Service
-Bridges Discord voice channels to STT/TTS processing:
+VoxBridge - Discord Voice Bridge Service (Phase 5.6 Refactored)
+Bridges Discord voice channels to STT/LLM/TTS processing:
 - Join/leave voice channels
-- Speech-to-Text (WhisperX)
-- Text-to-Speech (Chatterbox TTS)
-- Send transcripts back to n8n for agent processing
+- Speech-to-Text (WhisperX via STTService)
+- LLM generation (via LLMService with hybrid routing)
+- Text-to-Speech (Chatterbox via TTSService)
+- Session-based architecture with ConversationService
 ============================================================
 """
 
@@ -17,7 +18,7 @@ import signal
 import tempfile
 import uuid
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Dict
 
 import discord
 from discord.ext import commands, voice_recv
@@ -27,10 +28,17 @@ import httpx
 import uvicorn
 from dotenv import load_dotenv
 
-from src.speaker_manager import SpeakerManager
-from src.streaming_handler import StreamingResponseHandler
+# VoxBridge 2.0 Service Layer
+from src.services.conversation_service import ConversationService
+from src.services.stt_service import get_stt_service, STTService
+from src.services.llm_service import get_llm_service, LLMService, LLMConfig, ProviderType
+from src.services.tts_service import get_tts_service, TTSService
+from src.services.plugin_manager import get_plugin_manager
 from src.routes.agent_routes import router as agent_router
 from src.routes.session_routes import router as session_router
+
+# LLM exceptions for error handling
+from src.llm import LLMError, LLMConnectionError, LLMTimeoutError
 
 # Load environment variables
 load_dotenv()
@@ -48,15 +56,13 @@ logger = logging.getLogger(__name__)
 
 DISCORD_TOKEN = os.getenv('DISCORD_TOKEN')
 PORT = int(os.getenv('PORT', '4900'))
-CHATTERBOX_URL = os.getenv('CHATTERBOX_URL', 'http://localhost:4800/v1')
-CHATTERBOX_VOICE_ID = os.getenv('CHATTERBOX_VOICE_ID')
 
 if not DISCORD_TOKEN:
     logger.error("❌ DISCORD_TOKEN not set in environment")
     exit(1)
 
 # ============================================================
-# METRICS TRACKING
+# METRICS TRACKING (Keep existing implementation)
 # ============================================================
 
 import time
@@ -72,8 +78,8 @@ class MetricsTracker:
 
         # Legacy metrics
         self.latencies = deque(maxlen=max_samples)
-        self.n8n_response_latencies = deque(maxlen=max_samples)  # n8n → first response
-        self.n8n_first_chunk_latencies = deque(maxlen=max_samples)  # n8n → first chunk
+        self.n8n_response_latencies = deque(maxlen=max_samples)  # LLM → first response
+        self.n8n_first_chunk_latencies = deque(maxlen=max_samples)  # LLM → first chunk
         self.tts_first_byte_latencies = deque(maxlen=max_samples)  # response complete → first audio byte
 
         # Phase 1: Speech → Transcription
@@ -89,7 +95,6 @@ class MetricsTracker:
         # Phase 3: TTS Generation
         self.tts_queue_latencies = deque(maxlen=max_samples)  # text ready → TTS request sent
         self.tts_generation_latencies = deque(maxlen=max_samples)  # TTS sent → all audio downloaded
-        # tts_first_byte_latencies already defined above
 
         # Phase 4: Audio Playback
         self.audio_playback_latencies = deque(maxlen=max_samples)  # audio ready → playback complete
@@ -116,12 +121,12 @@ class MetricsTracker:
             self.total_requests += 1
 
     def record_n8n_response_latency(self, latency_s: float):
-        """Record n8n response latency (time to first response)"""
+        """Record LLM response latency (time to first response)"""
         with self.lock:
             self.n8n_response_latencies.append(latency_s)
 
     def record_n8n_first_chunk_latency(self, latency_s: float):
-        """Record n8n first chunk latency (time to first text chunk)"""
+        """Record LLM first chunk latency (time to first text chunk)"""
         with self.lock:
             self.n8n_first_chunk_latencies.append(latency_s)
 
@@ -336,14 +341,22 @@ bot = commands.Bot(command_prefix='!', intents=intents)
 # Voice connection state
 voice_client: Optional[discord.VoiceClient] = None
 
-# Frontend TTS options (set via /api/tts/config endpoint)
-frontend_tts_options: Optional[dict] = None
+# ============================================================
+# SERVICE LAYER INITIALIZATION (VoxBridge 2.0)
+# ============================================================
 
-def get_frontend_tts_options() -> Optional[dict]:
-    """Get current frontend TTS options (avoids import caching)"""
-    return frontend_tts_options
+# Initialize services
+conversation_service = ConversationService()
+stt_service = get_stt_service()
+llm_service = get_llm_service()
+tts_service = get_tts_service()
+plugin_manager = get_plugin_manager()
 
-# Note: SpeakerManager initialization moved after broadcast functions are defined
+# Active sessions: Discord user_id → session_id
+active_discord_sessions: Dict[str, str] = {}
+
+# Session timing tracking for metrics
+session_timings: Dict[str, Dict[str, float]] = {}
 
 # ============================================================
 # FAST API SETUP
@@ -357,8 +370,6 @@ app.include_router(agent_router)
 # Include session/conversation management routes (VoxBridge 2.0 Phase 4)
 app.include_router(session_router)
 
-# Note: WebSocket manager will be initialized after ConnectionManager is defined
-
 # Pydantic models for API
 class JoinVoiceRequest(BaseModel):
     channelId: str
@@ -368,9 +379,29 @@ class SpeakRequest(BaseModel):
     output: dict
     options: dict = {}
 
-class TTSConfigRequest(BaseModel):
-    enabled: bool
-    options: dict = {}
+# ============================================================
+# SERVICE STARTUP/SHUTDOWN
+# ============================================================
+
+@app.on_event("startup")
+async def startup_services():
+    """Start background service tasks"""
+    await conversation_service.start()
+    await plugin_manager.start_resource_monitoring()
+    logger.info("✅ Services started")
+
+@app.on_event("shutdown")
+async def shutdown_services():
+    """Cleanup services on shutdown"""
+    logger.info("🛑 Shutting down services...")
+
+    await conversation_service.stop()
+    await llm_service.close()
+    await tts_service.close()
+    await stt_service.shutdown()
+    await plugin_manager.shutdown()
+
+    logger.info("✅ Services shutdown complete")
 
 # ============================================================
 # DISCORD BOT EVENTS
@@ -381,7 +412,7 @@ async def on_ready():
     """Bot ready event"""
     logger.info("=" * 60)
     logger.info(f"✅ Discord bot logged in as {bot.user.name}")
-    logger.info(f"🎙️ Voice service ready with WhisperX STT")
+    logger.info(f"🎙️ Voice service ready with VoxBridge 2.0 service layer")
     logger.info("=" * 60)
 
 @bot.event
@@ -390,19 +421,18 @@ async def on_error(event, *args, **kwargs):
     logger.error(f"❌ Discord bot error in {event}: {args} {kwargs}")
 
 # ============================================================
-# VOICE CHANNEL OPERATIONS
+# VOICE AUDIO RECEIVER (Refactored for Service Layer)
 # ============================================================
 
 class AudioReceiver(voice_recv.AudioSink):
-    """Custom audio sink to receive voice data"""
+    """Custom audio sink to receive voice data and route to STTService"""
 
-    def __init__(self, vc, speaker_mgr, loop):
+    def __init__(self, vc, loop):
         super().__init__()
         self.vc = vc
-        self.speaker_mgr = speaker_mgr
         self.loop = loop  # Event loop for thread-safe task scheduling
-        self.user_buffers = {}  # user_id -> asyncio.Queue of audio chunks
-        self.user_tasks = {}    # user_id -> streaming task
+        self.user_buffers: Dict[str, asyncio.Queue] = {}  # user_id → audio chunk queue
+        self.user_tasks: Dict[str, asyncio.Task] = {}    # user_id → processing task
         self.active_users = set()  # Users currently being processed
 
     def write(self, user, data: voice_recv.VoiceData):
@@ -446,13 +476,11 @@ class AudioReceiver(voice_recv.AudioSink):
                     logger.error(f"❌ Error in audio stream generator for {uid}: {e}")
 
             # Start processing this user's audio
-            # NOTE: write() is called from a synchronous thread, so we must use
-            # run_coroutine_threadsafe to schedule the async task on the main loop
             if user_id not in self.active_users:
                 self.active_users.add(user_id)
                 stream_gen = audio_stream_generator(user_id)
                 future = asyncio.run_coroutine_threadsafe(
-                    self.speaker_mgr.on_speaking_start(user_id, username, stream_gen),
+                    on_user_speaking_start(user_id, username, stream_gen),
                     self.loop
                 )
                 self.user_tasks[user_id] = future
@@ -460,12 +488,6 @@ class AudioReceiver(voice_recv.AudioSink):
         # Add Opus packet to user's queue
         try:
             self.user_buffers[user_id].put_nowait(opus_packet)
-
-            # Notify speaker manager of audio activity (for silence detection)
-            asyncio.run_coroutine_threadsafe(
-                self.speaker_mgr.on_audio_data(user_id),
-                self.loop
-            )
         except asyncio.QueueFull:
             logger.warning(f"⚠️ Audio buffer full for user {user_id}, dropping packet")
 
@@ -516,6 +538,509 @@ class AudioReceiver(voice_recv.AudioSink):
         self.user_tasks.clear()
         self.active_users.clear()
 
+# Global audio receiver instance (set when joining voice)
+audio_receiver: Optional[AudioReceiver] = None
+
+# ============================================================
+# VOICE PROCESSING (VoxBridge 2.0 Service Integration)
+# ============================================================
+
+async def on_user_speaking_start(user_id: str, username: str, audio_stream):
+    """
+    Handle user starting to speak (VoxBridge 2.0 service integration)
+
+    This replaces SpeakerManager.on_speaking_start with service-based routing.
+
+    Args:
+        user_id: Discord user ID
+        username: Discord username
+        audio_stream: Async generator of audio chunks
+    """
+    logger.info(f"🎤 {username} ({user_id}) started speaking")
+
+    try:
+        # Record pipeline start time
+        t_start = time.time()
+        session_id = str(uuid.uuid4())
+        active_discord_sessions[user_id] = session_id
+
+        # Initialize session timing tracker
+        session_timings[session_id] = {
+            't_start': t_start,
+            't_whisper_connected': None,
+            't_first_partial': None,
+            't_transcription_complete': None
+        }
+
+        logger.info(f"📝 Created session {session_id[:8]}... for Discord user {username}")
+
+        # Broadcast speaker started event
+        await broadcast_speaker_started(user_id, username)
+
+        # Get default agent for this user
+        # TODO: Implement per-user agent selection from database
+        # For now, use environment variable or first available agent
+        from src.services.agent_service import AgentService
+
+        default_agent_id = os.getenv('DEFAULT_AGENT_ID')
+        if default_agent_id:
+            agent = await AgentService.get_agent(default_agent_id)
+        else:
+            agent = await AgentService.get_default_agent()
+            if not agent:
+                # Fallback: Get first available agent
+                agents = await AgentService.get_all_agents()
+                agent = agents[0] if agents else None
+
+        if not agent:
+            logger.error(f"❌ No agent available for user {username}")
+            return
+
+        logger.info(f"🤖 Using agent: {agent.name} for Discord user {username}")
+
+        # Create session in database via ConversationService
+        session = await conversation_service.get_or_create_session(
+            session_id=session_id,
+            user_id=user_id,
+            agent_id=str(agent.id),
+            channel_type="discord",
+            user_name=username,
+            title=f"Discord conversation with {username}"
+        )
+
+        # Connect STT service for this session
+        t_before_whisper = time.time()
+        success = await stt_service.connect(session_id, os.getenv('WHISPER_SERVER_URL'))
+
+        if not success:
+            logger.error(f"❌ Failed to connect STT for session {session_id[:8]}...")
+            await cleanup_session(user_id, session_id)
+            return
+
+        t_after_whisper = time.time()
+        whisper_latency = t_after_whisper - t_before_whisper
+        session_timings[session_id]['t_whisper_connected'] = t_after_whisper
+        logger.info(f"⏱️ LATENCY [speech start → WhisperX connected]: {whisper_latency:.3f}s")
+        metrics_tracker.record_whisper_connection_latency(whisper_latency)
+
+        # Register STT callback
+        await stt_service.register_callback(
+            session_id=session_id,
+            callback=lambda text, is_final, metadata: on_stt_transcript(session_id, user_id, username, text, is_final, metadata)
+        )
+
+        # Silence detection configuration
+        silence_threshold_ms = int(os.getenv('SILENCE_THRESHOLD_MS', '600'))  # 600ms default
+        max_speaking_time_ms = int(os.getenv('MAX_SPEAKING_TIME_MS', '45000'))  # 45s default
+
+        # Track audio timing for silence detection
+        last_audio_time = time.time()
+        silence_detection_task = None
+        finalized = False
+
+        async def check_silence():
+            """Background task to detect silence and trigger finalization"""
+            nonlocal finalized
+            check_interval = 0.1  # Check every 100ms
+
+            while not finalized:
+                await asyncio.sleep(check_interval)
+
+                # Calculate elapsed time since last audio
+                elapsed_ms = (time.time() - last_audio_time) * 1000
+                speaking_duration_ms = (time.time() - t_start) * 1000
+
+                # Check for silence threshold
+                if elapsed_ms >= silence_threshold_ms:
+                    logger.info(f"🔇 Silence detected after {elapsed_ms:.0f}ms for {username}")
+                    metrics_tracker.record_silence_detection_latency(elapsed_ms)
+
+                    # Finalize transcript
+                    finalized = True
+                    success = await stt_service.finalize_transcript(session_id)
+                    if success:
+                        logger.info(f"✅ Triggered final transcript for {username}")
+                    else:
+                        logger.warning(f"⚠️ Failed to finalize transcript for {username}")
+                    break
+
+                # Check for max speaking time (safety limit)
+                if speaking_duration_ms >= max_speaking_time_ms:
+                    logger.warning(f"⏰ Max speaking time ({max_speaking_time_ms}ms) reached for {username}")
+
+                    # Force finalization
+                    finalized = True
+                    success = await stt_service.finalize_transcript(session_id)
+                    if success:
+                        logger.info(f"✅ Triggered final transcript (max time) for {username}")
+                    break
+
+        # Start silence detection task
+        silence_detection_task = asyncio.create_task(check_silence())
+
+        # Stream audio to STT with silence tracking
+        try:
+            async for audio_chunk in audio_stream:
+                # Update last audio timestamp
+                last_audio_time = time.time()
+
+                # Send audio to STTService
+                await stt_service.send_audio(session_id, audio_chunk)
+        finally:
+            # Ensure finalization happens even if stream ends abruptly
+            if not finalized:
+                logger.info(f"🔚 Audio stream ended for {username}, finalizing...")
+                await stt_service.finalize_transcript(session_id)
+                finalized = True
+
+            # Cancel silence detection task
+            if silence_detection_task and not silence_detection_task.done():
+                silence_detection_task.cancel()
+                try:
+                    await silence_detection_task
+                except asyncio.CancelledError:
+                    pass
+
+    except Exception as e:
+        logger.error(f"❌ Error in on_user_speaking_start for {username}: {e}", exc_info=True)
+        # Cleanup on error
+        if user_id in active_discord_sessions:
+            session_id = active_discord_sessions[user_id]
+            await cleanup_session(user_id, session_id)
+
+async def on_stt_transcript(session_id: str, user_id: str, username: str, text: str, is_final: bool, metadata: Dict):
+    """
+    Callback for STT transcriptions (VoxBridge 2.0)
+
+    Args:
+        session_id: Session UUID
+        user_id: Discord user ID
+        username: Discord username
+        text: Transcribed text
+        is_final: Whether this is a final transcript
+        metadata: STT metadata (confidence, etc.)
+    """
+    if not is_final:
+        # Partial transcript - log and broadcast
+        logger.info(f"🔄 Partial (session={session_id[:8]}...): \"{text}\" (user={username})")
+
+        # Record first partial latency
+        if session_id in session_timings:
+            timings = session_timings[session_id]
+            if timings['t_first_partial'] is None and timings['t_whisper_connected']:
+                t_now = time.time()
+                timings['t_first_partial'] = t_now
+                latency = t_now - timings['t_whisper_connected']
+                logger.info(f"⏱️ LATENCY [WhisperX connected → first partial]: {latency:.3f}s")
+                metrics_tracker.record_first_partial_transcript_latency(latency)
+
+        # Broadcast partial transcript
+        await broadcast_partial_transcript(user_id, username, text)
+        return
+
+    # Final transcript
+    logger.info(f"✅ Final transcript (session={session_id[:8]}...): \"{text}\" (user={username})")
+
+    # Record transcription duration
+    if session_id in session_timings:
+        timings = session_timings[session_id]
+        t_now = time.time()
+        timings['t_transcription_complete'] = t_now
+
+        if timings['t_first_partial']:
+            duration = t_now - timings['t_first_partial']
+            logger.info(f"⏱️ LATENCY [first partial → transcription complete]: {duration:.3f}s")
+            metrics_tracker.record_transcription_duration(duration)
+
+    # Broadcast final transcript
+    await broadcast_final_transcript(user_id, username, text)
+    metrics_tracker.record_transcript()
+
+    # Add user message to conversation
+    await conversation_service.add_message(
+        session_id=session_id,
+        role='user',
+        content=text,
+        metadata={'stt_confidence': metadata.get('confidence')}
+    )
+
+    # Generate LLM response
+    await generate_and_play_response(session_id, user_id, username, text)
+
+async def generate_and_play_response(session_id: str, user_id: str, username: str, user_text: str):
+    """
+    Generate LLM response and play via TTS (VoxBridge 2.0)
+
+    Args:
+        session_id: Session UUID
+        user_id: Discord user ID
+        username: Discord username
+        user_text: User's transcribed text
+    """
+    try:
+        t_llm_start = time.time()
+
+        # Get conversation context from ConversationService
+        messages = await conversation_service.get_conversation_context(
+            session_id=session_id,
+            limit=10,
+            include_system_prompt=True
+        )
+
+        # Get agent config
+        agent = await conversation_service.get_agent_config(session_id)
+
+        # Convert to LLM format
+        llm_messages = [{'role': msg.role, 'content': msg.content} for msg in messages]
+
+        # Build LLM config
+        llm_config = LLMConfig(
+            provider=ProviderType(agent.llm_provider),
+            model=agent.llm_model,
+            temperature=agent.temperature,
+            system_prompt=agent.system_prompt
+        )
+
+        logger.info(f"🤖 Generating LLM response (session={session_id[:8]}..., provider={llm_config.provider.value})")
+
+        # Stream response from LLM
+        full_response = ""
+        first_chunk = True
+
+        async def on_llm_chunk(chunk: str):
+            nonlocal full_response, first_chunk
+            full_response += chunk
+
+            # Record first chunk latency
+            if first_chunk:
+                t_first_chunk = time.time()
+                latency = t_first_chunk - t_llm_start
+                logger.info(f"⏱️ LATENCY [LLM first chunk]: {latency:.3f}s")
+                metrics_tracker.record_n8n_first_chunk_latency(latency)
+                first_chunk = False
+
+        try:
+            await llm_service.generate_response(
+                session_id=session_id,
+                messages=llm_messages,
+                config=llm_config,
+                stream=True,
+                callback=on_llm_chunk
+            )
+
+            # Record total LLM latency
+            t_llm_complete = time.time()
+            llm_duration = t_llm_complete - t_llm_start
+            logger.info(f"⏱️ LATENCY [total LLM generation]: {llm_duration:.3f}s")
+            metrics_tracker.record_ai_generation_latency(llm_duration)
+
+        except (LLMError, LLMConnectionError, LLMTimeoutError) as e:
+            # LLM providers unavailable - fall back to n8n webhook
+            n8n_webhook_url = os.getenv('N8N_WEBHOOK_URL')
+
+            if not n8n_webhook_url:
+                logger.error(f"❌ LLM providers unavailable and no N8N webhook configured: {e}")
+                raise
+
+            logger.warning(f"⚠️ LLM providers unavailable, falling back to n8n webhook: {e}")
+            logger.info(f"🌐 Calling n8n webhook: {n8n_webhook_url}")
+
+            try:
+                # Call n8n webhook with conversation context
+                async with httpx.AsyncClient(timeout=60.0) as client:
+                    payload = {
+                        'sessionId': session_id,
+                        'userId': user_id,
+                        'username': username,
+                        'text': user_text,
+                        'conversationHistory': [
+                            {'role': msg['role'], 'content': msg['content']}
+                            for msg in llm_messages
+                        ],
+                        'agentConfig': {
+                            'name': agent.name,
+                            'systemPrompt': agent.system_prompt,
+                            'temperature': agent.temperature,
+                            'model': agent.llm_model
+                        }
+                    }
+
+                    response = await client.post(n8n_webhook_url, json=payload)
+                    response.raise_for_status()
+
+                    t_n8n_complete = time.time()
+                    n8n_duration = t_n8n_complete - t_llm_start
+                    logger.info(f"⏱️ LATENCY [n8n webhook]: {n8n_duration:.3f}s")
+                    metrics_tracker.record_ai_generation_latency(n8n_duration)
+
+                    # Parse n8n response
+                    response_data = response.json()
+
+                    # Handle various n8n response formats
+                    if isinstance(response_data, dict):
+                        full_response = (
+                            response_data.get('response') or
+                            response_data.get('output') or
+                            response_data.get('text') or
+                            str(response_data)
+                        )
+                    elif isinstance(response_data, str):
+                        full_response = response_data
+                    else:
+                        full_response = str(response_data)
+
+                    logger.info(f"✅ n8n response received: {len(full_response)} chars")
+
+            except Exception as n8n_error:
+                logger.error(f"❌ n8n webhook fallback failed: {n8n_error}", exc_info=True)
+                raise LLMError(f"Both LLM providers and n8n webhook failed. LLM: {e}, n8n: {n8n_error}") from n8n_error
+
+        # Add assistant message to conversation
+        await conversation_service.add_message(
+            session_id=session_id,
+            role='assistant',
+            content=full_response
+        )
+
+        # Broadcast AI response
+        await broadcast_ai_response(full_response, is_final=True)
+
+        # Synthesize and play TTS
+        await synthesize_and_play_discord(session_id, user_id, username, full_response, agent)
+
+    except Exception as e:
+        logger.error(f"❌ Error generating LLM response (session={session_id[:8]}...): {e}", exc_info=True)
+        metrics_tracker.record_error()
+
+async def synthesize_and_play_discord(session_id: str, user_id: str, username: str, text: str, agent):
+    """
+    Synthesize speech and play in Discord voice channel (VoxBridge 2.0)
+
+    Args:
+        session_id: Session UUID
+        user_id: Discord user ID
+        username: Discord username
+        text: Text to synthesize
+        agent: Agent model with TTS settings
+    """
+    if not voice_client or not voice_client.is_connected():
+        logger.warning("⚠️ Not in voice channel, cannot play TTS")
+        return
+
+    try:
+        t_tts_start = time.time()
+
+        # Synthesize (non-streaming for Discord playback - need complete file)
+        audio_bytes = await tts_service.synthesize_speech(
+            session_id=session_id,
+            text=text,
+            voice_id=agent.tts_voice or os.getenv('CHATTERBOX_VOICE_ID', 'default'),
+            speed=agent.tts_rate or 1.0,
+            stream=False,  # Discord needs complete audio file
+            callback=None
+        )
+
+        if not audio_bytes:
+            logger.error("❌ TTS synthesis failed, no audio received")
+            return
+
+        t_tts_complete = time.time()
+        tts_duration = t_tts_complete - t_tts_start
+        logger.info(f"⏱️ LATENCY [TTS generation]: {tts_duration:.3f}s")
+        metrics_tracker.record_tts_generation_latency(tts_duration)
+
+        # Save to temp file and play
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.wav') as f:
+            f.write(audio_bytes)
+            temp_path = f.name
+
+        try:
+            t_playback_start = time.time()
+
+            # Wait for current audio to finish if playing
+            while voice_client.is_playing():
+                await asyncio.sleep(0.1)
+
+            # Create FFmpeg audio source
+            t_ffmpeg_start = time.time()
+            before_options = '-loglevel error'
+            options = '-vn -ac 2 -ar 48000'
+            audio_source = discord.FFmpegPCMAudio(temp_path, before_options=before_options, options=options)
+            t_ffmpeg_end = time.time()
+
+            ffmpeg_latency_ms = (t_ffmpeg_end - t_ffmpeg_start) * 1000
+            if ffmpeg_latency_ms > 1.0:
+                logger.info(f"⏱️ LATENCY [FFmpeg processing]: {ffmpeg_latency_ms:.2f}ms")
+                metrics_tracker.record_ffmpeg_processing_latency(ffmpeg_latency_ms)
+
+            # Play audio
+            voice_client.play(audio_source)
+            logger.info(f"🔊 Playing TTS audio ({len(audio_bytes):,} bytes)")
+
+            # Wait for playback to complete
+            while voice_client.is_playing():
+                await asyncio.sleep(0.1)
+
+            t_playback_complete = time.time()
+            playback_duration = t_playback_complete - t_playback_start
+            logger.info(f"⏱️ LATENCY [audio playback]: {playback_duration:.3f}s")
+            metrics_tracker.record_audio_playback_latency(playback_duration)
+
+            # Record total pipeline latency
+            if session_id in session_timings:
+                t_start = session_timings[session_id]['t_start']
+                total_latency = t_playback_complete - t_start
+                logger.info(f"⏱️ ⭐⭐⭐ TOTAL PIPELINE LATENCY: {total_latency:.3f}s")
+                metrics_tracker.record_total_pipeline_latency(total_latency)
+
+        finally:
+            # Cleanup temp file
+            try:
+                os.unlink(temp_path)
+            except Exception as e:
+                logger.warning(f"⚠️ Failed to delete temp file {temp_path}: {e}")
+
+    except Exception as e:
+        logger.error(f"❌ Error with TTS playback: {e}", exc_info=True)
+
+async def cleanup_session(user_id: str, session_id: str):
+    """
+    Cleanup session when user stops speaking
+
+    Args:
+        user_id: Discord user ID
+        session_id: Session UUID
+    """
+    logger.info(f"🧹 Cleaning up session {session_id[:8]}... for user {user_id}")
+
+    try:
+        # Disconnect STT
+        await stt_service.disconnect(session_id)
+
+        # End session in database (mark inactive)
+        await conversation_service.end_session(session_id, persist=True)
+
+        # Remove from active sessions
+        if user_id in active_discord_sessions:
+            del active_discord_sessions[user_id]
+
+        # Remove timing data
+        if session_id in session_timings:
+            del session_timings[session_id]
+
+        # Cleanup audio receiver
+        if audio_receiver:
+            audio_receiver.cleanup_user(user_id)
+
+        logger.info(f"✅ Session {session_id[:8]}... cleaned up")
+
+    except Exception as e:
+        logger.error(f"❌ Error cleaning up session {session_id[:8]}...: {e}", exc_info=True)
+
+# ============================================================
+# VOICE CHANNEL OPERATIONS
+# ============================================================
+
 @app.post("/voice/join")
 async def join_voice(request: JoinVoiceRequest):
     """
@@ -527,7 +1052,7 @@ async def join_voice(request: JoinVoiceRequest):
     Returns:
         Success response with channel info
     """
-    global voice_client
+    global voice_client, audio_receiver
 
     logger.info(f"📞 JOIN request - Channel: {request.channelId}, Guild: {request.guildId}")
 
@@ -550,15 +1075,10 @@ async def join_voice(request: JoinVoiceRequest):
 
         logger.info("   👂 Setting up voice listeners...")
 
-        # Set up voice receiving - pass event loop for thread-safe task scheduling
+        # Set up voice receiving
         loop = asyncio.get_running_loop()
-        audio_receiver = AudioReceiver(voice_client, speaker_manager, loop)
+        audio_receiver = AudioReceiver(voice_client, loop)
         voice_client.listen(audio_receiver)
-
-        # Pass voice connection and audio receiver to speaker manager
-        speaker_manager.set_voice_connection(voice_client)
-        speaker_manager.set_audio_receiver(audio_receiver)
-        logger.info("   🌊 Voice connection and audio receiver passed to speaker manager")
 
         logger.info(f"✅ JOIN complete - Now listening in {channel.name}\n")
 
@@ -580,7 +1100,7 @@ async def leave_voice():
     Returns:
         Success response
     """
-    global voice_client
+    global voice_client, audio_receiver
 
     logger.info("📞 LEAVE request received")
 
@@ -588,8 +1108,15 @@ async def leave_voice():
         raise HTTPException(status_code=400, detail="Not currently in a voice channel")
 
     try:
-        # Force unlock any active speaker
-        speaker_manager.force_unlock()
+        # Cleanup all active sessions
+        for user_id in list(active_discord_sessions.keys()):
+            session_id = active_discord_sessions[user_id]
+            await cleanup_session(user_id, session_id)
+
+        # Cleanup audio receiver
+        if audio_receiver:
+            audio_receiver.cleanup()
+            audio_receiver = None
 
         # Disconnect from voice
         await voice_client.disconnect()
@@ -602,131 +1129,6 @@ async def leave_voice():
         logger.error(f"❌ Error leaving voice channel: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/voice/speak")
-async def speak_text(request: SpeakRequest):
-    """
-    Speak text in the voice channel using TTS
-
-    Args:
-        request: Speak request with text and options
-
-    Returns:
-        Success response
-    """
-    text = request.output.get('content')
-    options = request.options
-
-    logger.info(f"🔊 SPEAK request: \"{text}\"")
-    logger.info(f"📋 Options: {options}")
-
-    if not text:
-        raise HTTPException(status_code=400, detail="Missing required parameter: output.content")
-
-    if not voice_client or not voice_client.is_connected():
-        raise HTTPException(status_code=400, detail="Not in a voice channel")
-
-    try:
-        logger.info("   📞 Requesting TTS from Chatterbox...")
-
-        # Build Chatterbox TTS request
-        tts_data = {
-            'input': text,
-            'response_format': options.get('outputFormat', 'wav'),
-            'speed': float(options.get('speedFactor', 1.0))
-        }
-
-        # Add voice parameter
-        if options.get('voiceMode') == 'clone' and options.get('referenceAudioFilename'):
-            tts_data['voice'] = options['referenceAudioFilename']
-        elif CHATTERBOX_VOICE_ID:
-            tts_data['voice'] = CHATTERBOX_VOICE_ID
-        else:
-            tts_data['voice'] = 'default'
-
-        # Add generation parameters
-        if 'temperature' in options:
-            tts_data['temperature'] = float(options['temperature'])
-        if 'exaggeration' in options:
-            tts_data['exaggeration'] = float(options['exaggeration'])
-        if 'cfgWeight' in options:
-            tts_data['cfg_weight'] = float(options['cfgWeight'])
-
-        # Add streaming parameters with optimal defaults
-        tts_data['streaming_chunk_size'] = int(options.get('chunkSize', 100))
-        tts_data['streaming_strategy'] = options.get('streamingStrategy', 'sentence')
-        tts_data['streaming_quality'] = options.get('streamingQuality', 'fast')
-
-        logger.info(f"   📋 TTS Request: {tts_data}")
-
-        # Stream TTS from Chatterbox - TRUE STREAMING
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            async with client.stream(
-                'POST',
-                f"{CHATTERBOX_URL}/audio/speech/stream/upload",
-                data=tts_data,
-                headers={'Content-Type': 'application/x-www-form-urlencoded'}
-            ) as response:
-                response.raise_for_status()
-
-                # Save streaming audio to temp file
-                with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as temp_file:
-                    temp_path = temp_file.name
-                    total_bytes = 0
-
-                    # Stream chunks as they arrive
-                    async for chunk in response.aiter_bytes(chunk_size=8192):
-                        temp_file.write(chunk)
-                        temp_file.flush()
-                        total_bytes += len(chunk)
-
-                logger.info(f"   ✅ TTS stream complete ({total_bytes} bytes)")
-
-                # Play audio in voice channel
-                await play_audio_in_voice(temp_path)
-
-        logger.info("✅ Playing audio in voice channel\n")
-        return {"success": True, "message": "Speaking text"}
-
-    except Exception as e:
-        logger.error(f"❌ Error with TTS: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-async def play_audio_in_voice(temp_path: str):
-    """
-    Play audio from file in Discord voice channel
-
-    Args:
-        temp_path: Path to temporary audio file (WAV format)
-    """
-    if not voice_client or not voice_client.is_connected():
-        logger.warning("⚠️ Not connected to voice channel")
-        return
-
-    try:
-        # Create FFmpeg audio source from file
-        # Explicitly handle mono/stereo conversion to avoid FFmpeg warnings
-        before_options = '-loglevel error'
-        options = '-vn -ac 2 -ar 48000'
-        audio_source = discord.FFmpegPCMAudio(temp_path, before_options=before_options, options=options)
-
-        # Wait for current audio to finish if playing
-        while voice_client.is_playing():
-            await asyncio.sleep(0.1)
-
-        # Play audio
-        voice_client.play(audio_source)
-
-        # Wait for playback to finish
-        while voice_client.is_playing():
-            await asyncio.sleep(0.1)
-
-    finally:
-        # Clean up temporary file
-        try:
-            os.unlink(temp_path)
-        except Exception as e:
-            logger.warning(f"⚠️ Failed to delete temp file {temp_path}: {e}")
-
 # ============================================================
 # HEALTH & STATUS ENDPOINTS
 # ============================================================
@@ -734,21 +1136,17 @@ async def play_audio_in_voice(temp_path: str):
 @app.get("/health")
 async def health_check():
     """Health check endpoint"""
-    speaker_status = speaker_manager.get_status()
     return {
         "status": "ok",
         "botReady": bot.is_ready(),
         "inVoiceChannel": voice_client is not None and voice_client.is_connected(),
-        "speakerLocked": speaker_status['locked'],
-        "activeSpeaker": speaker_status['activeSpeaker'],
+        "activeSessions": len(active_discord_sessions),
         "timestamp": datetime.now().isoformat()
     }
 
 @app.get("/status")
 async def get_status():
     """Detailed status information"""
-    speaker_status = speaker_manager.get_status()
-
     # Get channel info if connected
     channel_info = {
         "connected": False,
@@ -768,54 +1166,53 @@ async def get_status():
             "guildName": channel.guild.name if channel and channel.guild else None
         }
 
+    # Get service health
+    llm_provider_status = await llm_service.get_provider_status()
+    tts_health = await tts_service.test_tts_health()
+    stt_metrics = await stt_service.get_metrics()
+
     # Query GPU device information from actual services
     whisperx_device = "Unknown"
     chatterbox_device = "Unknown"
 
     # Query Chatterbox TTS for GPU info
     try:
-        # Extract base URL (remove /v1 suffix if present)
-        chatterbox_base = CHATTERBOX_URL.replace('/v1', '')
-        async with httpx.AsyncClient(timeout=2.0) as client:
+        chatterbox_base = tts_service.chatterbox_url.replace('/v1', '')
+        async with httpx.AsyncClient(timeout=5.0) as client:
             response = await client.get(f"{chatterbox_base}/health")
             if response.status_code == 200:
                 health_data = response.json()
                 device = health_data.get('device', 'cpu')
 
-                # If device is 'cuda', try to get more specific GPU info from /info endpoint
                 if device == 'cuda':
-                    try:
-                        info_response = await client.get(f"{chatterbox_base}/info")
-                        if info_response.status_code == 200:
-                            info_data = info_response.json()
-                            gpu_name = info_data.get('gpu_name', 'CUDA GPU')
-                            # Simplify GPU name (e.g., "NVIDIA GeForce RTX 5060 Ti" -> "RTX 5060 Ti")
-                            if "RTX" in gpu_name:
-                                chatterbox_device = gpu_name.split("NVIDIA")[-1].strip().split("GeForce")[-1].strip()
-                            else:
-                                chatterbox_device = gpu_name
-                        else:
-                            chatterbox_device = "CUDA GPU"
-                    except Exception:
+                    # Try to get GPU memory info from health response
+                    memory_info = health_data.get('memory_info', {})
+                    gpu_mem_mb = memory_info.get('gpu_memory_allocated_mb', 0)
+
+                    # If we have GPU memory, we know it's CUDA
+                    if gpu_mem_mb > 0:
+                        # Chatterbox doesn't expose gpu_name, so use generic label
                         chatterbox_device = "CUDA GPU"
+                    else:
+                        chatterbox_device = "CUDA"
                 else:
                     chatterbox_device = device.upper()
+
+                logger.info(f"✅ Chatterbox device: {chatterbox_device}")
     except Exception as e:
-        logger.debug(f"Failed to query Chatterbox device info: {e}")
+        logger.warning(f"⚠️ Failed to query Chatterbox device info: {e}")
+        chatterbox_device = "Unknown"
 
     # Query WhisperX for GPU info
     try:
-        # WhisperX health endpoint is on port 4902
         whisperx_url = "http://whisperx:4902"
-        async with httpx.AsyncClient(timeout=2.0) as client:
+        async with httpx.AsyncClient(timeout=5.0) as client:
             response = await client.get(f"{whisperx_url}/health")
             if response.status_code == 200:
                 health_data = response.json()
-                # WhisperX health may not include device info, so check if it exists
                 device = health_data.get('device')
                 if device:
                     if device == 'cuda':
-                        # Try to get GPU name if available
                         gpu_name = health_data.get('gpu_name', 'CUDA GPU')
                         if "RTX" in gpu_name:
                             whisperx_device = gpu_name.split("NVIDIA")[-1].strip().split("GeForce")[-1].strip()
@@ -823,8 +1220,11 @@ async def get_status():
                             whisperx_device = gpu_name
                     else:
                         whisperx_device = device.upper()
+
+                    logger.info(f"✅ WhisperX device: {whisperx_device}")
     except Exception as e:
-        logger.debug(f"Failed to query WhisperX device info: {e}")
+        logger.warning(f"⚠️ Failed to query WhisperX device info: {e}")
+        whisperx_device = "Unknown"
 
     return {
         "bot": {
@@ -834,24 +1234,42 @@ async def get_status():
         },
         "voice": channel_info,
         "speaker": {
-            "locked": speaker_status['locked'],
-            "activeSpeaker": speaker_status['activeSpeaker'],
-            "speakingDuration": speaker_status['speakingDuration'],
-            "silenceDuration": speaker_status['silenceDuration']
+            "locked": False,  # No longer applicable with session-based routing
+            "activeSpeaker": None,
+            "speakingDuration": 0,
+            "silenceDuration": 0
         },
         "whisperx": {
             "serverConfigured": bool(os.getenv('WHISPER_SERVER_URL')),
             "serverUrl": os.getenv('WHISPER_SERVER_URL', '')
         },
         "services": {
-            "chatterbox": bool(CHATTERBOX_URL),
-            "chatterboxUrl": CHATTERBOX_URL or '',
+            "chatterbox": tts_health,
+            "chatterboxUrl": tts_service.chatterbox_url,
             "n8nWebhook": bool(os.getenv('N8N_WEBHOOK_URL')),
             "n8nWebhookUrl": os.getenv('N8N_WEBHOOK_URL', '')
         },
         "devices": {
             "whisperx": whisperx_device,
             "chatterbox": chatterbox_device
+        },
+        "sessions": {
+            "active": len(active_discord_sessions),
+            "total_cache": len(await conversation_service.get_active_sessions())
+        },
+        "serviceHealth": {
+            "stt": {
+                "active_connections": stt_metrics['active_connections'],
+                "total_transcriptions": stt_metrics['total_transcriptions']
+            },
+            "llm": llm_provider_status,
+            "tts": {
+                "healthy": tts_health,
+                "url": tts_service.chatterbox_url
+            },
+            "conversation": {
+                "cache_size": len(await conversation_service.get_active_sessions())
+            }
         }
     }
 
@@ -884,21 +1302,6 @@ async def get_channels():
 
     return {"guilds": guilds_data}
 
-@app.get("/api/transcripts")
-async def get_transcripts(limit: int = 10):
-    """
-    Get recent transcriptions
-
-    Args:
-        limit: Maximum number of transcripts to return
-
-    Returns:
-        List of recent transcripts
-    """
-    # TODO: Implement with database storage
-    # For now, return empty list
-    return {"transcripts": []}
-
 @app.get("/api/metrics")
 async def get_metrics():
     """
@@ -909,82 +1312,15 @@ async def get_metrics():
     """
     return metrics_tracker.get_metrics()
 
-@app.post("/api/config")
-async def update_config(config: dict):
+@app.get("/api/plugins/stats")
+async def get_plugin_stats():
     """
-    Update runtime configuration
-
-    Args:
-        config: Configuration updates
+    Get plugin system statistics including resource usage
 
     Returns:
-        Success response
+        Plugin manager stats with resource monitoring data
     """
-    # Update speaker manager settings
-    if "SILENCE_THRESHOLD_MS" in config:
-        speaker_manager.silence_threshold_ms = int(config["SILENCE_THRESHOLD_MS"])
-        logger.info(f"⚙️ Updated SILENCE_THRESHOLD_MS to {config['SILENCE_THRESHOLD_MS']}ms")
-
-    if "MAX_SPEAKING_TIME_MS" in config:
-        speaker_manager.max_speaking_time_ms = int(config["MAX_SPEAKING_TIME_MS"])
-        logger.info(f"⚙️ Updated MAX_SPEAKING_TIME_MS to {config['MAX_SPEAKING_TIME_MS']}ms")
-
-    if "USE_STREAMING" in config:
-        speaker_manager.use_streaming = bool(config["USE_STREAMING"])
-        logger.info(f"⚙️ Updated USE_STREAMING to {config['USE_STREAMING']}")
-
-    return {"success": True, "message": "Configuration updated"}
-
-@app.post("/api/tts/config")
-async def update_tts_config(config: TTSConfigRequest):
-    """
-    Update TTS configuration from frontend dashboard
-
-    Priority order for TTS options:
-    1. n8n webhook headers (X-TTS-Options)
-    2. Frontend dashboard settings (this endpoint)
-    3. Environment variable defaults
-
-    Args:
-        config: TTS configuration with enabled flag and options
-
-    Returns:
-        Success response
-    """
-    global frontend_tts_options
-
-    if config.enabled:
-        frontend_tts_options = {
-            "enabled": True,
-            "options": config.options
-        }
-        logger.info(f"⚙️ Frontend TTS options ENABLED: {config.options}")
-    else:
-        frontend_tts_options = None
-        logger.info(f"⚙️ Frontend TTS options DISABLED")
-
-    return {
-        "success": True,
-        "message": f"TTS options {'enabled' if config.enabled else 'disabled'}"
-    }
-
-@app.post("/api/speaker/unlock")
-async def unlock_speaker():
-    """
-    Force unlock current speaker
-
-    Returns:
-        Success response with previous speaker ID
-    """
-    previous_speaker = speaker_manager.active_speaker
-    speaker_manager.force_unlock()
-
-    logger.info(f"🔓 Force unlocked speaker (was: {previous_speaker})")
-
-    return {
-        "success": True,
-        "previousSpeaker": previous_speaker
-    }
+    return plugin_manager.get_stats()
 
 # ============================================================
 # WEBSOCKET CONNECTION MANAGER
@@ -1049,6 +1385,7 @@ async def websocket_endpoint(websocket: WebSocket):
     - speaker_stopped: User stops speaking
     - partial_transcript: Partial transcription update
     - final_transcript: Final transcription result
+    - ai_response: AI response text
     - status_update: General status update
     """
     await ws_manager.connect(websocket)
@@ -1186,9 +1523,6 @@ async def broadcast_partial_transcript(user_id: str, username: str, text: str):
 
 async def broadcast_final_transcript(user_id: str, username: str, text: str):
     """Broadcast final transcription"""
-    # Record transcript completion metric
-    metrics_tracker.record_transcript()
-
     await ws_manager.broadcast({
         "event": "final_transcript",
         "data": {
@@ -1213,16 +1547,6 @@ async def broadcast_ai_response(text: str, is_final: bool = False):
         }
     })
 
-# Initialize SpeakerManager with broadcast callbacks
-speaker_manager = SpeakerManager(
-    on_speaker_started=broadcast_speaker_started,
-    on_speaker_stopped=broadcast_speaker_stopped,
-    on_partial_transcript=broadcast_partial_transcript,
-    on_final_transcript=broadcast_final_transcript,
-    on_ai_response=broadcast_ai_response,
-    metrics_tracker=metrics_tracker
-)
-
 # ============================================================
 # APPLICATION LIFECYCLE
 # ============================================================
@@ -1242,7 +1566,6 @@ async def start_api():
     logger.info(f"📍 Endpoints available:")
     logger.info(f"   POST /voice/join - Join voice channel")
     logger.info(f"   POST /voice/leave - Leave voice channel")
-    logger.info(f"   POST /voice/speak - Speak text via TTS")
     logger.info(f"   GET  /health - Health check")
     logger.info(f"   GET  /status - Detailed status")
     logger.info(f"   WS   /ws/events - Real-time event stream (Discord)")
@@ -1255,8 +1578,10 @@ async def shutdown():
     """Graceful shutdown"""
     logger.info("\n⚠️ Shutting down gracefully...")
 
-    # Force unlock speaker
-    speaker_manager.force_unlock()
+    # Cleanup all active sessions
+    for user_id in list(active_discord_sessions.keys()):
+        session_id = active_discord_sessions[user_id]
+        await cleanup_session(user_id, session_id)
 
     # Disconnect from voice
     if voice_client and voice_client.is_connected():
