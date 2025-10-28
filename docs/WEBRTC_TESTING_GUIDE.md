@@ -240,7 +240,117 @@ python test_webrtc.py
 ⏱️ No more messages (timeout)
 ```
 
-## 🧪 Test 5: Error Cases
+## 🧪 Test 5: TTS Audio Playback ⭐ **NEW**
+
+After AI response completes, the backend should automatically synthesize and stream TTS audio.
+
+### Browser Console Test
+
+```javascript
+// After Test 3 (sending audio), listen for TTS events
+ws.onmessage = (event) => {
+  // Check if binary (audio) or text (JSON)
+  if (event.data instanceof ArrayBuffer || event.data instanceof Blob) {
+    console.log(`🎵 Received TTS audio chunk: ${event.data.byteLength || event.data.size} bytes`);
+
+    // Convert to audio and play
+    const audioData = event.data instanceof Blob ? event.data : new Blob([event.data], { type: 'audio/wav' });
+    const audioUrl = URL.createObjectURL(audioData);
+    const audio = new Audio(audioUrl);
+    audio.play();
+  } else {
+    // JSON event
+    const message = JSON.parse(event.data);
+    console.log(`📨 Event: ${message.event}`, message.data);
+
+    if (message.event === 'tts_start') {
+      console.log('🔊 TTS synthesis started');
+    } else if (message.event === 'tts_complete') {
+      console.log(`✅ TTS complete (${message.data.duration_s}s)`);
+    }
+  }
+};
+```
+
+### Expected Flow
+
+1. **After `ai_response_complete` event**:
+   ```
+   📨 Event: ai_response_complete { text: "Hi! How can I help you?", ... }
+   ```
+
+2. **TTS Start Event**:
+   ```
+   📨 Event: tts_start { session_id: "..." }
+   🔊 TTS synthesis started
+   ```
+
+3. **Binary Audio Chunks** (multiple):
+   ```
+   🎵 Received TTS audio chunk: 8192 bytes
+   🎵 Received TTS audio chunk: 8192 bytes
+   🎵 Received TTS audio chunk: 4096 bytes
+   ```
+
+4. **TTS Complete Event**:
+   ```
+   📨 Event: tts_complete { session_id: "...", duration_s: 1.23 }
+   ✅ TTS complete (1.23s)
+   ```
+
+### Backend Logs
+
+Watch for TTS processing:
+
+```bash
+docker logs voxbridge-discord --tail 100 --follow | grep -E "(🔊|TTS|audio)"
+```
+
+**Expected Output**:
+```
+🔊 Starting TTS synthesis for text: "Hi! How can I help you?"
+⏱️ ⭐ LATENCY [TTS first byte]: 0.342s
+✅ TTS complete (145,280 bytes, 1.23s)
+```
+
+### Performance Metrics
+
+- **TTS First Byte**: < 500ms (target: 300-400ms)
+- **TTS Total Duration**: 1-3s (depends on response length)
+- **Audio Chunk Size**: 8192 bytes (configurable)
+
+### Verify Chatterbox Integration
+
+Check Chatterbox is healthy:
+
+```bash
+# Health check
+curl http://localhost:4123/health | python3 -m json.tool
+
+# Expected: {"status": "ok", ...}
+```
+
+Check backend can reach Chatterbox:
+
+```bash
+docker logs voxbridge-discord --tail 50 | grep -i chatterbox
+```
+
+**Expected**:
+```
+HTTP Request: GET http://chatterbox-tts:4123/health "HTTP/1.1 200 OK"
+```
+
+### Test Speaker Mute
+
+Frontend should allow muting TTS playback while keeping STT active. This is implemented via `isSpeakerMuted` state.
+
+**When muted**:
+- Text responses still appear
+- Binary audio chunks are discarded
+- Console shows: `🔇 Speaker muted, discarding audio chunk`
+
+## 🧪 Test 6: Error Cases
 
 ### Invalid Session ID
 ```bash
@@ -316,6 +426,76 @@ docker logs voxbridge-whisperx --tail 50
 ```
 
 ## 🐛 Troubleshooting
+
+### No TTS Audio Plays ⭐ **NEW**
+**Problem**: Text response appears, but no audio plays in browser
+
+**Check**:
+1. Verify Chatterbox is running:
+   ```bash
+   curl http://localhost:4123/health | python3 -m json.tool
+   ```
+
+2. Check backend logs for TTS errors:
+   ```bash
+   docker logs voxbridge-discord --tail 50 | grep -E "(TTS|Chatterbox|ERROR)"
+   ```
+
+3. Verify binary chunks are being sent:
+   ```bash
+   docker logs voxbridge-discord --tail 50 | grep "binary audio chunk"
+   ```
+
+4. Check browser console for audio playback errors
+
+**Solutions**:
+- Start Chatterbox: `cd ../chatterbox-tts-api && docker compose -f docker/docker-compose.yml up -d`
+- Verify `CHATTERBOX_URL` in `.env` (should be `http://chatterbox-tts:4123`)
+- Check browser audio is not muted
+- Verify speaker mute button is not enabled in UI
+
+### TTS Latency Too High ⭐ **NEW**
+**Problem**: TTS first byte takes > 1 second
+
+**Check**:
+```bash
+docker logs voxbridge-discord --tail 100 | grep "LATENCY \[TTS first byte\]"
+```
+
+**Solutions**:
+1. Verify Chatterbox is using GPU (not CPU):
+   ```bash
+   docker logs chatterbox-tts-api | grep -i "gpu\|cuda"
+   ```
+
+2. Reduce Chatterbox streaming chunk size in `webrtc_handler.py`:
+   ```python
+   'streaming_chunk_size': 50,  # Lower = faster first byte
+   ```
+
+3. Check GPU utilization:
+   ```bash
+   docker exec chatterbox-tts nvidia-smi
+   ```
+
+### Audio Glitches/Stuttering ⭐ **NEW**
+**Problem**: TTS audio plays but with clicks, pops, or stuttering
+
+**Solutions**:
+1. Increase audio chunk size in `webrtc_handler.py`:
+   ```python
+   async for chunk in response.aiter_bytes(chunk_size=16384):  # Increase from 8192
+   ```
+
+2. Reduce Chatterbox streaming quality:
+   ```python
+   'streaming_quality': 'draft',  # Lower quality but faster
+   ```
+
+3. Check network latency between containers:
+   ```bash
+   docker exec voxbridge-discord ping -c 5 chatterbox-tts
+   ```
 
 ### Connection Refused
 **Problem**: Cannot connect to WebSocket
@@ -394,10 +574,14 @@ After running tests, you should see:
 4. **Transcription**: ✅ Partial and final transcripts received
 5. **Silence Detection**: ✅ Finalizes after 600ms silence
 6. **LLM Integration**: ✅ AI response chunks stream back
-7. **Database Persistence**: ✅ Messages saved to conversations table
-8. **Error Handling**: ✅ Errors sent to client, graceful cleanup
-9. **Logging**: ✅ Comprehensive logs with emojis
-10. **Cleanup**: ✅ No resource leaks on disconnect
+7. **TTS Synthesis**: ✅ Chatterbox generates audio after AI response ⭐ **NEW**
+8. **TTS Streaming**: ✅ Binary audio chunks streamed to browser ⭐ **NEW**
+9. **TTS Events**: ✅ `tts_start` and `tts_complete` events received ⭐ **NEW**
+10. **Audio Playback**: ✅ TTS audio plays in browser (Web Audio API) ⭐ **NEW**
+11. **Database Persistence**: ✅ Messages saved to conversations table
+12. **Error Handling**: ✅ Errors sent to client, graceful cleanup
+13. **Logging**: ✅ Comprehensive logs with emojis
+14. **Cleanup**: ✅ No resource leaks on disconnect
 
 ## 📚 Related Documentation
 

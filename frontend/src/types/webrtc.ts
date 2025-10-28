@@ -15,7 +15,10 @@ export type WebRTCAudioEventType =
   | 'partial_transcript'
   | 'final_transcript'
   | 'ai_response_chunk'
-  | 'ai_response_complete';
+  | 'ai_response_complete'
+  | 'tts_start'
+  | 'tts_complete'
+  | 'error';
 
 /**
  * WebSocket message structure (Server → Client)
@@ -23,9 +26,11 @@ export type WebRTCAudioEventType =
 export interface WebRTCAudioMessage {
   event: WebRTCAudioEventType;
   data: {
-    text: string;
+    text?: string;
     user_id?: string;
     session_id?: string;
+    duration_s?: number;  // For tts_complete event
+    message?: string;     // For error event
   };
 }
 

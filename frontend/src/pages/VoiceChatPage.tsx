@@ -11,7 +11,9 @@ import { ConversationList } from '@/components/ConversationList';
 import { NewConversationDialog } from '@/components/NewConversationDialog';
 import { AudioControls } from '@/components/AudioControls';
 import { useToastHelpers } from '@/components/ui/toast';
-import { useWebRTCAudio, type WebRTCAudioMessage } from '@/hooks/useWebRTCAudio';
+import { useWebRTCAudio } from '@/hooks/useWebRTCAudio';
+import { useAudioPlayback } from '@/hooks/useAudioPlayback';
+import type { WebRTCAudioMessage } from '@/types/webrtc';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -30,6 +32,14 @@ export function VoiceChatPage() {
   const toast = useToastHelpers();
   const queryClient = useQueryClient();
   const scrollAreaRef = useRef<HTMLDivElement>(null);
+
+  // Audio playback hook for TTS
+  const audioPlayback = useAudioPlayback({
+    autoPlay: true,
+    onPlaybackStart: () => console.log('🔊 Playing TTS audio'),
+    onPlaybackEnd: () => console.log('✅ TTS playback complete'),
+    onError: (error) => toast.error('Audio playback failed', error),
+  });
 
   // Fetch sessions
   const { data: sessions = [], isLoading: isLoadingSessions, refetch: refetchSessions } = useQuery({
@@ -73,7 +83,7 @@ export function VoiceChatPage() {
       switch (message.event) {
         case 'partial_transcript':
           // Update partial transcript (live transcription)
-          setPartialTranscript(message.data.text);
+          setPartialTranscript(message.data.text || '');
           break;
 
         case 'final_transcript':
@@ -81,7 +91,7 @@ export function VoiceChatPage() {
           try {
             await api.addMessage(activeSessionId, {
               role: 'user',
-              content: message.data.text,
+              content: message.data.text || '',
             });
 
             // Clear partial transcript
@@ -107,7 +117,7 @@ export function VoiceChatPage() {
                 ...oldData.slice(0, -1),
                 {
                   ...lastMessage,
-                  content: lastMessage.content + message.data.text,
+                  content: lastMessage.content + (message.data.text || ''),
                 },
               ];
             } else {
@@ -118,7 +128,7 @@ export function VoiceChatPage() {
                   id: Date.now(), // Temporary ID
                   session_id: activeSessionId,
                   role: 'assistant',
-                  content: message.data.text,
+                  content: message.data.text || '',
                   timestamp: new Date().toISOString(),
                   audio_duration_ms: null,
                   tts_duration_ms: null,
@@ -135,7 +145,7 @@ export function VoiceChatPage() {
           try {
             await api.addMessage(activeSessionId, {
               role: 'assistant',
-              content: message.data.text,
+              content: message.data.text || '',
             });
 
             // Invalidate messages query to refetch (get proper ID from backend)
@@ -146,11 +156,48 @@ export function VoiceChatPage() {
           }
           break;
 
+        case 'tts_start':
+          // TTS generation started
+          console.log('🔊 TTS generation started');
+          break;
+
+        case 'tts_complete':
+          // TTS generation complete - play buffered audio
+          console.log(`✅ TTS complete (${message.data.duration_s?.toFixed(2)}s)`);
+
+          // Play all buffered audio chunks
+          if (!isSpeakerMuted) {
+            await audioPlayback.completeAudio();
+          } else {
+            console.log('🔇 Speaker muted, discarding TTS audio');
+            audioPlayback.stop(); // Clear buffer
+          }
+          break;
+
+        case 'error':
+          // Error from backend
+          console.error('[VoiceChat] Backend error:', message.data.message);
+          toast.error('Backend Error', message.data.message || 'Unknown error');
+          break;
+
         default:
           console.warn('[VoiceChat] Unknown message event:', message.event);
       }
     },
-    [activeSessionId, queryClient, toast]
+    [activeSessionId, queryClient, toast, audioPlayback, isSpeakerMuted]
+  );
+
+  // Handle binary audio chunks from TTS
+  const handleBinaryMessage = useCallback(
+    (audioData: Uint8Array) => {
+      if (!isSpeakerMuted) {
+        console.log(`🎵 Buffering audio chunk: ${audioData.length} bytes`);
+        audioPlayback.addAudioChunk(audioData);
+      } else {
+        console.log('🔇 Speaker muted, discarding audio chunk');
+      }
+    },
+    [audioPlayback, isSpeakerMuted]
   );
 
   // Handle WebRTC errors
@@ -171,6 +218,7 @@ export function VoiceChatPage() {
   } = useWebRTCAudio({
     sessionId: activeSessionId,
     onMessage: handleAudioMessage,
+    onBinaryMessage: handleBinaryMessage,  // NEW: Handle TTS audio chunks
     onError: handleAudioError,
     autoStart: false, // User must click to start
     timeslice: 100, // 100ms chunks

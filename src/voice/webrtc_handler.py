@@ -21,6 +21,7 @@ from uuid import UUID
 
 from fastapi import WebSocket, WebSocketDisconnect
 import opuslib
+import httpx
 
 from src.whisper_client import WhisperClient
 from src.services.session_service import SessionService
@@ -357,6 +358,9 @@ class WebRTCVoiceHandler:
             )
             logger.info(f"💾 Saved AI message to database")
 
+            # Generate and stream TTS audio to browser
+            await self._handle_tts_response(full_response)
+
             # Close provider
             await provider.close()
 
@@ -419,6 +423,129 @@ class WebRTCVoiceHandler:
             })
         except Exception as e:
             logger.error(f"❌ Error sending AI response complete: {e}")
+
+    async def _handle_tts_response(self, text: str):
+        """
+        Convert AI text response to audio and stream to browser
+
+        Reuses Discord bot's proven Chatterbox integration pattern.
+        Streams WAV audio directly to browser via WebSocket binary frames.
+
+        Args:
+            text: AI response text to synthesize
+        """
+        try:
+            t_tts_start = time.time()
+            logger.info(f"🔊 Starting TTS synthesis for text: \"{text[:50]}...\"")
+
+            # Check Chatterbox health
+            chatterbox_url = os.getenv('CHATTERBOX_URL', 'http://chatterbox-tts:4123')
+            if not await self._check_chatterbox_health(chatterbox_url):
+                logger.warning("⚠️ Chatterbox unavailable, skipping TTS")
+                await self._send_error("TTS service unavailable")
+                return
+
+            # Build TTS request (same pattern as Discord bot)
+            tts_data = {
+                'input': text,
+                'response_format': 'wav',  # Browser-compatible
+                'speed': 1.0,
+                'voice': os.getenv('CHATTERBOX_VOICE_ID', 'default'),
+                'streaming_strategy': 'word',
+                'streaming_chunk_size': 100,
+                'streaming_buffer_size': 3,
+                'streaming_quality': 'fast'
+            }
+
+            # Send TTS start event
+            await self._send_tts_start()
+
+            # Stream audio from Chatterbox
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                async with client.stream(
+                    'POST',
+                    f"{chatterbox_url}/v1/audio/speech/stream/upload",
+                    data=tts_data,
+                    headers={'Content-Type': 'application/x-www-form-urlencoded'}
+                ) as response:
+                    response.raise_for_status()
+
+                    first_byte = True
+                    total_bytes = 0
+
+                    async for chunk in response.aiter_bytes(chunk_size=8192):
+                        # Log first byte latency (critical UX metric)
+                        if first_byte:
+                            t_first_byte = time.time()
+                            latency_s = t_first_byte - t_tts_start
+                            logger.info(f"⏱️ ⭐ LATENCY [TTS first byte]: {latency_s:.3f}s")
+                            first_byte = False
+
+                        # Stream chunk to browser as binary WebSocket frame
+                        await self.websocket.send_bytes(chunk)
+                        total_bytes += len(chunk)
+
+            # Send completion event
+            t_complete = time.time()
+            total_latency_s = t_complete - t_tts_start
+            logger.info(f"✅ TTS complete ({total_bytes:,} bytes, {total_latency_s:.2f}s)")
+
+            await self._send_tts_complete(total_latency_s)
+
+        except httpx.HTTPStatusError as e:
+            logger.error(f"❌ Chatterbox HTTP error: {e.response.status_code}", exc_info=True)
+            await self._send_error(f"TTS HTTP error: {e.response.status_code}")
+        except httpx.TimeoutException:
+            logger.error("❌ Chatterbox TTS timeout", exc_info=True)
+            await self._send_error("TTS request timed out")
+        except Exception as e:
+            logger.error(f"❌ TTS error: {e}", exc_info=True)
+            await self._send_error(f"TTS failed: {str(e)}")
+
+    async def _check_chatterbox_health(self, base_url: str) -> bool:
+        """
+        Check if Chatterbox TTS service is responding
+
+        Args:
+            base_url: Chatterbox base URL (e.g., http://chatterbox-tts:4123)
+
+        Returns:
+            True if healthy, False otherwise
+        """
+        try:
+            # Strip /v1 if present
+            health_url = base_url.rstrip('/v1')
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                response = await client.get(f"{health_url}/health")
+                return response.status_code == 200
+        except Exception as e:
+            logger.warning(f"⚠️ Chatterbox health check failed: {e}")
+            return False
+
+    async def _send_tts_start(self):
+        """Send TTS start event to browser"""
+        try:
+            await self.websocket.send_json({
+                "event": "tts_start",
+                "data": {
+                    "session_id": str(self.session_id)
+                }
+            })
+        except Exception as e:
+            logger.error(f"❌ Error sending TTS start: {e}")
+
+    async def _send_tts_complete(self, duration_s: float):
+        """Send TTS complete event to browser"""
+        try:
+            await self.websocket.send_json({
+                "event": "tts_complete",
+                "data": {
+                    "session_id": str(self.session_id),
+                    "duration_s": duration_s
+                }
+            })
+        except Exception as e:
+            logger.error(f"❌ Error sending TTS complete: {e}")
 
     async def _send_error(self, message: str):
         """Send error event to browser"""

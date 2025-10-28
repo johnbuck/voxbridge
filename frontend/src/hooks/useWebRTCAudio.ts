@@ -5,6 +5,7 @@
  */
 
 import { useState, useCallback, useRef, useEffect } from 'react';
+import type { WebRTCAudioMessage, ConnectionState } from '@/types/webrtc';
 
 // WebSocket URL configuration (same as useWebSocket)
 const getWebSocketUrl = () => {
@@ -17,20 +18,10 @@ const getWebSocketUrl = () => {
 
 const WS_URL = getWebSocketUrl();
 
-export type ConnectionState = 'connecting' | 'connected' | 'disconnected' | 'error';
-
-export interface WebRTCAudioMessage {
-  event: 'partial_transcript' | 'final_transcript' | 'ai_response_chunk' | 'ai_response_complete';
-  data: {
-    text: string;
-    user_id?: string;
-    session_id?: string;
-  };
-}
-
 export interface UseWebRTCAudioOptions {
   sessionId: string | null;
   onMessage?: (message: WebRTCAudioMessage) => void;
+  onBinaryMessage?: (data: Uint8Array) => void;  // NEW: Binary audio chunks
   onError?: (error: string) => void;
   autoStart?: boolean;
   timeslice?: number; // milliseconds between audio chunks
@@ -50,6 +41,7 @@ export function useWebRTCAudio(options: UseWebRTCAudioOptions): UseWebRTCAudioRe
   const {
     sessionId,
     onMessage,
+    onBinaryMessage,
     onError,
     autoStart = false,
     timeslice = 100, // 100ms chunks for low latency
@@ -94,11 +86,33 @@ export function useWebRTCAudio(options: UseWebRTCAudioOptions): UseWebRTCAudioRe
 
       ws.onmessage = (event) => {
         try {
-          const message: WebRTCAudioMessage = JSON.parse(event.data);
-          console.log('[WebRTC] Received message:', message.event, message.data.text?.substring(0, 50));
+          // Check if message is binary (audio) or text (JSON)
+          if (event.data instanceof ArrayBuffer) {
+            // Binary audio chunk from TTS
+            const audioData = new Uint8Array(event.data);
+            console.log(`[WebRTC] Received binary audio chunk: ${audioData.length} bytes`);
 
-          if (onMessage) {
-            onMessage(message);
+            if (onBinaryMessage) {
+              onBinaryMessage(audioData);
+            }
+          } else if (event.data instanceof Blob) {
+            // Blob data (convert to ArrayBuffer)
+            event.data.arrayBuffer().then((buffer) => {
+              const audioData = new Uint8Array(buffer);
+              console.log(`[WebRTC] Received blob audio chunk: ${audioData.length} bytes`);
+
+              if (onBinaryMessage) {
+                onBinaryMessage(audioData);
+              }
+            });
+          } else {
+            // Text message (JSON)
+            const message: WebRTCAudioMessage = JSON.parse(event.data);
+            console.log('[WebRTC] Received message:', message.event, message.data.text?.substring(0, 50));
+
+            if (onMessage) {
+              onMessage(message);
+            }
           }
         } catch (err) {
           console.error('[WebRTC] Failed to parse WebSocket message:', err);

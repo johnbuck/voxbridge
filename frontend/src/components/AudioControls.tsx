@@ -8,7 +8,7 @@ import { Mic, MicOff, AlertCircle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
-import type { ConnectionState } from '@/hooks/useWebRTCAudio';
+import type { ConnectionState } from '@/types/webrtc';
 
 export interface AudioControlsProps {
   isMuted: boolean;
