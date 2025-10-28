@@ -144,16 +144,16 @@ export function PluginsPage() {
                     <Cpu className="h-3 w-3" />
                     CPU:
                   </span>
-                  <span className="font-semibold">{stats.resource_usage.total_cpu_percent.toFixed(1)}%</span>
+                  <span className="font-semibold">{(stats.resource_usage.total_cpu_percent ?? 0).toFixed(1)}%</span>
                 </div>
                 <div className="flex items-center justify-between text-sm">
                   <span className="text-muted-foreground flex items-center gap-1">
                     <MemoryStick className="h-3 w-3" />
                     RAM:
                   </span>
-                  <span className="font-semibold">{stats.resource_usage.total_memory_mb.toFixed(0)} MB</span>
+                  <span className="font-semibold">{(stats.resource_usage.total_memory_mb ?? 0).toFixed(0)} MB</span>
                 </div>
-                {stats.resource_usage.total_gpu_memory_mb !== undefined && (
+                {stats.resource_usage.total_gpu_memory_mb != null && (
                   <div className="flex items-center justify-between text-sm">
                     <span className="text-muted-foreground">GPU:</span>
                     <span className="font-semibold">{stats.resource_usage.total_gpu_memory_mb.toFixed(0)} MB</span>

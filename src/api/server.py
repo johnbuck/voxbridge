@@ -578,11 +578,11 @@ async def get_plugins():
                 stats = plugin_manager.resource_monitor.get_plugin_stats(agent_id, plugin_type)
                 if stats:
                     resource_usage = {
-                        "cpu_percent": round(stats.cpu_percent, 2),
-                        "memory_mb": round(stats.memory_mb, 2)
+                        "cpu_percent": round(stats.get("cpu_percent", 0), 2),
+                        "memory_mb": round(stats.get("memory_mb", 0), 2)
                     }
-                    if stats.gpu_memory_mb is not None:
-                        resource_usage["gpu_memory_mb"] = round(stats.gpu_memory_mb, 2)
+                    if stats.get("gpu_memory_mb") is not None:
+                        resource_usage["gpu_memory_mb"] = round(stats["gpu_memory_mb"], 2)
 
             plugins.append({
                 "plugin_type": plugin_type,

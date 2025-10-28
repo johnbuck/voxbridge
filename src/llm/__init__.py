@@ -13,6 +13,8 @@ from src.llm.types import (
     LLMError,
     LLMTimeoutError,
     LLMRateLimitError,
+    LLMConnectionError,
+    LLMAuthenticationError,
 )
 
 __all__ = [
@@ -23,4 +25,6 @@ __all__ = [
     "LLMError",
     "LLMTimeoutError",
     "LLMRateLimitError",
+    "LLMConnectionError",
+    "LLMAuthenticationError",
 ]

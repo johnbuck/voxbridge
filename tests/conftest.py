@@ -296,3 +296,161 @@ async def cleanup_tasks():
     # Wait for cancellation
     if tasks:
         await asyncio.gather(*tasks, return_exceptions=True)
+
+
+# ============================================================
+# Service Fixtures (VoxBridge 2.0)
+# ============================================================
+
+@pytest.fixture
+def mock_db_session():
+    """
+    Mock database session for service tests
+
+    Usage:
+        async def test_something(mock_db_session):
+            with patch('src.services.conversation_service.get_db_session') as mock_db:
+                mock_db.return_value.__aenter__.return_value = mock_db_session
+                # Test code here
+    """
+    mock_session = AsyncMock()
+    mock_session.execute = AsyncMock()
+    mock_session.add = MagicMock()
+    mock_session.commit = AsyncMock()
+    mock_session.refresh = AsyncMock()
+    return mock_session
+
+
+@pytest.fixture
+def mock_agent():
+    """
+    Mock Agent model for testing
+
+    Usage:
+        def test_something(mock_agent):
+            assert mock_agent.name == "TestAgent"
+    """
+    from src.database.models import Agent
+    from uuid import uuid4
+
+    return Agent(
+        id=uuid4(),
+        name="TestAgent",
+        system_prompt="You are a helpful assistant",
+        temperature=0.7,
+        llm_provider="openrouter",
+        llm_model="gpt-4",
+        tts_voice="default",
+        tts_rate=1.0,
+        tts_pitch=1.0
+    )
+
+
+@pytest.fixture
+def mock_session_model(mock_agent):
+    """
+    Mock Session model for testing
+
+    Usage:
+        def test_something(mock_session_model):
+            assert mock_session_model.active is True
+    """
+    from src.database.models import Session
+    from uuid import uuid4
+    from datetime import datetime
+
+    session = Session(
+        id=uuid4(),
+        user_id="test_user_123",
+        user_name="TestUser",
+        agent_id=mock_agent.id,
+        session_type="webrtc",
+        title="Test Session",
+        active=True,
+        started_at=datetime.utcnow()
+    )
+    session.agent = mock_agent
+    return session
+
+
+@pytest.fixture
+def mock_conversation():
+    """
+    Mock Conversation model for testing
+
+    Usage:
+        def test_something(mock_conversation):
+            assert mock_conversation.role == "user"
+    """
+    from src.database.models import Conversation
+    from uuid import uuid4
+    from datetime import datetime
+
+    return Conversation(
+        id=uuid4(),
+        session_id=uuid4(),
+        role="user",
+        content="Hello, AI!",
+        timestamp=datetime.utcnow(),
+        audio_duration_ms=1500,
+        tts_duration_ms=None,
+        llm_latency_ms=None,
+        total_latency_ms=None
+    )
+
+
+@pytest.fixture
+def mock_llm_provider():
+    """
+    Mock LLM provider for testing
+
+    Usage:
+        async def test_something(mock_llm_provider):
+            async for chunk in mock_llm_provider.generate_stream(request):
+                print(chunk)
+    """
+    from src.llm import LLMProvider
+
+    mock_provider = AsyncMock(spec=LLMProvider)
+
+    async def mock_stream(*args, **kwargs):
+        yield "Test"
+        yield " response"
+
+    mock_provider.generate_stream = mock_stream
+    mock_provider.health_check = AsyncMock(return_value=True)
+    mock_provider.close = AsyncMock()
+
+    return mock_provider
+
+
+@pytest.fixture
+def mock_whisperx_connection():
+    """
+    Mock WhisperX WebSocket connection
+
+    Usage:
+        def test_something(mock_whisperx_connection):
+            await mock_whisperx_connection.send(audio_data)
+    """
+    mock_ws = AsyncMock()
+    mock_ws.send = AsyncMock()
+    mock_ws.close = AsyncMock()
+    return mock_ws
+
+
+@pytest.fixture
+def mock_httpx_client():
+    """
+    Mock httpx AsyncClient for HTTP requests
+
+    Usage:
+        async def test_something(mock_httpx_client):
+            response = await mock_httpx_client.get("/health")
+    """
+    mock_client = AsyncMock()
+    mock_client.get = AsyncMock()
+    mock_client.post = AsyncMock()
+    mock_client.stream = MagicMock()
+    mock_client.aclose = AsyncMock()
+    return mock_client

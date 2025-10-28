@@ -1,13 +1,19 @@
 #!/usr/bin/env python3
 """
 ============================================================
-WebRTC Voice Handler
+WebRTC Voice Handler (VoxBridge 2.0 Phase 5.5)
 Handles browser audio streaming via WebSocket:
 - Receive Opus/WebM audio chunks from browser
 - Decode to PCM for WhisperX
 - Stream transcriptions back to browser
 - Route final transcript to LLM
 - Stream AI response chunks to browser
+
+Uses new service layer:
+- ConversationService: Session management + context caching
+- STTService: WhisperX abstraction
+- LLMService: LLM provider routing
+- TTSService: Chatterbox abstraction
 ============================================================
 """
 
@@ -16,32 +22,31 @@ import logging
 import os
 import time
 from io import BytesIO
-from typing import Optional
+from typing import Optional, Dict
 from uuid import UUID
 
 from fastapi import WebSocket, WebSocketDisconnect
 import opuslib
-import httpx
 
-from src.whisper_client import WhisperClient
-from src.services.session_service import SessionService
-from src.services.agent_service import AgentService
-from src.llm.factory import LLMProviderFactory
-from src.llm.types import LLMMessage, LLMRequest, LLMError
+from src.services.conversation_service import ConversationService
+from src.services.stt_service import STTService
+from src.services.llm_service import LLMService, LLMConfig, ProviderType
+from src.services.tts_service import TTSService
 
 logger = logging.getLogger(__name__)
 
 
 class WebRTCVoiceHandler:
     """
-    Handles WebRTC voice streaming from browser
+    Handles WebRTC voice streaming from browser (VoxBridge 2.0)
 
     Architecture:
     1. Browser → WebSocket: Binary Opus chunks (100ms each)
     2. Opus → PCM: Decode with opuslib (16kHz mono)
-    3. PCM → WhisperX: Stream for transcription
-    4. WhisperX → Browser: Partial/final transcripts
-    5. LLM → Browser: Stream AI response chunks
+    3. PCM → STTService: Stream for transcription
+    4. STTService → Browser: Partial/final transcripts
+    5. LLMService → Browser: Stream AI response chunks
+    6. TTSService → Browser: Stream audio chunks
     """
 
     def __init__(self, websocket: WebSocket, user_id: str, session_id: UUID):
@@ -55,11 +60,14 @@ class WebRTCVoiceHandler:
         """
         self.websocket = websocket
         self.user_id = user_id
-        self.session_id = session_id
+        self.session_id = str(session_id)  # Convert UUID to string for service layer
         self.is_active = True
 
-        # WhisperX client for transcription
-        self.whisper_client: Optional[WhisperClient] = None
+        # Initialize service instances
+        self.conversation_service = ConversationService()
+        self.stt_service = STTService()
+        self.llm_service = LLMService()
+        self.tts_service = TTSService()
 
         # Audio processing
         self.audio_buffer = BytesIO()
@@ -88,17 +96,21 @@ class WebRTCVoiceHandler:
 
         Main loop:
         1. Accept WebSocket connection
-        2. Connect to WhisperX
-        3. Receive audio chunks
-        4. Process transcripts
-        5. Handle disconnection
+        2. Start ConversationService background tasks
+        3. Connect to STTService
+        4. Receive audio chunks
+        5. Process transcripts
+        6. Handle disconnection
         """
         try:
+            # Start conversation service background tasks
+            await self.conversation_service.start()
+            logger.info(f"✅ ConversationService started")
+
             # Validate session exists and user owns it
-            session = await SessionService.get_session(self.session_id)
-            if not session:
-                await self._send_error("Session not found")
-                return
+            # Session should already exist - created by API endpoint before WebSocket connection
+            cached = await self.conversation_service._ensure_session_cached(self.session_id)
+            session = cached.session
 
             if session.user_id != self.user_id:
                 await self._send_error("Session does not belong to user")
@@ -106,8 +118,8 @@ class WebRTCVoiceHandler:
 
             logger.info(f"✅ Session validated: {session.title} (agent: {session.agent_id})")
 
-            # Connect to WhisperX
-            await self._connect_whisperx()
+            # Connect to STTService
+            await self._connect_stt()
 
             # Start audio streaming loop
             await self._audio_loop()
@@ -120,37 +132,54 @@ class WebRTCVoiceHandler:
         finally:
             await self._cleanup()
 
-    async def _connect_whisperx(self):
-        """Connect to WhisperX server and set up callbacks"""
+    async def _connect_stt(self):
+        """Connect to STTService and set up callbacks"""
         try:
-            logger.info(f"🔌 Connecting to WhisperX for user {self.user_id}")
+            logger.info(f"🔌 Connecting to STTService for session {self.session_id}")
 
-            self.whisper_client = WhisperClient()
+            # Define transcription callback
+            async def on_transcript(text: str, is_final: bool, metadata: Dict):
+                """
+                Callback for STT transcription results
 
-            # Set partial transcript callback
-            async def on_partial(text: str):
+                Args:
+                    text: Transcription text
+                    is_final: Whether this is a final transcript
+                    metadata: Additional metadata (confidence, duration, etc.)
+                """
                 if self.t_first_transcript is None:
                     self.t_first_transcript = time.time()
                     latency_s = self.t_first_transcript - self.t_start
                     logger.info(f"⏱️ LATENCY [connection → first transcript]: {latency_s:.3f}s")
 
-                self.current_transcript = text
-                await self._send_partial_transcript(text)
+                if not is_final:
+                    # Partial transcript
+                    self.current_transcript = text
+                    await self._send_partial_transcript(text)
+                else:
+                    # Final transcript - wait for finalize() call from silence detection
+                    logger.info(f"✅ Final transcript from STTService: \"{text}\"")
 
-            # Set final transcript callback
-            async def on_final(text: str):
-                logger.info(f"✅ Final transcript from WhisperX: \"{text}\"")
-                # Don't process here - wait for finalize() call
+            # Connect to STTService
+            whisper_url = os.getenv('WHISPER_SERVER_URL', 'ws://whisperx:4901')
+            success = await self.stt_service.connect(
+                session_id=self.session_id,
+                whisper_url=whisper_url
+            )
 
-            self.whisper_client.on_partial_callback = on_partial
-            self.whisper_client.on_final_callback = on_final
+            if not success:
+                raise Exception("Failed to connect to STTService")
 
-            # Connect
-            await self.whisper_client.connect(self.user_id)
-            logger.info(f"✅ Connected to WhisperX")
+            # Register callback
+            await self.stt_service.register_callback(
+                session_id=self.session_id,
+                callback=on_transcript
+            )
+
+            logger.info(f"✅ Connected to STTService")
 
         except Exception as e:
-            logger.error(f"❌ Failed to connect to WhisperX: {e}")
+            logger.error(f"❌ Failed to connect to STTService: {e}")
             raise
 
     async def _audio_loop(self):
@@ -160,7 +189,7 @@ class WebRTCVoiceHandler:
         Receives binary audio chunks from browser and processes them:
         1. Receive Opus/WebM binary data
         2. Decode to PCM
-        3. Stream to WhisperX
+        3. Stream to STTService
         4. Monitor for silence
         """
         logger.info(f"🎙️ Starting audio stream loop")
@@ -187,9 +216,14 @@ class WebRTCVoiceHandler:
                     # For 16kHz: 20ms = 320 samples
                     pcm_data = self.opus_decoder.decode(audio_data, frame_size=320)
 
-                    # Stream PCM to WhisperX
-                    if self.whisper_client and self.whisper_client.is_connected:
-                        await self.whisper_client.send_audio(pcm_data)
+                    # Stream PCM to STTService
+                    success = await self.stt_service.send_audio(
+                        session_id=self.session_id,
+                        audio_data=pcm_data
+                    )
+
+                    if not success:
+                        logger.warning(f"⚠️ Failed to send audio to STTService")
 
                 except opuslib.OpusError as e:
                     logger.warning(f"⚠️ Opus decode error: {e}")
@@ -232,12 +266,13 @@ class WebRTCVoiceHandler:
         Finalize transcription and route to LLM
 
         Steps:
-        1. Request final transcript from WhisperX
+        1. Get final transcript (stored in self.current_transcript)
         2. Send final_transcript event to browser
-        3. Save user message to database
-        4. Route to LLM (based on agent config)
-        5. Stream AI response back to browser
-        6. Save AI message to database
+        3. Save user message via ConversationService
+        4. Get conversation context
+        5. Route to LLMService with streaming
+        6. Save AI response via ConversationService
+        7. Generate TTS via TTSService
         """
         if self.is_finalizing:
             return
@@ -245,15 +280,12 @@ class WebRTCVoiceHandler:
         self.is_finalizing = True
 
         try:
-            # Get final transcript from WhisperX
-            if not self.whisper_client:
-                logger.warning("⚠️ No WhisperX client for finalization")
-                return
+            # Use current transcript from STT callback
+            transcript = self.current_transcript.strip()
 
-            transcript = await self.whisper_client.finalize()
-
-            if not transcript or not transcript.strip():
+            if not transcript:
                 logger.info("📝 Empty transcript - skipping LLM processing")
+                self.is_finalizing = False
                 return
 
             logger.info(f"📝 Final transcript: \"{transcript}\"")
@@ -261,34 +293,33 @@ class WebRTCVoiceHandler:
             # Send final transcript to browser
             await self._send_final_transcript(transcript)
 
-            # Load session to get agent
-            session = await SessionService.get_session(self.session_id)
-            if not session:
-                logger.error("❌ Session not found during finalization")
-                return
-
-            # Save user message to database
-            await SessionService.add_message(
+            # Save user message to conversation
+            await self.conversation_service.add_message(
                 session_id=self.session_id,
                 role="user",
-                content=transcript
+                content=transcript,
+                metadata={
+                    'source': 'webrtc',
+                    'user_id': self.user_id
+                }
             )
             logger.info(f"💾 Saved user message to database")
 
-            # Load agent configuration
-            agent = await AgentService.get_agent(session.agent_id)
-            if not agent:
-                logger.error(f"❌ Agent not found: {session.agent_id}")
-                return
-
+            # Get agent configuration
+            agent = await self.conversation_service.get_agent_config(self.session_id)
             logger.info(f"🤖 Using agent: {agent.name} (provider: {agent.llm_provider}, model: {agent.llm_model})")
 
             # Route to LLM
             await self._handle_llm_response(transcript, agent)
 
+            # Reset state for next turn
+            self.current_transcript = ""
+            self.is_finalizing = False
+
         except Exception as e:
             logger.error(f"❌ Error finalizing transcription: {e}", exc_info=True)
             await self._send_error(f"Error processing transcript: {str(e)}")
+            self.is_finalizing = False
 
     async def _handle_llm_response(self, transcript: str, agent):
         """
@@ -301,34 +332,36 @@ class WebRTCVoiceHandler:
         try:
             t_llm_start = time.time()
 
-            # Create LLM provider from agent configuration
-            provider, model = LLMProviderFactory.create_from_agent_config(
-                llm_provider=agent.llm_provider,
-                llm_model=agent.llm_model
+            # Get conversation context from ConversationService
+            messages = await self.conversation_service.get_conversation_context(
+                session_id=self.session_id,
+                limit=10,
+                include_system_prompt=True
             )
 
-            # Build conversation messages
-            # TODO: Load conversation history from database
-            messages = [
-                LLMMessage(role="system", content=agent.system_prompt),
-                LLMMessage(role="user", content=transcript)
+            # Convert to dict format for LLMService
+            llm_messages = [
+                {'role': msg.role, 'content': msg.content}
+                for msg in messages
             ]
 
-            # Build LLM request
-            request = LLMRequest(
-                messages=messages,
+            # Build LLM config
+            llm_config = LLMConfig(
+                provider=ProviderType(agent.llm_provider),
+                model=agent.llm_model,
                 temperature=agent.temperature,
-                model=model,
-                max_tokens=None
+                system_prompt=agent.system_prompt
             )
 
-            logger.info(f"📤 Sending to LLM ({agent.llm_provider}/{model}): \"{transcript}\"")
+            logger.info(f"📤 Sending to LLM ({agent.llm_provider}/{agent.llm_model}): \"{transcript}\"")
 
-            # Stream response
+            # Stream response via LLMService
             full_response = ""
             first_chunk_received = False
 
-            async for chunk in provider.generate_stream(request):
+            async def on_chunk(chunk: str):
+                nonlocal full_response, first_chunk_received
+
                 # Track first chunk latency
                 if not first_chunk_received:
                     t_first_chunk = time.time()
@@ -336,11 +369,20 @@ class WebRTCVoiceHandler:
                     logger.info(f"⏱️ LATENCY [LLM first chunk]: {latency_s:.3f}s")
                     first_chunk_received = True
 
-                # Accumulate response (chunks are plain strings)
+                # Accumulate response
                 full_response += chunk
 
                 # Stream chunk to browser
                 await self._send_ai_response_chunk(chunk)
+
+            # Generate response
+            await self.llm_service.generate_response(
+                session_id=self.session_id,
+                messages=llm_messages,
+                config=llm_config,
+                stream=True,
+                callback=on_chunk
+            )
 
             # Send completion event
             await self._send_ai_response_complete(full_response)
@@ -350,23 +392,22 @@ class WebRTCVoiceHandler:
             latency_s = t_llm_complete - t_llm_start
             logger.info(f"⏱️ LATENCY [total LLM generation]: {latency_s:.3f}s")
 
-            # Save AI message to database
-            await SessionService.add_message(
+            # Save AI message to conversation
+            await self.conversation_service.add_message(
                 session_id=self.session_id,
                 role="assistant",
-                content=full_response
+                content=full_response,
+                metadata={
+                    'llm_provider': agent.llm_provider,
+                    'llm_model': agent.llm_model,
+                    'latency_s': latency_s
+                }
             )
             logger.info(f"💾 Saved AI message to database")
 
             # Generate and stream TTS audio to browser
-            await self._handle_tts_response(full_response)
+            await self._generate_tts(full_response, agent)
 
-            # Close provider
-            await provider.close()
-
-        except LLMError as e:
-            logger.error(f"❌ LLM Error: {e}", exc_info=True)
-            await self._send_error(f"AI error: {str(e)}")
         except Exception as e:
             logger.error(f"❌ Error handling LLM response: {e}", exc_info=True)
             await self._send_error(f"Error generating AI response: {str(e)}")
@@ -424,128 +465,77 @@ class WebRTCVoiceHandler:
         except Exception as e:
             logger.error(f"❌ Error sending AI response complete: {e}")
 
-    async def _handle_tts_response(self, text: str):
+    async def _generate_tts(self, text: str, agent):
         """
-        Convert AI text response to audio and stream to browser
-
-        Reuses Discord bot's proven Chatterbox integration pattern.
-        Streams WAV audio directly to browser via WebSocket binary frames.
+        Generate and stream TTS audio to browser via TTSService
 
         Args:
             text: AI response text to synthesize
+            agent: Agent model instance with TTS configuration
         """
         try:
             t_tts_start = time.time()
             logger.info(f"🔊 Starting TTS synthesis for text: \"{text[:50]}...\"")
 
-            # Check Chatterbox health
-            chatterbox_url = os.getenv('CHATTERBOX_URL', 'http://chatterbox-tts:4123')
-            if not await self._check_chatterbox_health(chatterbox_url):
-                logger.warning("⚠️ Chatterbox unavailable, skipping TTS")
+            # Check TTS health first
+            if not await self.tts_service.test_tts_health():
+                logger.warning("⚠️ TTS service unavailable, skipping synthesis")
                 await self._send_error("TTS service unavailable")
                 return
 
-            # Build TTS request (same pattern as Discord bot)
-            tts_data = {
-                'input': text,
-                'response_format': 'wav',  # Browser-compatible
-                'speed': 1.0,
-                'voice': os.getenv('CHATTERBOX_VOICE_ID', 'default'),
-                'streaming_strategy': 'word',
-                'streaming_chunk_size': 100,
-                'streaming_buffer_size': 3,
-                'streaming_quality': 'fast'
-            }
-
             # Send TTS start event
-            await self._send_tts_start()
+            await self.websocket.send_json({
+                "event": "tts_start",
+                "data": {"session_id": self.session_id}
+            })
 
-            # Stream audio from Chatterbox
-            async with httpx.AsyncClient(timeout=60.0) as client:
-                async with client.stream(
-                    'POST',
-                    f"{chatterbox_url}/v1/audio/speech/stream/upload",
-                    data=tts_data,
-                    headers={'Content-Type': 'application/x-www-form-urlencoded'}
-                ) as response:
-                    response.raise_for_status()
+            # Stream audio callback
+            first_byte = True
+            total_bytes = 0
 
-                    first_byte = True
-                    total_bytes = 0
+            async def on_audio_chunk(chunk: bytes):
+                nonlocal first_byte, total_bytes
 
-                    async for chunk in response.aiter_bytes(chunk_size=8192):
-                        # Log first byte latency (critical UX metric)
-                        if first_byte:
-                            t_first_byte = time.time()
-                            latency_s = t_first_byte - t_tts_start
-                            logger.info(f"⏱️ ⭐ LATENCY [TTS first byte]: {latency_s:.3f}s")
-                            first_byte = False
+                # Log first byte latency (critical UX metric)
+                if first_byte:
+                    t_first_byte = time.time()
+                    latency_s = t_first_byte - t_tts_start
+                    logger.info(f"⏱️ ⭐ LATENCY [TTS first byte]: {latency_s:.3f}s")
+                    first_byte = False
 
-                        # Stream chunk to browser as binary WebSocket frame
-                        await self.websocket.send_bytes(chunk)
-                        total_bytes += len(chunk)
+                # Stream chunk to browser as binary WebSocket frame
+                await self.websocket.send_bytes(chunk)
+                total_bytes += len(chunk)
+
+            # Synthesize with streaming via TTSService
+            voice_id = agent.tts_voice or os.getenv('CHATTERBOX_VOICE_ID', 'default')
+            speed = agent.tts_rate or 1.0
+
+            audio_bytes = await self.tts_service.synthesize_speech(
+                session_id=self.session_id,
+                text=text,
+                voice_id=voice_id,
+                speed=speed,
+                stream=True,
+                callback=on_audio_chunk
+            )
 
             # Send completion event
             t_complete = time.time()
             total_latency_s = t_complete - t_tts_start
-            logger.info(f"✅ TTS complete ({total_bytes:,} bytes, {total_latency_s:.2f}s)")
+            logger.info(f"✅ TTS complete ({len(audio_bytes):,} bytes, {total_latency_s:.2f}s)")
 
-            await self._send_tts_complete(total_latency_s)
-
-        except httpx.HTTPStatusError as e:
-            logger.error(f"❌ Chatterbox HTTP error: {e.response.status_code}", exc_info=True)
-            await self._send_error(f"TTS HTTP error: {e.response.status_code}")
-        except httpx.TimeoutException:
-            logger.error("❌ Chatterbox TTS timeout", exc_info=True)
-            await self._send_error("TTS request timed out")
-        except Exception as e:
-            logger.error(f"❌ TTS error: {e}", exc_info=True)
-            await self._send_error(f"TTS failed: {str(e)}")
-
-    async def _check_chatterbox_health(self, base_url: str) -> bool:
-        """
-        Check if Chatterbox TTS service is responding
-
-        Args:
-            base_url: Chatterbox base URL (e.g., http://chatterbox-tts:4123)
-
-        Returns:
-            True if healthy, False otherwise
-        """
-        try:
-            # Strip /v1 if present
-            health_url = base_url.rstrip('/v1')
-            async with httpx.AsyncClient(timeout=5.0) as client:
-                response = await client.get(f"{health_url}/health")
-                return response.status_code == 200
-        except Exception as e:
-            logger.warning(f"⚠️ Chatterbox health check failed: {e}")
-            return False
-
-    async def _send_tts_start(self):
-        """Send TTS start event to browser"""
-        try:
-            await self.websocket.send_json({
-                "event": "tts_start",
-                "data": {
-                    "session_id": str(self.session_id)
-                }
-            })
-        except Exception as e:
-            logger.error(f"❌ Error sending TTS start: {e}")
-
-    async def _send_tts_complete(self, duration_s: float):
-        """Send TTS complete event to browser"""
-        try:
             await self.websocket.send_json({
                 "event": "tts_complete",
                 "data": {
-                    "session_id": str(self.session_id),
-                    "duration_s": duration_s
+                    "session_id": self.session_id,
+                    "duration_s": total_latency_s
                 }
             })
+
         except Exception as e:
-            logger.error(f"❌ Error sending TTS complete: {e}")
+            logger.error(f"❌ TTS error: {e}", exc_info=True)
+            await self._send_error(f"TTS failed: {str(e)}")
 
     async def _send_error(self, message: str):
         """Send error event to browser"""
@@ -561,8 +551,8 @@ class WebRTCVoiceHandler:
             logger.error(f"❌ Error sending error message: {e}")
 
     async def _cleanup(self):
-        """Clean up resources"""
-        logger.info(f"🧹 Cleaning up WebRTC handler for user {self.user_id}")
+        """Clean up resources and disconnect services"""
+        logger.info(f"🧹 Cleaning up WebRTC handler for session {self.session_id}")
 
         self.is_active = False
 
@@ -570,12 +560,26 @@ class WebRTCVoiceHandler:
         if self.silence_task and not self.silence_task.done():
             self.silence_task.cancel()
 
-        # Close WhisperX connection
-        if self.whisper_client:
-            try:
-                await self.whisper_client.close()
-            except Exception as e:
-                logger.error(f"❌ Error closing WhisperX: {e}")
+        # Disconnect from STTService
+        try:
+            await self.stt_service.disconnect(self.session_id)
+            logger.info(f"✅ Disconnected from STTService")
+        except Exception as e:
+            logger.error(f"❌ Error disconnecting STTService: {e}")
+
+        # Cancel any active TTS
+        try:
+            await self.tts_service.cancel_tts(self.session_id)
+            logger.info(f"✅ Cancelled active TTS")
+        except Exception as e:
+            logger.error(f"❌ Error cancelling TTS: {e}")
+
+        # Stop ConversationService background tasks
+        try:
+            await self.conversation_service.stop()
+            logger.info(f"✅ Stopped ConversationService")
+        except Exception as e:
+            logger.error(f"❌ Error stopping ConversationService: {e}")
 
         # Close WebSocket
         try:
