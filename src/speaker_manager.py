@@ -492,24 +492,45 @@ class SpeakerManager:
             if transcript:
                 try:
                     # Load agent to determine routing
+                    # Priority: env var override → default agent → first available agent
                     if self.default_agent_id:
+                        # Env var override (for backward compatibility)
                         agent = await AgentService.get_agent(self.default_agent_id)
+                        logger.info(f"🔧 Using agent from DEFAULT_AGENT_ID env var: {agent.name if agent else 'not found'}")
                     else:
-                        # Fallback: Get first available agent
-                        agents = await AgentService.get_all_agents()
-                        agent = agents[0] if agents else None
+                        # Use database default agent
+                        agent = await AgentService.get_default_agent()
+                        if agent:
+                            logger.info(f"⭐ Using default agent from database: {agent.name}")
+                        else:
+                            # Fallback: Get first available agent
+                            agents = await AgentService.get_all_agents()
+                            agent = agents[0] if agents else None
+                            if agent:
+                                logger.info(f"📋 Using first available agent: {agent.name}")
 
-                    if agent and not agent.use_n8n:
+                    if not agent:
+                        logger.warning("⚠️ No agent available - cannot route AI request")
+                        logger.info(f"📝 Transcript: \"{transcript}\"")
+                        return
+
+                    if not agent.use_n8n:
                         # Route to direct LLM provider
                         logger.info(f"🤖 Routing to direct LLM (agent: {agent.name}, use_n8n=False)")
                         await self._handle_llm_response(transcript, agent.id)
-                    elif self.n8n_webhook_url:
-                        # Route to n8n webhook (legacy flow)
-                        logger.info("🌐 Routing to n8n webhook (use_n8n=True or default)")
-                        await self._send_to_n8n(transcript)
                     else:
-                        logger.warning("⚠️ No AI routing available (no agent or n8n webhook)")
-                        logger.info(f"📝 Transcript: \"{transcript}\"")
+                        # Route to n8n webhook - use per-agent webhook URL or fallback to global
+                        webhook_url = agent.n8n_webhook_url or self.n8n_webhook_url
+                        if webhook_url:
+                            logger.info(f"🌐 Routing to n8n webhook (agent: {agent.name}, use_n8n=True)")
+                            if agent.n8n_webhook_url:
+                                logger.info(f"   Using per-agent webhook: {agent.n8n_webhook_url}")
+                            else:
+                                logger.info(f"   Using global webhook: {self.n8n_webhook_url}")
+                            await self._send_to_n8n(transcript, webhook_url)
+                        else:
+                            logger.warning(f"⚠️ Agent {agent.name} has use_n8n=True but no webhook URL configured")
+                            logger.info(f"📝 Transcript: \"{transcript}\"")
 
                 except Exception as e:
                     logger.error(f"❌ Error routing AI request: {e}")
@@ -527,15 +548,18 @@ class SpeakerManager:
         retry=retry_if_exception_type((httpx.TimeoutException, httpx.NetworkError)),
         reraise=True
     )
-    async def _send_to_n8n(self, transcript: str) -> None:
+    async def _send_to_n8n(self, transcript: str, webhook_url: Optional[str] = None) -> None:
         """
         Send transcript to n8n webhook with automatic retry
 
         Args:
             transcript: Transcribed text
+            webhook_url: Override webhook URL (defaults to self.n8n_webhook_url)
         """
-        if not self.n8n_webhook_url:
-            logger.warning("⚠️ No N8N_WEBHOOK_URL configured")
+        # Use provided webhook URL or fall back to global
+        url = webhook_url or self.n8n_webhook_url
+        if not url:
+            logger.warning("⚠️ No n8n webhook URL configured")
             return
 
         try:
@@ -553,11 +577,11 @@ class SpeakerManager:
                 if self.use_streaming:
                     # Streaming mode - handle Server-Sent Events
                     logger.info("🌊 Sending with streaming enabled")
-                    await self._handle_streaming_response(client, payload, t_n8n_start)
+                    await self._handle_streaming_response(client, payload, t_n8n_start, url)
                 else:
                     # Non-streaming mode - simple POST
                     logger.info("📨 Sending non-streaming request")
-                    response = await client.post(self.n8n_webhook_url, json=payload)
+                    response = await client.post(url, json=payload)
                     response.raise_for_status()
                     logger.info(f"✅ n8n response: {response.status_code}")
 
@@ -772,7 +796,7 @@ class SpeakerManager:
             finally:
                 self.thinking_indicator_source = None
 
-    async def _handle_streaming_response(self, client: httpx.AsyncClient, payload: dict, t_n8n_start: float) -> None:
+    async def _handle_streaming_response(self, client: httpx.AsyncClient, payload: dict, t_n8n_start: float, webhook_url: str) -> None:
         """
         Handle streaming response from n8n webhook
         Supports both SSE (Server-Sent Events) and JSON responses
@@ -781,6 +805,7 @@ class SpeakerManager:
             client: HTTP client
             payload: Request payload
             t_n8n_start: Timestamp when n8n request was sent
+            webhook_url: n8n webhook URL to send request to
         """
         try:
             # Import here to avoid circular dependency
@@ -789,7 +814,7 @@ class SpeakerManager:
             logger.info("🌊 Starting streaming response handler")
 
             # Send request with streaming
-            async with client.stream('POST', self.n8n_webhook_url, json=payload) as response:
+            async with client.stream('POST', webhook_url, json=payload) as response:
                 response.raise_for_status()
 
                 # Log and record AI generation latency (n8n → first response)

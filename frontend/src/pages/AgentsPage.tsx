@@ -76,6 +76,18 @@ export function AgentsPage() {
     },
   });
 
+  // Set default agent mutation
+  const setDefaultAgentMutation = useMutation({
+    mutationFn: (agentId: string) => api.setDefaultAgent(agentId),
+    onSuccess: (updatedAgent) => {
+      queryClient.invalidateQueries({ queryKey: ['agents'] });
+      toast.success(`"${updatedAgent.name}" is now the default agent!`);
+    },
+    onError: (error: any) => {
+      toast.error(`Failed to set default agent: ${error.message || 'Unknown error'}`);
+    },
+  });
+
   // Handlers
   const handleCreateAgent = () => {
     setSelectedAgent(null);
@@ -90,6 +102,14 @@ export function AgentsPage() {
   const handleDeleteAgent = (agent: Agent) => {
     setAgentToDelete(agent);
     setDeleteDialogOpen(true);
+  };
+
+  const handleSetDefault = async (agent: Agent) => {
+    try {
+      await setDefaultAgentMutation.mutateAsync(agent.id);
+    } catch (error) {
+      // Error handled by mutation
+    }
   };
 
   const confirmDelete = async () => {
@@ -212,6 +232,7 @@ export function AgentsPage() {
               agent={agent}
               onEdit={handleEditAgent}
               onDelete={handleDeleteAgent}
+              onSetDefault={handleSetDefault}
             />
           ))}
         </div>

@@ -129,6 +129,8 @@ export interface Agent {
   llm_provider: string;
   llm_model: string;
   use_n8n: boolean; // Phase 3: Use n8n webhook instead of direct LLM
+  n8n_webhook_url: string | null; // Phase 3: Per-agent n8n webhook URL
+  is_default: boolean; // Phase 5: Mark as default agent
   tts_voice: string | null;
   tts_rate: number;
   tts_pitch: number;
@@ -143,6 +145,8 @@ export interface AgentCreateRequest {
   llm_provider?: string;
   llm_model?: string;
   use_n8n?: boolean; // Phase 3: Use n8n webhook instead of direct LLM
+  n8n_webhook_url?: string | null; // Phase 3: Per-agent n8n webhook URL
+  is_default?: boolean; // Phase 5: Mark as default agent
   tts_voice?: string | null;
   tts_rate?: number;
   tts_pitch?: number;
@@ -155,6 +159,8 @@ export interface AgentUpdateRequest {
   llm_provider?: string;
   llm_model?: string;
   use_n8n?: boolean; // Phase 3: Use n8n webhook instead of direct LLM
+  n8n_webhook_url?: string | null; // Phase 3: Per-agent n8n webhook URL
+  is_default?: boolean; // Phase 5: Mark as default agent
   tts_voice?: string | null;
   tts_rate?: number;
   tts_pitch?: number;
@@ -357,6 +363,12 @@ class ApiClient {
   async deleteAgent(agentId: string): Promise<void> {
     await this.request<void>(`/api/agents/${agentId}`, {
       method: 'DELETE',
+    });
+  }
+
+  async setDefaultAgent(agentId: string): Promise<Agent> {
+    return this.request<Agent>(`/api/agents/${agentId}/set-default`, {
+      method: 'PUT',
     });
   }
 

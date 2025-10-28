@@ -25,6 +25,8 @@ class AgentService:
         llm_provider: str = "openrouter",
         llm_model: str = "anthropic/claude-3.5-sonnet",
         use_n8n: bool = False,
+        n8n_webhook_url: Optional[str] = None,
+        is_default: bool = False,
         tts_voice: Optional[str] = None,
         tts_rate: float = 1.0,
         tts_pitch: float = 1.0,
@@ -39,6 +41,8 @@ class AgentService:
             llm_provider: LLM provider ('openrouter' or 'local')
             llm_model: Model identifier
             use_n8n: Use n8n webhook instead of direct LLM
+            n8n_webhook_url: Per-agent n8n webhook URL (optional)
+            is_default: Mark as default agent
             tts_voice: TTS voice ID (optional)
             tts_rate: TTS speech rate (0.5-2.0)
             tts_pitch: TTS pitch adjustment (0.5-2.0)
@@ -63,20 +67,31 @@ class AgentService:
         if not 0.5 <= tts_pitch <= 2.0:
             raise ValueError("TTS pitch must be between 0.5 and 2.0")
 
-        # Create agent
-        agent = Agent(
-            name=name,
-            system_prompt=system_prompt,
-            temperature=temperature,
-            llm_provider=llm_provider,
-            llm_model=llm_model,
-            use_n8n=use_n8n,
-            tts_voice=tts_voice,
-            tts_rate=tts_rate,
-            tts_pitch=tts_pitch,
-        )
-
         async with get_db_session() as session:
+            # If setting as default, unset any existing default
+            if is_default:
+                result = await session.execute(
+                    select(Agent).where(Agent.is_default == True)
+                )
+                existing_defaults = result.scalars().all()
+                for existing_default in existing_defaults:
+                    existing_default.is_default = False
+
+            # Create agent
+            agent = Agent(
+                name=name,
+                system_prompt=system_prompt,
+                temperature=temperature,
+                llm_provider=llm_provider,
+                llm_model=llm_model,
+                use_n8n=use_n8n,
+                n8n_webhook_url=n8n_webhook_url,
+                is_default=is_default,
+                tts_voice=tts_voice,
+                tts_rate=tts_rate,
+                tts_pitch=tts_pitch,
+            )
+
             session.add(agent)
             await session.commit()
             await session.refresh(agent)
@@ -137,6 +152,8 @@ class AgentService:
         llm_provider: Optional[str] = None,
         llm_model: Optional[str] = None,
         use_n8n: Optional[bool] = None,
+        n8n_webhook_url: Optional[str] = None,
+        is_default: Optional[bool] = None,
         tts_voice: Optional[str] = None,
         tts_rate: Optional[float] = None,
         tts_pitch: Optional[float] = None,
@@ -195,6 +212,20 @@ class AgentService:
             if use_n8n is not None:
                 agent.use_n8n = use_n8n
 
+            if n8n_webhook_url is not None:
+                agent.n8n_webhook_url = n8n_webhook_url
+
+            if is_default is not None:
+                # If setting as default, unset any existing default
+                if is_default:
+                    result = await session.execute(
+                        select(Agent).where(Agent.is_default == True, Agent.id != agent_id)
+                    )
+                    existing_defaults = result.scalars().all()
+                    for existing_default in existing_defaults:
+                        existing_default.is_default = False
+                agent.is_default = is_default
+
             if tts_voice is not None:
                 agent.tts_voice = tts_voice
 
@@ -207,6 +238,54 @@ class AgentService:
                 if not 0.5 <= tts_pitch <= 2.0:
                     raise ValueError("TTS pitch must be between 0.5 and 2.0")
                 agent.tts_pitch = tts_pitch
+
+            await session.commit()
+            await session.refresh(agent)
+
+            return agent
+
+    @staticmethod
+    async def get_default_agent() -> Optional[Agent]:
+        """
+        Get the default agent.
+
+        Returns:
+            Default Agent instance or None if no default set
+        """
+        async with get_db_session() as session:
+            result = await session.execute(select(Agent).where(Agent.is_default == True))
+            agent = result.scalar_one_or_none()
+            return agent
+
+    @staticmethod
+    async def set_default_agent(agent_id: UUID) -> Optional[Agent]:
+        """
+        Mark agent as default (unsets any existing default).
+
+        Args:
+            agent_id: Agent UUID to set as default
+
+        Returns:
+            Updated Agent instance or None if not found
+        """
+        async with get_db_session() as session:
+            # Get the agent to set as default
+            result = await session.execute(select(Agent).where(Agent.id == agent_id))
+            agent = result.scalar_one_or_none()
+
+            if not agent:
+                return None
+
+            # Unset any existing defaults
+            result = await session.execute(
+                select(Agent).where(Agent.is_default == True, Agent.id != agent_id)
+            )
+            existing_defaults = result.scalars().all()
+            for existing_default in existing_defaults:
+                existing_default.is_default = False
+
+            # Set this agent as default
+            agent.is_default = True
 
             await session.commit()
             await session.refresh(agent)

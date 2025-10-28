@@ -62,6 +62,10 @@ class Agent(Base):
 
     # VoxBridge 2.0 Phase 3: LLM Routing
     use_n8n = Column(Boolean, nullable=False, default=False)  # Use n8n webhook instead of direct LLM
+    n8n_webhook_url = Column(String(500), nullable=True)  # Per-agent n8n webhook URL
+
+    # VoxBridge 2.0 Phase 5: Default Agent Selection
+    is_default = Column(Boolean, nullable=False, default=False, index=True)  # Mark as default agent
 
     # Metadata
     created_at = Column(DateTime(timezone=True), server_default=func.now())

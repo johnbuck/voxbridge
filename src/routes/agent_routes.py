@@ -40,7 +40,9 @@ class AgentCreateRequest(BaseModel):
     temperature: float = Field(0.7, ge=0.0, le=1.0, description="LLM temperature")
     llm_provider: str = Field("openrouter", description="LLM provider (openrouter or local)")
     llm_model: str = Field("anthropic/claude-3.5-sonnet", description="Model identifier")
-    use_n8n: bool = Field(False, description="Use n8n webhook instead of direct LLM (Phase 3)")
+    use_n8n: bool = Field(False, description="Use n8n webhook instead of direct LLM")
+    n8n_webhook_url: Optional[str] = Field(None, max_length=500, description="Per-agent n8n webhook URL")
+    is_default: bool = Field(False, description="Mark as default agent")
     tts_voice: Optional[str] = Field(None, description="TTS voice ID")
     tts_rate: float = Field(1.0, ge=0.5, le=2.0, description="TTS speech rate")
     tts_pitch: float = Field(1.0, ge=0.5, le=2.0, description="TTS pitch adjustment")
@@ -55,6 +57,8 @@ class AgentUpdateRequest(BaseModel):
     llm_provider: Optional[str] = None
     llm_model: Optional[str] = None
     use_n8n: Optional[bool] = None
+    n8n_webhook_url: Optional[str] = Field(None, max_length=500)
+    is_default: Optional[bool] = None
     tts_voice: Optional[str] = None
     tts_rate: Optional[float] = Field(None, ge=0.5, le=2.0)
     tts_pitch: Optional[float] = Field(None, ge=0.5, le=2.0)
@@ -70,6 +74,8 @@ class AgentResponse(BaseModel):
     llm_provider: str
     llm_model: str
     use_n8n: bool
+    n8n_webhook_url: Optional[str]
+    is_default: bool
     tts_voice: Optional[str]
     tts_rate: float
     tts_pitch: float
@@ -112,6 +118,8 @@ async def create_agent(request: AgentCreateRequest):
             llm_provider=request.llm_provider,
             llm_model=request.llm_model,
             use_n8n=request.use_n8n,
+            n8n_webhook_url=request.n8n_webhook_url,
+            is_default=request.is_default,
             tts_voice=request.tts_voice,
             tts_rate=request.tts_rate,
             tts_pitch=request.tts_pitch,
@@ -125,6 +133,8 @@ async def create_agent(request: AgentCreateRequest):
             llm_provider=agent.llm_provider,
             llm_model=agent.llm_model,
             use_n8n=agent.use_n8n,
+            n8n_webhook_url=agent.n8n_webhook_url,
+            is_default=agent.is_default,
             tts_voice=agent.tts_voice,
             tts_rate=agent.tts_rate,
             tts_pitch=agent.tts_pitch,
@@ -169,6 +179,8 @@ async def list_agents():
                 llm_provider=agent.llm_provider,
                 llm_model=agent.llm_model,
                 use_n8n=agent.use_n8n,
+                n8n_webhook_url=agent.n8n_webhook_url,
+                is_default=agent.is_default,
                 tts_voice=agent.tts_voice,
                 tts_rate=agent.tts_rate,
                 tts_pitch=agent.tts_pitch,
@@ -220,6 +232,8 @@ async def get_agent(agent_id: UUID):
             llm_provider=agent.llm_provider,
             llm_model=agent.llm_model,
             use_n8n=agent.use_n8n,
+            n8n_webhook_url=agent.n8n_webhook_url,
+            is_default=agent.is_default,
             tts_voice=agent.tts_voice,
             tts_rate=agent.tts_rate,
             tts_pitch=agent.tts_pitch,
@@ -265,6 +279,8 @@ async def update_agent(agent_id: UUID, request: AgentUpdateRequest):
             llm_provider=request.llm_provider,
             llm_model=request.llm_model,
             use_n8n=request.use_n8n,
+            n8n_webhook_url=request.n8n_webhook_url,
+            is_default=request.is_default,
             tts_voice=request.tts_voice,
             tts_rate=request.tts_rate,
             tts_pitch=request.tts_pitch,
@@ -284,6 +300,8 @@ async def update_agent(agent_id: UUID, request: AgentUpdateRequest):
             llm_provider=agent.llm_provider,
             llm_model=agent.llm_model,
             use_n8n=agent.use_n8n,
+            n8n_webhook_url=agent.n8n_webhook_url,
+            is_default=agent.is_default,
             tts_voice=agent.tts_voice,
             tts_rate=agent.tts_rate,
             tts_pitch=agent.tts_pitch,
@@ -341,4 +359,64 @@ async def delete_agent(agent_id: UUID):
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to delete agent: {str(e)}"
+        )
+
+
+@router.put(
+    "/{agent_id}/set-default",
+    response_model=AgentResponse,
+    summary="Set Default Agent",
+    description="Mark an agent as the default agent (unsets any existing default)"
+)
+async def set_default_agent(agent_id: UUID):
+    """
+    Set agent as default.
+
+    This will unset any existing default agent and mark the specified agent as default.
+
+    Args:
+        agent_id: Agent UUID to set as default
+
+    Returns:
+        Updated agent data with is_default=True
+
+    Raises:
+        404: Agent not found
+    """
+    try:
+        agent = await AgentService.set_default_agent(agent_id)
+
+        if not agent:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Agent with ID {agent_id} not found"
+            )
+
+        response = AgentResponse(
+            id=str(agent.id),
+            name=agent.name,
+            system_prompt=agent.system_prompt,
+            temperature=agent.temperature,
+            llm_provider=agent.llm_provider,
+            llm_model=agent.llm_model,
+            use_n8n=agent.use_n8n,
+            n8n_webhook_url=agent.n8n_webhook_url,
+            is_default=agent.is_default,
+            tts_voice=agent.tts_voice,
+            tts_rate=agent.tts_rate,
+            tts_pitch=agent.tts_pitch,
+            created_at=agent.created_at.isoformat(),
+            updated_at=agent.updated_at.isoformat(),
+        )
+
+        # Broadcast agent update event
+        await broadcast_agent_event("updated", response.model_dump())
+
+        return response
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to set default agent: {str(e)}"
         )

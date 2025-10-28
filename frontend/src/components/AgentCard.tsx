@@ -7,15 +7,16 @@ import type { Agent } from '@/services/api';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { Edit2, Trash2, Brain, Mic, ThermometerIcon } from 'lucide-react';
+import { Edit2, Trash2, Brain, Mic, ThermometerIcon, Star } from 'lucide-react';
 
 interface AgentCardProps {
   agent: Agent;
   onEdit: (agent: Agent) => void;
   onDelete: (agent: Agent) => void;
+  onSetDefault: (agent: Agent) => void;
 }
 
-export function AgentCard({ agent, onEdit, onDelete }: AgentCardProps) {
+export function AgentCard({ agent, onEdit, onDelete, onSetDefault }: AgentCardProps) {
   const providerColors = {
     openrouter: 'bg-purple-500/20 text-purple-400 border-purple-500/50',
     local: 'bg-blue-500/20 text-blue-400 border-blue-500/50',
@@ -40,9 +41,26 @@ export function AgentCard({ agent, onEdit, onDelete }: AgentCardProps) {
                 <ThermometerIcon className="h-3 w-3 mr-1" />
                 {agent.temperature}
               </Badge>
+              {agent.is_default && (
+                <Badge variant="outline" className="bg-yellow-500/20 text-yellow-400 border-yellow-500/50">
+                  <Star className="h-3 w-3 mr-1 fill-yellow-400" />
+                  Default
+                </Badge>
+              )}
             </div>
           </div>
           <div className="flex gap-1 ml-2">
+            {!agent.is_default && (
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-8 w-8 text-yellow-400 hover:text-yellow-300"
+                onClick={() => onSetDefault(agent)}
+                title="Set as default agent"
+              >
+                <Star className="h-4 w-4" />
+              </Button>
+            )}
             <Button
               variant="ghost"
               size="icon"

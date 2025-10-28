@@ -44,6 +44,7 @@ export function AgentForm({ open, onOpenChange, agent, onSubmit }: AgentFormProp
   const [llmProvider, setLlmProvider] = useState<'openrouter' | 'local'>('openrouter');
   const [llmModel, setLlmModel] = useState('anthropic/claude-3.5-sonnet');
   const [useN8n, setUseN8n] = useState(false);
+  const [n8nWebhookUrl, setN8nWebhookUrl] = useState('');
   const [ttsVoice, setTtsVoice] = useState('');
   const [ttsRate, setTtsRate] = useState(1.0);
   const [ttsPitch, setTtsPitch] = useState(1.0);
@@ -58,6 +59,7 @@ export function AgentForm({ open, onOpenChange, agent, onSubmit }: AgentFormProp
       setLlmProvider(agent.llm_provider as 'openrouter' | 'local');
       setLlmModel(agent.llm_model);
       setUseN8n(agent.use_n8n);
+      setN8nWebhookUrl(agent.n8n_webhook_url || '');
       setTtsVoice(agent.tts_voice || '');
       setTtsRate(agent.tts_rate);
       setTtsPitch(agent.tts_pitch);
@@ -69,6 +71,7 @@ export function AgentForm({ open, onOpenChange, agent, onSubmit }: AgentFormProp
       setLlmProvider('openrouter');
       setLlmModel('anthropic/claude-3.5-sonnet');
       setUseN8n(false);
+      setN8nWebhookUrl('');
       setTtsVoice('');
       setTtsRate(1.0);
       setTtsPitch(1.0);
@@ -87,6 +90,7 @@ export function AgentForm({ open, onOpenChange, agent, onSubmit }: AgentFormProp
         llm_provider: llmProvider,
         llm_model: llmModel,
         use_n8n: useN8n,
+        n8n_webhook_url: n8nWebhookUrl || null,
         tts_voice: ttsVoice || null,
         tts_rate: ttsRate,
         tts_pitch: ttsPitch,
@@ -200,6 +204,24 @@ export function AgentForm({ open, onOpenChange, agent, onSubmit }: AgentFormProp
               onCheckedChange={setUseN8n}
             />
           </div>
+
+          {/* n8n Webhook URL (conditional) */}
+          {useN8n && (
+            <div className="space-y-2 pl-4 border-l-2 border-muted">
+              <Label htmlFor="n8nWebhookUrl">n8n Webhook URL (Optional)</Label>
+              <Input
+                id="n8nWebhookUrl"
+                type="url"
+                value={n8nWebhookUrl}
+                onChange={(e) => setN8nWebhookUrl(e.target.value)}
+                placeholder="https://n8n.example.com/webhook/..."
+                maxLength={500}
+              />
+              <p className="text-xs text-muted-foreground">
+                Leave empty to use global webhook URL from environment
+              </p>
+            </div>
+          )}
 
           {/* TTS Configuration */}
           <div className="space-y-4 pt-4 border-t">
