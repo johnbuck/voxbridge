@@ -8,7 +8,6 @@ import { Route, Switch } from 'wouter';
 import { ThemeProvider } from '@/components/theme-provider';
 import Header from '@/components/Header';
 import { VoxbridgePage } from '@/pages/VoxbridgePage';
-import { DiscordBotPage } from '@/pages/DiscordBotPage';
 import { WhisperXPage } from '@/pages/WhisperXPage';
 import { ChatterboxTTSPage } from '@/pages/ChatterboxTTSPage';
 import { VoiceChatPage } from '@/pages/VoiceChatPage';
@@ -43,7 +42,6 @@ function App() {
                 <Route path="/" component={VoxbridgePage} />
                 <Route path="/agents" component={AgentsPage} />
                 <Route path="/plugins" component={PluginsPage} />
-                <Route path="/discord-bot" component={DiscordBotPage} />
                 <Route path="/whisperx" component={WhisperXPage} />
                 <Route path="/chatterbox-tts" component={ChatterboxTTSPage} />
                 <Route path="/voice-chat" component={VoiceChatPage} />
