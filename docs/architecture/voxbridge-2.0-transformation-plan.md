@@ -371,6 +371,133 @@ class Extension(ABC):
 
 ---
 
+### Phase 6.5: Frontend Experience & LLM Provider Management (2 days)
+
+**Objective**: Consolidate voice chat to primary route, unify UX behaviors, and create unified LLM provider management interface.
+
+**Priority**: HIGH - Critical user experience issues identified
+
+**Deliverables**:
+
+#### 6.5.1: Route Consolidation (3-4 hours)
+- Move voice chat functionality to `/` route (primary interaction)
+- Rename current VoxbridgePage → DiscordBotLegacyPage
+- Move to `/discord-bot` route as optional fallback
+- Update navigation links and routing
+
+**New Files**:
+- `frontend/src/pages/DiscordBotLegacyPage.tsx` (rename existing VoxbridgePage)
+
+**Modified Files**:
+- `frontend/src/App.tsx` - Update routes
+- `frontend/src/pages/VoxbridgePage.tsx` - Replace with voice chat
+- `frontend/src/components/Navigation.tsx` - Update links
+
+#### 6.5.2: UX Behavior Unification (4-6 hours)
+- STT waiting indicator (microphone pulse, "Listening..." text, duration counter)
+- AI generation indicator ("Thinking..." with animated dots, loading spinner)
+- Chunk handling & streaming display (typewriter effect, auto-scroll)
+- Speaker lock visualization (which user has lock, duration timer)
+
+**New Files**:
+- `frontend/src/components/STTWaitingIndicator.tsx`
+- `frontend/src/components/AIGeneratingIndicator.tsx`
+- `frontend/src/components/StreamingMessageDisplay.tsx`
+
+**Modified Files**:
+- `frontend/src/components/AudioControls.tsx` - Add animations
+- `frontend/src/hooks/useWebRTCAudio.ts` - Emit state events
+- `frontend/src/pages/VoxbridgePage.tsx` - Integrate indicators
+
+#### 6.5.3: Settings Hub Architecture (5-7 hours)
+- Create `/settings` main hub with sidebar navigation
+- Move existing settings pages to child routes:
+  - `/settings/whisperx` (move from `/whisperx`)
+  - `/settings/chatterbox` (move from `/chatterbox-tts`)
+  - `/settings/plugins` (move from `/plugins`)
+- Add breadcrumbs and overview cards
+
+**New Files**:
+- `frontend/src/pages/SettingsPage.tsx` - Main hub
+- `frontend/src/components/SettingsSidebar.tsx`
+- `frontend/src/components/SettingsCard.tsx`
+- `frontend/src/pages/settings/WhisperXSettingsPage.tsx` (move existing)
+- `frontend/src/pages/settings/ChatterboxSettingsPage.tsx` (move existing)
+- `frontend/src/pages/settings/PluginsSettingsPage.tsx` (move existing)
+
+#### 6.5.4: LLM Provider Management (5-6 hours)
+**Inspired by Open WebUI's unified provider management**
+
+- Unified LLM providers page at `/settings/llm-providers`
+- Manage all OpenAI-compatible API endpoints (OpenRouter, Ollama, OpenAI, vLLM, LM Studio, custom)
+- Provider card grid with connection status, model count, actions
+- Add/edit provider dialog with form validation
+- Connection testing (calls `/v1/models` endpoint)
+- Auto-fetch available models on successful connection
+- Database-backed storage with encrypted API keys
+
+**Database Schema**:
+```sql
+CREATE TABLE llm_providers (
+    id UUID PRIMARY KEY,
+    name VARCHAR(255) NOT NULL,
+    base_url VARCHAR(512) NOT NULL,
+    api_key_encrypted TEXT,
+    provider_type VARCHAR(50),
+    models JSONB DEFAULT '[]',
+    default_model VARCHAR(255),
+    is_active BOOLEAN DEFAULT true,
+    created_at TIMESTAMP,
+    updated_at TIMESTAMP
+);
+```
+
+**New Files**:
+- `frontend/src/pages/settings/LLMProvidersPage.tsx`
+- `frontend/src/components/LLMProviderCard.tsx`
+- `frontend/src/components/LLMProviderDialog.tsx`
+- `frontend/src/components/LLMProviderTestButton.tsx`
+- `src/routes/llm_provider_routes.py`
+- `src/services/llm_provider_service.py`
+- `src/database/models.py` - Add LLMProvider model
+- `alembic/versions/005_add_llm_providers_table.py`
+- `docs/user-guides/llm-provider-setup.md`
+
+**Modified Files**:
+- `frontend/src/services/api.ts` - Add LLM provider API methods
+- `src/llm/factory.py` - Use database providers instead of env vars
+- `src/services/agent_service.py` - Link agents to LLM providers
+- `frontend/src/components/AgentForm.tsx` - LLM provider dropdown
+
+**API Endpoints**:
+```
+GET    /api/settings/llm-providers          - List all providers
+POST   /api/settings/llm-providers          - Create new provider
+GET    /api/settings/llm-providers/:id      - Get provider details
+PUT    /api/settings/llm-providers/:id      - Update provider
+DELETE /api/settings/llm-providers/:id      - Delete provider
+POST   /api/settings/llm-providers/:id/test - Test connection
+```
+
+**Example Providers**:
+- **OpenRouter**: `https://openrouter.ai/api/v1` with API key
+- **Local Ollama**: `http://localhost:11434/v1` (no API key)
+- **OpenAI**: `https://api.openai.com/v1` with API key
+- **Custom**: Any OpenAI-compatible endpoint
+
+**Integration with Agents**:
+- Agents reference LLM provider by UUID (foreign key)
+- Agent form shows dropdown of available providers
+- Select provider → select model from provider's available models
+- Backward compatible with existing `llm_provider` string field
+
+**Documentation**:
+- User guide: Setting up LLM providers (OpenRouter, Ollama, OpenAI, custom)
+- API documentation: LLM provider endpoints
+- Migration guide: Converting from env vars to database providers
+
+---
+
 ### Phase 7: Documentation Overhaul (1 day)
 
 **Objective**: Complete rewrite of all documentation to reflect VoxBridge 2.0 architecture.
