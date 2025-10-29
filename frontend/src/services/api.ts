@@ -134,6 +134,15 @@ export interface Agent {
   tts_voice: string | null;
   tts_rate: number;
   tts_pitch: number;
+  plugins?: {
+    discord?: {
+      enabled: boolean;
+      bot_token: string;
+      auto_join: boolean;
+      command_prefix: string;
+      channels: string[];
+    };
+  };
   created_at: string;
   updated_at: string;
 }
@@ -150,6 +159,15 @@ export interface AgentCreateRequest {
   tts_voice?: string | null;
   tts_rate?: number;
   tts_pitch?: number;
+  plugins?: {
+    discord?: {
+      enabled: boolean;
+      bot_token: string;
+      auto_join: boolean;
+      command_prefix: string;
+      channels: string[];
+    };
+  };
 }
 
 export interface AgentUpdateRequest {
@@ -164,6 +182,15 @@ export interface AgentUpdateRequest {
   tts_voice?: string | null;
   tts_rate?: number;
   tts_pitch?: number;
+  plugins?: {
+    discord?: {
+      enabled: boolean;
+      bot_token: string;
+      auto_join: boolean;
+      command_prefix: string;
+      channels: string[];
+    };
+  };
 }
 
 // VoxBridge 2.0 Phase 4: Session Management
@@ -275,17 +302,25 @@ class ApiClient {
     return this.request<DetailedStatus>('/status');
   }
 
-  // Voice Controls
-  async joinChannel(channelId: string, guildId: string): Promise<{ success: boolean; message: string }> {
-    return this.request('/voice/join', {
+  // Voice Controls (Plugin-based endpoints)
+  async joinChannel(agentId: string, channelId: string, guildId: string): Promise<{ success: boolean; message: string }> {
+    // Custom JSON serialization to preserve large integers as numeric literals
+    // Discord IDs exceed JavaScript's safe integer limit, so we build JSON manually
+    const body = `{"agent_id":"${agentId}","channel_id":${channelId},"guild_id":${guildId}}`;
+
+    return this.request('/api/plugins/discord/voice/join', {
       method: 'POST',
-      body: JSON.stringify({ channelId, guildId }),
+      body: body,
     });
   }
 
-  async leaveChannel(): Promise<{ success: boolean; message: string }> {
-    return this.request('/voice/leave', {
+  async leaveChannel(agentId: string, guildId: string): Promise<{ success: boolean; message: string }> {
+    // Custom JSON serialization to preserve large integers as numeric literals
+    const body = `{"agent_id":"${agentId}","guild_id":${guildId}}`;
+
+    return this.request('/api/plugins/discord/voice/leave', {
       method: 'POST',
+      body: body,
     });
   }
 
@@ -413,6 +448,42 @@ class ApiClient {
       method: 'POST',
       body: JSON.stringify(message),
     });
+  }
+
+  // VoxBridge 2.0: Per-Agent Discord Plugin Control
+  // Note: These currently use global endpoints as placeholders
+  // Will be updated to per-agent endpoints in Phase 4
+
+  async getAgentDiscordStatus(agentId: string): Promise<any> {
+    // Now using per-agent plugin endpoint
+    return this.request(`/api/plugins/discord/voice/status/${agentId}`);
+  }
+
+  async agentJoinVoice(agentId: string, channelId: string, guildId: string): Promise<{ success: boolean; message: string }> {
+    // Now using plugin-based endpoints
+    return this.joinChannel(agentId, channelId, guildId);
+  }
+
+  async agentLeaveVoice(agentId: string, guildId: string): Promise<{ success: boolean; message: string }> {
+    // Now using plugin-based endpoints
+    return this.leaveChannel(agentId, guildId);
+  }
+
+  async agentUnlockSpeaker(_agentId: string): Promise<{ success: boolean; previousSpeaker: string | null }> {
+    // TODO: Replace with per-agent endpoint when backend is ready
+    // return this.request(`/api/agents/${_agentId}/plugins/discord/speaker/unlock`, {
+    //   method: 'POST',
+    // });
+    return this.unlockSpeaker();
+  }
+
+  async agentTestTTS(_agentId: string, text: string, options?: any): Promise<{ success: boolean; message: string }> {
+    // TODO: Replace with per-agent endpoint when backend is ready
+    // return this.request(`/api/agents/${_agentId}/plugins/discord/tts/speak`, {
+    //   method: 'POST',
+    //   body: JSON.stringify({ text, options }),
+    // });
+    return this.speak(text, options);
   }
 }
 
