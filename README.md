@@ -73,11 +73,21 @@ VoxBridge 2.0 transforms the Discord bot into a modular AI voice platform:
 - Real-time updates via WebSocket
 - Support for multiple LLM providers (OpenRouter, Local)
 
-### Phase 3: LLM Provider Abstraction (Next)
+### Phase 3: LLM Provider Abstraction ✅ (Complete)
 - Abstract provider interface
 - OpenRouter implementation
 - Local LLM support (Ollama-compatible)
 - Dynamic routing based on agent configuration
+
+### Phase 6: Discord Plugin Integration ✅ (Complete)
+- Per-agent Discord bot plugin system
+- Agent-specific voice channel controls
+- Discord snowflake ID precision preservation
+- Channel selector modal with guild/channel browsing
+- Auto-reconnect logic for state desync handling
+- localStorage persistence for guild IDs
+- Responsive UI with connection status indicators
+- TTS test modal for agent-specific voice testing
 
 ## Quick Start
 
@@ -317,6 +327,90 @@ Speak text in the voice channel using TTS.
 {
   "success": true,
   "message": "Speaking text"
+}
+```
+
+### Discord Plugin Endpoints (VoxBridge 2.0)
+
+#### GET /api/plugins/discord/voice/status/{agent_id}
+Get Discord voice connection status for a specific agent.
+
+**Response:**
+```json
+{
+  "connections": [
+    {
+      "agent_id": "uuid-here",
+      "guild_id": "680488880935403563",
+      "guild_name": "My Discord Server",
+      "channel_id": "680488880935403564",
+      "channel_name": "General Voice",
+      "connected": true
+    }
+  ]
+}
+```
+
+#### POST /api/plugins/discord/voice/join
+Join a voice channel for a specific agent.
+
+**Request:**
+```json
+{
+  "agent_id": "uuid-here",
+  "channel_id": 680488880935403564,
+  "guild_id": 680488880935403563
+}
+```
+
+**Important:** Discord snowflake IDs must be passed as numeric literals (not strings) to preserve precision. The frontend uses manual JSON serialization to avoid JavaScript number precision loss.
+
+**Response:**
+```json
+{
+  "success": true,
+  "message": "Joined voice channel: General Voice"
+}
+```
+
+#### POST /api/plugins/discord/voice/leave
+Leave the current voice channel for a specific agent.
+
+**Request:**
+```json
+{
+  "agent_id": "uuid-here",
+  "guild_id": 680488880935403563
+}
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "message": "Left voice channel"
+}
+```
+
+#### GET /api/channels
+List all available Discord guilds and voice channels.
+
+**Response:**
+```json
+{
+  "guilds": [
+    {
+      "id": "680488880935403563",
+      "name": "My Discord Server",
+      "channels": [
+        {
+          "id": "680488880935403564",
+          "name": "General Voice",
+          "userCount": 3
+        }
+      ]
+    }
+  ]
 }
 ```
 

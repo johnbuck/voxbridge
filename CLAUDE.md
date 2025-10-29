@@ -80,7 +80,18 @@ For comprehensive architecture and patterns, see [AGENTS.md](./AGENTS.md).
 - 99 unit tests with 90%+ coverage
 - ~300ms latency reduction per conversation turn
 
-**Upcoming**: Phase 6 (Extension System), Phase 7 (Documentation), Phase 8 (Testing & Migration)
+**Phase 6: Discord Plugin Integration** ✅:
+- Per-agent Discord bot plugin system
+- Plugin-based voice control endpoints (`/api/plugins/discord/voice/*`)
+- Discord snowflake ID precision preservation (manual JSON serialization)
+- Per-agent Discord status tracking (`/api/plugins/discord/voice/status/{agent_id}`)
+- Channel selector modal with guild/channel browsing
+- Auto-reconnect logic for state desync handling
+- localStorage persistence for guild IDs across page reloads
+- Responsive two-row layout for Discord plugin cards
+- TTS test modal for agent-specific voice testing
+
+**Upcoming**: Phase 7 (Extension System), Phase 8 (Documentation), Phase 9 (Testing & Migration)
 
 ### 📚 Related Planning Documents
 
@@ -245,6 +256,10 @@ VoxBridge 2.0 introduces a service-oriented architecture with 4 core services:
 - **frontend/src/components/** - UI components (MetricsCard, AudioVisualization, etc.)
 - **frontend/src/components/AudioControls.tsx** (100 lines) - Mic button, connection status, pulse animation (Phase 4)
 - **frontend/src/components/PluginStatusCard.tsx** (166 lines) - Plugin status display (Phase 6.4.1 Batch 2b)
+- **frontend/src/components/DiscordPluginCard.tsx** (370 lines) - Per-agent Discord plugin controls (Phase 6)
+- **frontend/src/components/ChannelSelectorModal.tsx** (220 lines) - Guild/channel selector modal (Phase 6)
+- **frontend/src/components/TTSTestModal.tsx** - TTS testing modal for Discord plugin (Phase 6)
+- **frontend/src/components/AgentCard.tsx** (135 lines) - Agent card with embedded Discord plugin controls (Phase 6)
 
 **Hooks & Services**:
 - **frontend/src/hooks/useWebRTCAudio.ts** (344 lines) - Microphone capture, Opus encoding, WebSocket streaming (Phase 4)
@@ -425,9 +440,15 @@ docker compose up -d
 ### Agent Management (VoxBridge 2.0)
 - **GET /api/agents** - List all AI agents
 - **GET /api/agents/{id}** - Get specific agent by UUID
-- **POST /api/agents** - Create new agent (`{name, system_prompt, temperature?, llm_provider?, llm_model?, tts_voice?, tts_rate?, tts_pitch?, use_n8n?}`)
+- **POST /api/agents** - Create new agent (`{name, system_prompt, temperature?, llm_provider?, llm_model?, tts_voice?, tts_rate?, tts_pitch?, use_n8n?, plugins?}`)
 - **PUT /api/agents/{id}** - Update agent (partial update, all fields optional)
 - **DELETE /api/agents/{id}** - Delete agent (cascades to sessions/conversations)
+
+### Discord Plugin (Phase 6)
+- **GET /api/plugins/discord/voice/status/{agent_id}** - Get per-agent Discord voice status
+- **POST /api/plugins/discord/voice/join** - Join voice channel (`{agent_id, channel_id, guild_id}`)
+- **POST /api/plugins/discord/voice/leave** - Leave voice channel (`{agent_id, guild_id}`)
+- **GET /api/channels** - List available Discord guilds and voice channels
 
 ### Monitoring
 - **GET /health** - Health check (bot ready, in voice, speaker status)
