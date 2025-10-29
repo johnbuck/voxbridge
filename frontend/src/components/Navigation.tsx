@@ -1,5 +1,5 @@
 import { Link, useLocation } from 'wouter';
-import { Home, Bot, Mic, Volume2, MessageSquare, Brain, Plug } from 'lucide-react';
+import { Home, Mic, Volume2, MessageSquare, Brain, Plug } from 'lucide-react';
 import { cn } from '../lib/utils';
 
 export default function Navigation() {
@@ -29,12 +29,6 @@ export default function Navigation() {
       label: 'Voice Chat',
       icon: MessageSquare,
       description: 'Web Voice Chat Interface'
-    },
-    {
-      path: '/discord-bot',
-      label: 'Discord Bot',
-      icon: Bot,
-      description: 'Discord Bot Controls & Settings'
     },
     {
       path: '/whisperx',

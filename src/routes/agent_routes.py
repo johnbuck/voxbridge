@@ -46,6 +46,7 @@ class AgentCreateRequest(BaseModel):
     tts_voice: Optional[str] = Field(None, description="TTS voice ID")
     tts_rate: float = Field(1.0, ge=0.5, le=2.0, description="TTS speech rate")
     tts_pitch: float = Field(1.0, ge=0.5, le=2.0, description="TTS pitch adjustment")
+    plugins: Optional[dict] = Field(None, description="Plugin configurations (e.g., discord plugin)")
 
 
 class AgentUpdateRequest(BaseModel):
@@ -62,6 +63,7 @@ class AgentUpdateRequest(BaseModel):
     tts_voice: Optional[str] = None
     tts_rate: Optional[float] = Field(None, ge=0.5, le=2.0)
     tts_pitch: Optional[float] = Field(None, ge=0.5, le=2.0)
+    plugins: Optional[dict] = Field(None, description="Plugin configurations (e.g., discord plugin)")
 
 
 class AgentResponse(BaseModel):
@@ -79,6 +81,7 @@ class AgentResponse(BaseModel):
     tts_voice: Optional[str]
     tts_rate: float
     tts_pitch: float
+    plugins: Optional[dict] = None
     created_at: str
     updated_at: str
 
@@ -123,6 +126,7 @@ async def create_agent(request: AgentCreateRequest):
             tts_voice=request.tts_voice,
             tts_rate=request.tts_rate,
             tts_pitch=request.tts_pitch,
+            plugins=request.plugins,
         )
 
         response = AgentResponse(
@@ -138,6 +142,7 @@ async def create_agent(request: AgentCreateRequest):
             tts_voice=agent.tts_voice,
             tts_rate=agent.tts_rate,
             tts_pitch=agent.tts_pitch,
+            plugins=agent.plugins,
             created_at=agent.created_at.isoformat(),
             updated_at=agent.updated_at.isoformat(),
         )
@@ -184,6 +189,7 @@ async def list_agents():
                 tts_voice=agent.tts_voice,
                 tts_rate=agent.tts_rate,
                 tts_pitch=agent.tts_pitch,
+                plugins=agent.plugins,
                 created_at=agent.created_at.isoformat(),
                 updated_at=agent.updated_at.isoformat(),
             )
@@ -237,6 +243,7 @@ async def get_agent(agent_id: UUID):
             tts_voice=agent.tts_voice,
             tts_rate=agent.tts_rate,
             tts_pitch=agent.tts_pitch,
+            plugins=agent.plugins,
             created_at=agent.created_at.isoformat(),
             updated_at=agent.updated_at.isoformat(),
         )
@@ -284,6 +291,7 @@ async def update_agent(agent_id: UUID, request: AgentUpdateRequest):
             tts_voice=request.tts_voice,
             tts_rate=request.tts_rate,
             tts_pitch=request.tts_pitch,
+            plugins=request.plugins,
         )
 
         if not agent:
@@ -305,6 +313,7 @@ async def update_agent(agent_id: UUID, request: AgentUpdateRequest):
             tts_voice=agent.tts_voice,
             tts_rate=agent.tts_rate,
             tts_pitch=agent.tts_pitch,
+            plugins=agent.plugins,
             created_at=agent.created_at.isoformat(),
             updated_at=agent.updated_at.isoformat(),
         )
@@ -405,6 +414,7 @@ async def set_default_agent(agent_id: UUID):
             tts_voice=agent.tts_voice,
             tts_rate=agent.tts_rate,
             tts_pitch=agent.tts_pitch,
+            plugins=agent.plugins,
             created_at=agent.created_at.isoformat(),
             updated_at=agent.updated_at.isoformat(),
         )

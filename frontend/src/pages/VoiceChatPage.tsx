@@ -17,7 +17,8 @@ import type { WebRTCAudioMessage } from '@/types/webrtc';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { Menu, Volume2, VolumeX, MessageSquare, Brain, AlertCircle } from 'lucide-react';
+import { Badge } from '@/components/ui/badge';
+import { Menu, Volume2, VolumeX, MessageSquare, Brain, AlertCircle, Lock, Unlock, Loader2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 const USER_ID = 'web_user_default'; // Hardcoded until auth is implemented
@@ -28,6 +29,9 @@ export function VoiceChatPage() {
   const [newConversationDialogOpen, setNewConversationDialogOpen] = useState(false);
   const [isSpeakerMuted, setIsSpeakerMuted] = useState(false);
   const [partialTranscript, setPartialTranscript] = useState<string>('');
+  const [speakerLocked, setSpeakerLocked] = useState(false);
+  const [activeSpeaker, setActiveSpeaker] = useState<string | null>(null);
+  const [isUnlocking, setIsUnlocking] = useState(false);
 
   const toast = useToastHelpers();
   const queryClient = useQueryClient();
@@ -74,6 +78,33 @@ export function VoiceChatPage() {
       setActiveSessionId(sessions[0].id);
     }
   }, [sessions, activeSessionId]);
+
+  // Fetch speaker lock status when agent has Discord plugin
+  useEffect(() => {
+    if (!activeAgent?.plugins?.discord?.enabled) {
+      // Reset speaker lock state if no Discord plugin
+      setSpeakerLocked(false);
+      setActiveSpeaker(null);
+      return;
+    }
+
+    // Fetch status immediately
+    const fetchSpeakerStatus = async () => {
+      try {
+        const status = await api.getStatus();
+        setSpeakerLocked(status.speaker.locked);
+        setActiveSpeaker(status.speaker.activeSpeaker);
+      } catch (error) {
+        console.error('[VoiceChat] Failed to fetch speaker status:', error);
+      }
+    };
+
+    fetchSpeakerStatus();
+
+    // Poll every 3 seconds while agent has Discord plugin
+    const interval = setInterval(fetchSpeakerStatus, 3000);
+    return () => clearInterval(interval);
+  }, [activeAgent]);
 
   // Handle WebRTC audio messages
   const handleAudioMessage = useCallback(
@@ -277,6 +308,21 @@ export function VoiceChatPage() {
     setActiveSessionId(sessionId);
   }, []);
 
+  // Handle unlock speaker
+  const handleUnlockSpeaker = useCallback(async () => {
+    setIsUnlocking(true);
+    try {
+      const result = await api.unlockSpeaker();
+      setSpeakerLocked(false);
+      setActiveSpeaker(null);
+      toast.success('Speaker unlocked', result.previousSpeaker ? `Unlocked ${result.previousSpeaker}` : undefined);
+    } catch (error) {
+      toast.error('Failed to unlock speaker', error instanceof Error ? error.message : 'Unknown error');
+    } finally {
+      setIsUnlocking(false);
+    }
+  }, [toast]);
+
   // Format timestamp
   const formatTimestamp = (timestamp: string) => {
     const date = new Date(timestamp);
@@ -333,23 +379,61 @@ export function VoiceChatPage() {
             )}
           </div>
 
-          {/* Voice Controls */}
-          <div className="flex items-center gap-2">
-            <AudioControls
-              isMuted={isMuted}
-              onToggleMute={toggleMute}
-              connectionState={connectionState}
-              permissionError={permissionError}
-              isRecording={isRecording}
-            />
-            <Button
-              variant={isSpeakerMuted ? 'outline' : 'default'}
-              size="icon"
-              onClick={() => setIsSpeakerMuted(!isSpeakerMuted)}
-              title={isSpeakerMuted ? 'Unmute speaker' : 'Mute speaker'}
-            >
-              {isSpeakerMuted ? <VolumeX className="h-4 w-4" /> : <Volume2 className="h-4 w-4" />}
-            </Button>
+          {/* Speaker Lock (Discord Plugin Only) */}
+          <div className="flex items-center gap-4">
+            {activeAgent?.plugins?.discord?.enabled && (
+              <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-muted border border-border">
+                {speakerLocked ? (
+                  <>
+                    <Lock className="h-4 w-4 text-yellow-400" />
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-medium">Locked:</span>
+                      <Badge variant="outline" className="text-xs bg-yellow-500/20 text-yellow-400 border-yellow-500/50">
+                        {activeSpeaker || 'Unknown'}
+                      </Badge>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={handleUnlockSpeaker}
+                        disabled={isUnlocking}
+                        className="h-6 px-2 text-xs"
+                      >
+                        {isUnlocking ? (
+                          <Loader2 className="h-3 w-3 animate-spin" />
+                        ) : (
+                          <>
+                            <Unlock className="h-3 w-3 mr-1" />
+                            Unlock
+                          </>
+                        )}
+                      </Button>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <Unlock className="h-4 w-4 text-green-400" />
+                    <span className="text-xs font-medium text-muted-foreground">Speaker Unlocked</span>
+                  </>
+                )}
+              </div>
+            )}
+
+            {/* Voice Controls */}
+              <AudioControls
+                isMuted={isMuted}
+                onToggleMute={toggleMute}
+                connectionState={connectionState}
+                permissionError={permissionError}
+                isRecording={isRecording}
+              />
+              <Button
+                variant={isSpeakerMuted ? 'outline' : 'default'}
+                size="icon"
+                onClick={() => setIsSpeakerMuted(!isSpeakerMuted)}
+                title={isSpeakerMuted ? 'Unmute speaker' : 'Mute speaker'}
+              >
+                {isSpeakerMuted ? <VolumeX className="h-4 w-4" /> : <Volume2 className="h-4 w-4" />}
+              </Button>
           </div>
         </div>
 

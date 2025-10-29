@@ -25,7 +25,8 @@ import {
 import { Slider } from '@/components/ui/slider';
 import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
-import { Loader2 } from 'lucide-react';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Loader2, MessageSquare } from 'lucide-react';
 
 interface AgentFormProps {
   open: boolean;
@@ -48,6 +49,13 @@ export function AgentForm({ open, onOpenChange, agent, onSubmit }: AgentFormProp
   const [ttsVoice, setTtsVoice] = useState('');
   const [ttsRate, setTtsRate] = useState(1.0);
   const [ttsPitch, setTtsPitch] = useState(1.0);
+
+  // Discord Plugin state
+  const [discordEnabled, setDiscordEnabled] = useState(false);
+  const [discordBotToken, setDiscordBotToken] = useState('');
+  const [discordAutoJoin, setDiscordAutoJoin] = useState(false);
+  const [discordCommandPrefix, setDiscordCommandPrefix] = useState('!');
+
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   // Populate form when editing
@@ -63,6 +71,19 @@ export function AgentForm({ open, onOpenChange, agent, onSubmit }: AgentFormProp
       setTtsVoice(agent.tts_voice || '');
       setTtsRate(agent.tts_rate);
       setTtsPitch(agent.tts_pitch);
+
+      // Load Discord plugin config if present
+      if (agent.plugins?.discord) {
+        setDiscordEnabled(agent.plugins.discord.enabled || false);
+        setDiscordBotToken(agent.plugins.discord.bot_token || '');
+        setDiscordAutoJoin(agent.plugins.discord.auto_join || false);
+        setDiscordCommandPrefix(agent.plugins.discord.command_prefix || '!');
+      } else {
+        setDiscordEnabled(false);
+        setDiscordBotToken('');
+        setDiscordAutoJoin(false);
+        setDiscordCommandPrefix('!');
+      }
     } else {
       // Reset to defaults when creating
       setName('');
@@ -75,6 +96,10 @@ export function AgentForm({ open, onOpenChange, agent, onSubmit }: AgentFormProp
       setTtsVoice('');
       setTtsRate(1.0);
       setTtsPitch(1.0);
+      setDiscordEnabled(false);
+      setDiscordBotToken('');
+      setDiscordAutoJoin(false);
+      setDiscordCommandPrefix('!');
     }
   }, [agent, open]);
 
@@ -83,6 +108,18 @@ export function AgentForm({ open, onOpenChange, agent, onSubmit }: AgentFormProp
     setIsSubmitting(true);
 
     try {
+      // Build plugins object
+      const plugins: Record<string, any> = {};
+      if (discordEnabled && discordBotToken) {
+        plugins.discord = {
+          enabled: true,
+          bot_token: discordBotToken,
+          auto_join: discordAutoJoin,
+          command_prefix: discordCommandPrefix,
+          channels: []
+        };
+      }
+
       await onSubmit({
         name,
         system_prompt: systemPrompt,
@@ -94,6 +131,7 @@ export function AgentForm({ open, onOpenChange, agent, onSubmit }: AgentFormProp
         tts_voice: ttsVoice || null,
         tts_rate: ttsRate,
         tts_pitch: ttsPitch,
+        plugins: Object.keys(plugins).length > 0 ? plugins : undefined,
       });
       onOpenChange(false);
     } catch (error) {
@@ -268,6 +306,90 @@ export function AgentForm({ open, onOpenChange, agent, onSubmit }: AgentFormProp
                 />
               </div>
             </div>
+          </div>
+
+          {/* Plugins Section */}
+          <div className="space-y-4 pt-4 border-t">
+            <h4 className="text-sm font-medium">Plugins (Optional)</h4>
+            <p className="text-xs text-muted-foreground">
+              Enable optional plugins to extend agent capabilities
+            </p>
+
+            {/* Discord Plugin Card */}
+            <Card className="border-2">
+              <CardHeader>
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <MessageSquare className="h-4 w-4" />
+                    <CardTitle className="text-sm">Discord Bot Plugin</CardTitle>
+                  </div>
+                  <Switch
+                    checked={discordEnabled}
+                    onCheckedChange={setDiscordEnabled}
+                  />
+                </div>
+                <p className="text-xs text-muted-foreground mt-1">
+                  Connect this agent to Discord as a voice bot
+                </p>
+              </CardHeader>
+              {discordEnabled && (
+                <CardContent className="space-y-3">
+                  <div className="space-y-2">
+                    <Label htmlFor="botToken">
+                      Bot Token *
+                    </Label>
+                    <Input
+                      id="botToken"
+                      type="password"
+                      value={discordBotToken}
+                      onChange={(e) => setDiscordBotToken(e.target.value)}
+                      placeholder="Paste your Discord bot token"
+                      required={discordEnabled}
+                      maxLength={200}
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      Get your token from{' '}
+                      <a
+                        href="https://discord.com/developers/applications"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-primary hover:underline"
+                      >
+                        Discord Developer Portal
+                      </a>
+                    </p>
+                  </div>
+
+                  <div className="flex items-center justify-between space-x-2">
+                    <div className="space-y-0.5">
+                      <Label htmlFor="autoJoin">Auto-join voice channels</Label>
+                      <p className="text-xs text-muted-foreground">
+                        Automatically join when users enter voice
+                      </p>
+                    </div>
+                    <Switch
+                      id="autoJoin"
+                      checked={discordAutoJoin}
+                      onCheckedChange={setDiscordAutoJoin}
+                    />
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label htmlFor="commandPrefix">Command Prefix</Label>
+                    <Input
+                      id="commandPrefix"
+                      value={discordCommandPrefix}
+                      onChange={(e) => setDiscordCommandPrefix(e.target.value)}
+                      placeholder="!"
+                      maxLength={3}
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      Prefix for bot commands (e.g., !help)
+                    </p>
+                  </div>
+                </CardContent>
+              )}
+            </Card>
           </div>
 
           <DialogFooter>
