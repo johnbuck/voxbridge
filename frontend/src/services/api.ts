@@ -134,6 +134,7 @@ export interface Agent {
   tts_voice: string | null;
   tts_rate: number;
   tts_pitch: number;
+  max_utterance_time_ms?: number; // Voice configuration: max duration per speaking turn
   plugins?: {
     discord?: {
       enabled: boolean;
@@ -159,6 +160,7 @@ export interface AgentCreateRequest {
   tts_voice?: string | null;
   tts_rate?: number;
   tts_pitch?: number;
+  max_utterance_time_ms?: number; // Voice configuration: max duration per speaking turn
   plugins?: {
     discord?: {
       enabled: boolean;
@@ -182,6 +184,7 @@ export interface AgentUpdateRequest {
   tts_voice?: string | null;
   tts_rate?: number;
   tts_pitch?: number;
+  max_utterance_time_ms?: number; // Voice configuration: max duration per speaking turn
   plugins?: {
     discord?: {
       enabled: boolean;
@@ -241,6 +244,38 @@ export interface MessageRequest {
   tts_duration_ms?: number | null;
   llm_latency_ms?: number | null;
   total_latency_ms?: number | null;
+}
+
+// VoxBridge 2.0 Phase 6.5: LLM Provider Management
+export interface LLMProvider {
+  id: string;
+  name: string;
+  base_url: string;
+  has_api_key: boolean;  // API key never exposed
+  provider_type: string | null;
+  models: string[];
+  default_model: string | null;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface LLMProviderCreate {
+  name: string;
+  base_url: string;
+  api_key?: string | null;
+  provider_type?: string | null;
+  default_model?: string | null;
+  is_active?: boolean;
+}
+
+export interface LLMProviderUpdate {
+  name?: string;
+  base_url?: string;
+  api_key?: string | null;
+  provider_type?: string | null;
+  default_model?: string | null;
+  is_active?: boolean;
 }
 
 export interface TTSOptions {
@@ -303,10 +338,12 @@ class ApiClient {
   }
 
   // Voice Controls (Plugin-based endpoints)
-  async joinChannel(agentId: string, channelId: string, guildId: string): Promise<{ success: boolean; message: string }> {
+  async joinChannel(agentId: string, channelId: string, guildId: string, sessionId?: string | null): Promise<{ success: boolean; message: string }> {
     // Custom JSON serialization to preserve large integers as numeric literals
     // Discord IDs exceed JavaScript's safe integer limit, so we build JSON manually
-    const body = `{"agent_id":"${agentId}","channel_id":${channelId},"guild_id":${guildId}}`;
+    // Phase 6.X: Added optional sessionId for unified conversation threading
+    const sessionIdField = sessionId ? `,"session_id":"${sessionId}"` : '';
+    const body = `{"agent_id":"${agentId}","channel_id":${channelId},"guild_id":${guildId}${sessionIdField}}`;
 
     return this.request('/api/plugins/discord/voice/join', {
       method: 'POST',
@@ -408,8 +445,10 @@ class ApiClient {
   }
 
   // VoxBridge 2.0 Phase 4: Session Management
-  async getSessions(userId: string, activeOnly: boolean = false, limit: number = 50): Promise<Session[]> {
-    return this.request<Session[]>(`/api/sessions?user_id=${userId}&active_only=${activeOnly}&limit=${limit}`);
+  async getSessions(userId?: string | null, activeOnly: boolean = false, limit: number = 50): Promise<Session[]> {
+    // If userId is provided, filter by user; otherwise return all sessions
+    const userIdParam = userId ? `user_id=${userId}&` : '';
+    return this.request<Session[]>(`/api/sessions?${userIdParam}active_only=${activeOnly}&limit=${limit}`);
   }
 
   async getSession(sessionId: string): Promise<Session> {
@@ -484,6 +523,47 @@ class ApiClient {
     //   body: JSON.stringify({ text, options }),
     // });
     return this.speak(text, options);
+  }
+
+  // VoxBridge 2.0 Phase 6.5: LLM Provider Management
+  async getLLMProviders(): Promise<LLMProvider[]> {
+    return this.request<LLMProvider[]>('/api/settings/llm-providers');
+  }
+
+  async getLLMProvider(providerId: string): Promise<LLMProvider> {
+    return this.request<LLMProvider>(`/api/settings/llm-providers/${providerId}`);
+  }
+
+  async createLLMProvider(provider: LLMProviderCreate): Promise<LLMProvider> {
+    return this.request<LLMProvider>('/api/settings/llm-providers', {
+      method: 'POST',
+      body: JSON.stringify(provider),
+    });
+  }
+
+  async updateLLMProvider(providerId: string, updates: LLMProviderUpdate): Promise<LLMProvider> {
+    return this.request<LLMProvider>(`/api/settings/llm-providers/${providerId}`, {
+      method: 'PUT',
+      body: JSON.stringify(updates),
+    });
+  }
+
+  async deleteLLMProvider(providerId: string): Promise<void> {
+    await this.request<void>(`/api/settings/llm-providers/${providerId}`, {
+      method: 'DELETE',
+    });
+  }
+
+  async testLLMProviderConnection(providerId: string): Promise<{ success: boolean; models_count?: number; response_time_ms?: number; error?: string }> {
+    return this.request(`/api/settings/llm-providers/${providerId}/test`, {
+      method: 'POST',
+    });
+  }
+
+  async fetchLLMProviderModels(providerId: string): Promise<{ success: boolean; models_count: number; models: string[] }> {
+    return this.request(`/api/settings/llm-providers/${providerId}/fetch-models`, {
+      method: 'POST',
+    });
   }
 }
 

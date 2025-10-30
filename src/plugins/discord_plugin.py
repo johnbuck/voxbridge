@@ -68,6 +68,7 @@ import tempfile
 import time
 import uuid
 from collections import deque
+from datetime import datetime
 from threading import Lock
 from typing import Dict, Any, Optional, List, AsyncGenerator
 
@@ -81,7 +82,7 @@ from src.plugins.registry import plugin
 # Phase 1: Import service layer dependencies
 from src.services.conversation_service import ConversationService
 from src.services.stt_service import get_stt_service
-from src.services.llm_service import get_llm_service, LLMConfig, ProviderType
+from src.services.llm_service import get_llm_service, get_llm_service_for_agent, LLMConfig, ProviderType
 from src.services.tts_service import get_tts_service
 
 # LLM exceptions for error handling
@@ -418,6 +419,11 @@ class DiscordPlugin(PluginBase):
         # Phase 2: Audio receiver instances (one per voice client)
         self.audio_receivers: Dict[int, 'AudioReceiver'] = {}  # guild_id → AudioReceiver
 
+        # Phase 6.X: Unified Conversation Threading
+        # Maps Discord guild_id to web session_id for unified conversations
+        # When set, Discord voice input will use the mapped session instead of creating new ones
+        self.guild_session_mapping: Dict[int, str] = {}  # guild_id → session_id
+
         logger.info("🤖 DiscordPlugin instance created")
 
     # ============================================================
@@ -446,7 +452,7 @@ class DiscordPlugin(PluginBase):
             self.vc = voice_client  # Use 'vc' to avoid conflict with parent class property
             self.user_buffers: Dict[str, asyncio.Queue] = {}  # user_id → audio chunk queue
             self.user_tasks: Dict[str, asyncio.Task] = {}    # user_id → processing task
-            self.active_users = set()  # Users currently being processed
+            self.active_sessions: Dict[str, str] = {}  # user_id → session_id (for tracking, not blocking)
 
         def write(self, user, data: voice_recv.VoiceData):
             """
@@ -490,20 +496,42 @@ class DiscordPlugin(PluginBase):
                     except Exception as e:
                         logger.error(f"❌ Error in audio stream generator for {uid}: {e}")
 
-                # Start processing this user's audio
-                if user_id not in self.active_users:
-                    self.active_users.add(user_id)
-                    stream_gen = audio_stream_generator(user_id)
+                # Create wrapper coroutine that cleans up after completion
+                async def handle_user_speaking_with_cleanup(u, uid, stream, vc):
+                    """Wrapper that ensures cleanup after speaking ends"""
+                    try:
+                        await self.plugin._handle_user_speaking(u, stream, vc)
+                    finally:
+                        # Always cleanup after speaking completes (success or error)
+                        session_id = self.active_sessions.get(uid, 'unknown')
+                        logger.info(f"🔄 CLEANUP: Speaking task completed for {u.name} ({uid}, session={session_id[:8]}...)")
+                        # Note: Don't delete buffers/tasks here - they'll be reused on next speak
 
-                    # Phase 2: Use plugin's bot loop and _handle_user_speaking method
-                    future = asyncio.run_coroutine_threadsafe(
-                        self.plugin._handle_user_speaking(user, stream_gen, self.vc),
-                        self.plugin.bot.loop
-                    )
-                    self.user_tasks[user_id] = future
+                # Cancel existing task for this user if one is running
+                if user_id in self.user_tasks:
+                    existing_task = self.user_tasks[user_id]
+                    if not existing_task.done():
+                        logger.info(f"🔄 User {user.name} ({user_id}) speaking again - cancelling previous task")
+                        existing_task.cancel()
+
+                # Start new processing task for this user's audio
+                logger.info(f"👤 NEW SPEAKER: {user.name} ({user_id}) - starting audio processing (concurrent users={len(self.user_tasks)})")
+                stream_gen = audio_stream_generator(user_id)
+
+                # Phase 2: Use plugin's bot loop and _handle_user_speaking method
+                future = asyncio.run_coroutine_threadsafe(
+                    handle_user_speaking_with_cleanup(user, user_id, stream_gen, self.vc),
+                    self.plugin.bot.loop
+                )
+                self.user_tasks[user_id] = future
 
             # Add Opus packet to user's queue
             try:
+                # Log audio receipt for debugging
+                queue_size = self.user_buffers[user_id].qsize()
+                if queue_size > 0 and queue_size % 50 == 0:  # Log every 50 packets (~1 second)
+                    logger.debug(f"🎤 Audio streaming for {username} ({user_id}) - queue size: {queue_size}")
+
                 self.user_buffers[user_id].put_nowait(opus_packet)
             except asyncio.QueueFull:
                 logger.warning(f"⚠️ Audio buffer full for user {user_id}, dropping packet")
@@ -536,8 +564,8 @@ class DiscordPlugin(PluginBase):
                     task.cancel()
                 del self.user_tasks[user_id]
 
-            # Remove from active users
-            self.active_users.discard(user_id)
+            # Remove from active sessions
+            self.active_sessions.pop(user_id, None)
 
         def cleanup(self):
             """Cleanup audio sink (all users)"""
@@ -558,7 +586,7 @@ class DiscordPlugin(PluginBase):
             # Clear all data
             self.user_buffers.clear()
             self.user_tasks.clear()
-            self.active_users.clear()
+            self.active_sessions.clear()
 
     # ============================================================
     # CONFIGURATION & INITIALIZATION
@@ -658,9 +686,13 @@ class DiscordPlugin(PluginBase):
             self.conversation_service = ConversationService()
             await self.conversation_service.start()
 
-            # STT/LLM/TTS services (singletons for connection pooling)
+            # STT/LLM/TTS services
             self.stt_service = get_stt_service()
-            self.llm_service = get_llm_service()
+
+            # LLM service with database provider config (Phase 6.5.4)
+            # Priority: database provider (agent.llm_provider_id) > env vars
+            self.llm_service = await get_llm_service_for_agent(self.agent)
+
             self.tts_service = get_tts_service()
 
             logger.info(
@@ -752,7 +784,7 @@ class DiscordPlugin(PluginBase):
                         receiver = self.AudioReceiver(self, voice_client)
                         voice_client.listen(receiver)
                         self.audio_receivers[after.channel.guild.id] = receiver
-                        logger.info(f"🎤 Registered audio receiver for guild {after.channel.guild.id}")
+                        logger.info(f"🎤 Registered audio receiver for guild {after.channel.guild.id} (auto-join)")
 
                     except Exception as e:
                         logger.error(
@@ -1145,8 +1177,32 @@ class DiscordPlugin(PluginBase):
         try:
             # Record pipeline start time
             t_start = time.time()
-            session_id = str(uuid.uuid4())
+
+            # Phase 6.X: Check if this guild is mapped to an existing web session
+            # Find guild_id from voice_client
+            guild_id = voice_client.guild.id if voice_client and voice_client.guild else None
+            mapped_session_id = self.guild_session_mapping.get(guild_id) if guild_id else None
+
+            if mapped_session_id:
+                # Use the mapped session (unified conversation threading)
+                session_id = mapped_session_id
+                logger.info(
+                    f"🔗 Using mapped session {session_id[:8]}... for Discord user {username} "
+                    f"(guild {guild_id}, unified conversation)"
+                )
+            else:
+                # Create new session (legacy behavior)
+                session_id = str(uuid.uuid4())
+                logger.info(f"📝 Created new session {session_id[:8]}... for Discord user {username}")
+
             self.active_sessions[user_id] = session_id
+
+            # Track session in AudioReceiver for logging (Phase 2 Tests)
+            for guild_id, vc in self.voice_clients.items():
+                if hasattr(vc, 'recv') and vc.recv:
+                    receiver = vc.recv
+                    if hasattr(receiver, 'active_sessions'):
+                        receiver.active_sessions[user_id] = session_id
 
             # Initialize session timing tracker (Phase 1 integration)
             self.session_timings[session_id] = {
@@ -1156,12 +1212,12 @@ class DiscordPlugin(PluginBase):
                 't_transcription_complete': None
             }
 
-            logger.info(f"📝 Created session {session_id[:8]}... for Discord user {username}")
-
             # TODO Phase 2 Tests: Broadcast speaker_started event via WebSocket
             # await broadcast_speaker_started(user_id, username)
 
             # Phase 1 integration: Create session in database via ConversationService
+            # If using mapped session, this will load existing session from DB
+            # If new session, this will create it with the specified session_id
             session = await self.conversation_service.get_or_create_session(
                 session_id=session_id,
                 user_id=user_id,
@@ -1197,75 +1253,135 @@ class DiscordPlugin(PluginBase):
 
             # Silence detection configuration
             silence_threshold_ms = int(os.getenv('SILENCE_THRESHOLD_MS', '600'))  # 600ms default
-            max_speaking_time_ms = int(os.getenv('MAX_SPEAKING_TIME_MS', '45000'))  # 45s default
+
+            # Per-utterance timeout (configurable per-agent via database, fallback to ENV, then default)
+            max_utterance_time_ms = (
+                self.agent.max_utterance_time_ms
+                if self.agent.max_utterance_time_ms is not None
+                else int(os.getenv('MAX_UTTERANCE_TIME_MS', '120000'))
+            )  # 2 minutes default per speaking turn
 
             # Track audio timing for silence detection
             last_audio_time = time.time()
+            last_finalization_time = None  # Track when last utterance was finalized
             silence_detection_task = None
             finalized = False
 
             async def check_silence():
-                """Background task to detect silence and trigger finalization"""
-                nonlocal finalized
+                """Background task to detect silence and trigger finalization with per-utterance timeout"""
+                nonlocal finalized, last_finalization_time
                 check_interval = 0.1  # Check every 100ms
+                iteration_count = 0
 
-                while not finalized:
+                logger.info(f"🔍 [SILENCE] Starting continuous silence detection for {username} (session={session_id[:8]}...)")
+                logger.info(f"🔍 [SILENCE] silence_threshold={silence_threshold_ms}ms, max_utterance={max_utterance_time_ms}ms")
+
+                while True:  # Continuous monitoring - runs for entire voice session
                     await asyncio.sleep(check_interval)
+                    iteration_count += 1
 
                     # Calculate elapsed time since last audio
                     elapsed_ms = (time.time() - last_audio_time) * 1000
-                    speaking_duration_ms = (time.time() - t_start) * 1000
 
-                    # Check for silence threshold
-                    if elapsed_ms >= silence_threshold_ms:
-                        logger.info(f"🔇 Silence detected after {elapsed_ms:.0f}ms for {username}")
+                    # Calculate per-utterance duration (resets after each finalization)
+                    if last_finalization_time is not None:
+                        utterance_duration_ms = (time.time() - last_finalization_time) * 1000
+                    else:
+                        utterance_duration_ms = (time.time() - t_start) * 1000
+
+                    # Log every 10 iterations (1 second)
+                    if iteration_count % 10 == 0:
+                        logger.debug(f"🔍 [SILENCE] Iter {iteration_count}: elapsed={elapsed_ms:.0f}ms, utterance={utterance_duration_ms:.0f}ms, finalized={finalized}")
+
+                    # Check if new audio arrived after finalization (auto-restart detection)
+                    if finalized and elapsed_ms < silence_threshold_ms:
+                        logger.info(f"🔄 [SILENCE] New audio after finalization! Starting new utterance...")
+                        finalized = False
+                        last_finalization_time = time.time()  # Reset utterance timer
+                        iteration_count = 0
+
+                    # Check for silence threshold (only if not already finalized)
+                    if not finalized and elapsed_ms >= silence_threshold_ms:
+                        logger.info(f"🔇 [SILENCE] Silence detected ({elapsed_ms:.0f}ms) - finalizing utterance")
                         self.metrics.record_silence_detection_latency(elapsed_ms)
 
                         # Finalize transcript
                         finalized = True
+                        last_finalization_time = time.time()  # Mark finalization time
                         success = await self.stt_service.finalize_transcript(session_id)
-                        if success:
-                            logger.info(f"✅ Triggered final transcript for {username}")
-                        else:
-                            logger.warning(f"⚠️ Failed to finalize transcript for {username}")
-                        break
 
-                    # Check for max speaking time (safety limit)
-                    if speaking_duration_ms >= max_speaking_time_ms:
-                        logger.warning(f"⏰ Max speaking time ({max_speaking_time_ms}ms) reached for {username}")
+                        if success:
+                            logger.info(f"✅ [SILENCE] Utterance finalized (duration: {utterance_duration_ms:.0f}ms)")
+                        else:
+                            logger.warning(f"⚠️ [SILENCE] Finalization failed")
+
+                        # Continue monitoring for next utterance (don't break!)
+
+                    # Check for max utterance time (safety limit per speaking turn)
+                    if not finalized and utterance_duration_ms >= max_utterance_time_ms:
+                        logger.warning(f"⏰ [SILENCE] Max utterance time reached ({utterance_duration_ms:.0f}ms) - force finalizing")
 
                         # Force finalization
                         finalized = True
+                        last_finalization_time = time.time()  # Reset for next utterance
                         success = await self.stt_service.finalize_transcript(session_id)
+
                         if success:
-                            logger.info(f"✅ Triggered final transcript (max time) for {username}")
-                        break
+                            logger.info(f"✅ [SILENCE] Long utterance force-finalized")
+                        else:
+                            logger.warning(f"⚠️ [SILENCE] Force-finalization failed")
+
+                        # Continue monitoring for next utterance (don't break!)
+
+                logger.info(f"🔍 [SILENCE] Silence detection task ending for {username} (finalized={finalized})")
 
             # Start silence detection task
+            logger.info(f"🚀 [STREAM] Starting silence detection task for {username}")
             silence_detection_task = asyncio.create_task(check_silence())
 
             # Stream audio to STT with silence tracking
+            chunk_count = 0
+            logger.info(f"🚀 [STREAM] Starting audio stream loop for {username} (session={session_id[:8]}...)")
             try:
                 async for audio_chunk in audio_stream:
+                    chunk_count += 1
                     # Update last audio timestamp
                     last_audio_time = time.time()
 
+                    # Log every 50 chunks
+                    if chunk_count % 50 == 0:
+                        logger.info(f"🎤 [STREAM] Chunk #{chunk_count} received, size={len(audio_chunk)} bytes, last_audio_time updated")
+
                     # Phase 1 integration: Send audio to STTService
                     await self.stt_service.send_audio(session_id, audio_chunk)
+
+                logger.info(f"🔚 [STREAM] Audio stream loop exited naturally for {username}, total chunks={chunk_count}, finalized={finalized}")
             finally:
+                logger.info(f"🔚 [STREAM] Entering finally block for {username} (finalized={finalized})")
+
                 # Ensure finalization happens even if stream ends abruptly
                 if not finalized:
-                    logger.info(f"🔚 Audio stream ended for {username}, finalizing...")
+                    logger.info(f"🔚 [STREAM] Stream ended but not finalized - calling finalize_transcript...")
                     await self.stt_service.finalize_transcript(session_id)
                     finalized = True
+                    logger.info(f"🔚 [STREAM] Finalization complete via finally block")
+                else:
+                    logger.info(f"🔚 [STREAM] Stream ended and already finalized - skipping finalize call")
 
                 # Cancel silence detection task
+                logger.info(f"🔚 [STREAM] Cancelling silence detection task (done={silence_detection_task.done() if silence_detection_task else 'None'})")
                 if silence_detection_task and not silence_detection_task.done():
                     silence_detection_task.cancel()
                     try:
                         await silence_detection_task
+                        logger.info(f"🔚 [STREAM] Silence detection task cancelled successfully")
                     except asyncio.CancelledError:
+                        logger.info(f"🔚 [STREAM] Silence detection task cancel acknowledged")
                         pass
+                else:
+                    logger.info(f"🔚 [STREAM] Silence detection task already done or None")
+
+                logger.info(f"🔚 [STREAM] Finally block complete for {username}")
 
         except Exception as e:
             logger.error(f"❌ Error in _handle_user_speaking for {username}: {e}", exc_info=True)
@@ -1315,12 +1431,29 @@ class DiscordPlugin(PluginBase):
                     logger.info(f"⏱️ LATENCY [WhisperX connected → first partial]: {latency:.3f}s")
                     self.metrics.record_first_partial_transcript_latency(latency)
 
-            # TODO Phase 2 Tests: Broadcast partial transcript via WebSocket
-            # await broadcast_partial_transcript(user_id, username, text)
+            # Broadcast partial transcript via WebSocket (Phase 2 Tests)
+            try:
+                # Lazy import to avoid circular dependency
+                from src.api import get_ws_manager
+                ws_manager = get_ws_manager()
+                logger.debug(f"📡 WebSocket: Broadcasting partial transcript to frontend (user={username}, text_len={len(text)})")
+                await ws_manager.broadcast({
+                    "event": "partial_transcript",
+                    "data": {
+                        "userId": user_id,
+                        "username": username,
+                        "text": text,
+                        "sessionId": session_id,
+                        "timestamp": datetime.now().isoformat()
+                    }
+                })
+            except Exception as e:
+                logger.error(f"❌ Failed to broadcast partial transcript: {e}")
             return
 
         # Final transcript
-        logger.info(f"✅ Final transcript (session={session_id[:8]}...): \"{text}\" (user={username})")
+        logger.info(f"✅ FINAL TRANSCRIPT (session={session_id[:8]}...): \"{text}\" (user={username}, user_id={user_id})")
+        logger.info(f"📊 Session info: active_sessions={list(self.active_sessions.keys())}, current_user={user_id}")
 
         # Record transcription duration (Phase 1 integration)
         if session_id in self.session_timings:
@@ -1333,8 +1466,25 @@ class DiscordPlugin(PluginBase):
                 logger.info(f"⏱️ LATENCY [first partial → transcription complete]: {duration:.3f}s")
                 self.metrics.record_transcription_duration(duration)
 
-        # TODO Phase 2 Tests: Broadcast final transcript via WebSocket
-        # await broadcast_final_transcript(user_id, username, text)
+        # Broadcast final transcript via WebSocket (Phase 2 Tests)
+        try:
+            # Lazy import to avoid circular dependency
+            from src.api import get_ws_manager
+            ws_manager = get_ws_manager()
+            logger.info(f"📡 WebSocket: Broadcasting final transcript to frontend (user={username}, text=\"{text[:50]}...\")")
+            await ws_manager.broadcast({
+                "event": "final_transcript",
+                "data": {
+                    "userId": user_id,
+                    "username": username,
+                    "text": text,
+                    "sessionId": session_id,
+                    "timestamp": datetime.now().isoformat()
+                }
+            })
+        except Exception as e:
+            logger.error(f"❌ Failed to broadcast final transcript: {e}")
+
         self.metrics.record_transcript()
 
         # Phase 1 integration: Add user message to conversation
@@ -1403,6 +1553,11 @@ class DiscordPlugin(PluginBase):
             )
 
             logger.info(f"🤖 Generating LLM response (session={session_id[:8]}..., provider={llm_config.provider.value})")
+            logger.debug(f"[DEBUG] Conversation history for LLM ({len(llm_messages)} messages):")
+            for i, msg in enumerate(llm_messages):
+                content_preview = msg['content'][:100].replace('\n', ' ') if msg['content'] else '(empty)'
+                logger.debug(f"  [{i}] {msg['role']}: {content_preview}...")
+            logger.debug(f"[DEBUG] LLM config: model={llm_config.model}, temp={llm_config.temperature}, provider={llm_config.provider.value}")
 
             # Stream response from LLM (Phase 1 integration)
             full_response = ""
@@ -1419,6 +1574,23 @@ class DiscordPlugin(PluginBase):
                     logger.info(f"⏱️ LATENCY [LLM first chunk]: {latency:.3f}s")
                     self.metrics.record_n8n_first_chunk_latency(latency)
                     first_chunk = False
+
+                # Broadcast AI response chunk to frontend
+                try:
+                    from src.api import get_ws_manager
+                    ws_manager = get_ws_manager()
+                    await ws_manager.broadcast({
+                        "event": "ai_response_chunk",
+                        "data": {
+                            "userId": user_id,
+                            "username": username,
+                            "text": chunk,
+                            "sessionId": session_id,
+                            "timestamp": datetime.now().isoformat()
+                        }
+                    })
+                except Exception as e:
+                    logger.error(f"❌ Failed to broadcast AI response chunk: {e}")
 
             try:
                 # Phase 1 integration: Use LLMService
@@ -1479,19 +1651,41 @@ class DiscordPlugin(PluginBase):
                         response_data = response.json()
 
                         # Handle various n8n response formats
+                        # Format 1: {"response": "text"} or {"output": "text"} or {"text": "text"}
+                        # Format 2: [{"output": "text"}] (array of objects with output field)
+                        # Format 3: ["text"] (array of strings)
+                        # Format 4: "text" (raw string)
+
                         if isinstance(response_data, dict):
+                            # Extract from dict
                             full_response = (
                                 response_data.get('response') or
                                 response_data.get('output') or
                                 response_data.get('text') or
                                 str(response_data)
                             )
+                        elif isinstance(response_data, list) and response_data:
+                            # Extract from array
+                            first_item = response_data[0]
+                            if isinstance(first_item, dict):
+                                # [{"output": "text"}] format
+                                full_response = (
+                                    first_item.get('output') or
+                                    first_item.get('response') or
+                                    first_item.get('text') or
+                                    str(first_item)
+                                )
+                            elif isinstance(first_item, str):
+                                # ["text"] format
+                                full_response = first_item
+                            else:
+                                full_response = str(first_item)
                         elif isinstance(response_data, str):
                             full_response = response_data
                         else:
                             full_response = str(response_data)
 
-                        logger.info(f"✅ n8n response received: {len(full_response)} chars")
+                        logger.info(f"✅ n8n response received: {len(full_response)} chars - preview: '{full_response[:100]}...'")
 
                 except Exception as n8n_error:
                     logger.error(f"❌ n8n webhook fallback failed: {n8n_error}", exc_info=True)
@@ -1504,19 +1698,57 @@ class DiscordPlugin(PluginBase):
                 content=full_response
             )
 
-            # TODO Phase 2 Tests: Broadcast AI response via WebSocket
-            # await broadcast_ai_response(full_response, is_final=True)
+            # Broadcast AI response complete to frontend (CRITICAL - must always happen)
+            try:
+                from src.api import get_ws_manager
+                ws_manager = get_ws_manager()
+                logger.info(f"📡 WebSocket: Broadcasting ai_response_complete to frontend (user={username}, text length={len(full_response)} chars)")
+                await ws_manager.broadcast({
+                    "event": "ai_response_complete",
+                    "data": {
+                        "userId": user_id,
+                        "username": username,
+                        "text": full_response,
+                        "sessionId": session_id,
+                        "timestamp": datetime.now().isoformat()
+                    }
+                })
+            except Exception as e:
+                logger.error(f"❌ Failed to broadcast AI response complete: {e}")
+
+            logger.info(f"🤖 LLM response generated for session {session_id[:8]}... - starting TTS playback (user={user_id})")
 
             # Phase 2: Synthesize and play TTS
             if guild_id and guild_id in self.voice_clients:
                 voice_client = self.voice_clients[guild_id]
                 await self._play_tts(full_response, voice_client, session_id)
+                logger.info(f"🔊 TTS playback completed for session {session_id[:8]}... (user={user_id})")
             else:
                 logger.warning(f"⚠️ Cannot play TTS: no voice client for guild {guild_id}")
 
         except Exception as e:
             logger.error(f"❌ Error generating LLM response (session={session_id[:8]}...): {e}", exc_info=True)
             self.metrics.record_error()
+
+            # Broadcast error to frontend so animation stops
+            try:
+                from src.api import get_ws_manager
+                ws_manager = get_ws_manager()
+                error_message = f"Error generating AI response: {str(e)}"
+                logger.error(f"📡 WebSocket: Broadcasting ai_response_complete with error to frontend (user={username})")
+                await ws_manager.broadcast({
+                    "event": "ai_response_complete",
+                    "data": {
+                        "userId": user_id,
+                        "username": username,
+                        "text": "",  # Empty response
+                        "error": error_message,
+                        "sessionId": session_id,
+                        "timestamp": datetime.now().isoformat()
+                    }
+                })
+            except Exception as broadcast_error:
+                logger.error(f"❌ Failed to broadcast error: {broadcast_error}")
 
     async def _play_tts(
         self,
@@ -1666,7 +1898,7 @@ class DiscordPlugin(PluginBase):
             # Phase 2: Cleanup audio receiver for this user
             # Find guild_id for this user's voice connection
             for guild_id, receiver in self.audio_receivers.items():
-                if user_id in receiver.active_users:
+                if user_id in receiver.active_sessions:
                     receiver.cleanup_user(user_id)
                     break
 
@@ -1685,16 +1917,19 @@ class DiscordPlugin(PluginBase):
     async def join_voice_channel(
         self,
         guild_id: int,
-        channel_id: int
+        channel_id: int,
+        session_id: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Join a Discord voice channel.
 
         Phase 3: HTTP API integration
+        Phase 6.X: Unified Conversation Threading - accepts optional session_id
 
         Args:
             guild_id: Discord guild (server) ID
             channel_id: Discord voice channel ID
+            session_id: Optional UUID of web session to link Discord voice to
 
         Returns:
             Dict with connection status
@@ -1725,6 +1960,34 @@ class DiscordPlugin(PluginBase):
             receiver = self.AudioReceiver(self, voice_client)
             voice_client.listen(receiver)
             self.audio_receivers[guild_id] = receiver
+            logger.info(f"🎤 Registered audio receiver for guild {guild_id}")
+
+            # Phase 6.X: Store session mapping if provided
+            if session_id:
+                self.guild_session_mapping[guild_id] = session_id
+                logger.info(
+                    f"🔗 Linked guild {guild_id} to session {session_id[:8]}... "
+                    f"(unified conversation threading enabled)"
+                )
+
+                # Update session in database to track discord_guild_id
+                try:
+                    from src.database.session import get_db_session
+                    from src.database.models import Session
+                    from sqlalchemy import update
+                    from uuid import UUID
+
+                    async with get_db_session() as db:
+                        await db.execute(
+                            update(Session)
+                            .where(Session.id == UUID(session_id))
+                            .values(discord_guild_id=str(guild_id))
+                        )
+                        await db.commit()
+                        logger.debug(f"💾 Updated session {session_id[:8]}... with discord_guild_id={guild_id}")
+                except Exception as e:
+                    logger.warning(f"⚠️ Failed to update session discord_guild_id: {e}")
+                    # Non-fatal - continue with in-memory mapping
 
             logger.info(
                 f"✅ Joined voice channel '{channel.name}' in guild '{guild.name}' "
@@ -1739,6 +2002,7 @@ class DiscordPlugin(PluginBase):
                 'channel_name': channel.name,
                 'agent_id': str(self.agent_id),
                 'agent_name': self.agent_name,
+                'session_id': session_id,  # Include in response for UI feedback
             }
         except Exception as e:
             logger.error(f"❌ Failed to join voice channel: {e}", exc_info=True)
@@ -1783,6 +2047,29 @@ class DiscordPlugin(PluginBase):
                 self.audio_receivers[guild_id].cleanup()
                 del self.audio_receivers[guild_id]
 
+            # Phase 6.X: Clear session mapping and update database
+            session_id = self.guild_session_mapping.pop(guild_id, None)
+            if session_id:
+                logger.info(f"🔓 Unlinked guild {guild_id} from session {session_id[:8]}...")
+
+                # Update session in database to clear discord_guild_id
+                try:
+                    from src.database.session import get_db_session
+                    from src.database.models import Session
+                    from sqlalchemy import update
+                    from uuid import UUID
+
+                    async with get_db_session() as db:
+                        await db.execute(
+                            update(Session)
+                            .where(Session.id == UUID(session_id))
+                            .values(discord_guild_id=None)
+                        )
+                        await db.commit()
+                        logger.debug(f"💾 Cleared discord_guild_id from session {session_id[:8]}...")
+                except Exception as e:
+                    logger.warning(f"⚠️ Failed to clear session discord_guild_id: {e}")
+
             # Disconnect voice client
             await voice_client.disconnect()
             del self.voice_clients[guild_id]
@@ -1814,9 +2101,9 @@ class DiscordPlugin(PluginBase):
             channel = voice_client.channel
 
             connections.append({
-                'guild_id': guild_id,
+                'guild_id': str(guild_id),  # Convert to string to preserve precision in JSON
                 'guild_name': guild.name if guild else None,
-                'channel_id': channel.id if channel else None,
+                'channel_id': str(channel.id) if channel else None,  # Also convert channel_id
                 'channel_name': channel.name if channel else None,
                 'connected': voice_client.is_connected(),
             })
@@ -1824,6 +2111,11 @@ class DiscordPlugin(PluginBase):
         return {
             'agent_id': str(self.agent_id),
             'agent_name': self.agent_name,
+            'bot': {
+                'ready': self.bot.is_ready() if self.bot else False,
+                'username': self.bot.user.name if self.bot and self.bot.user else None,
+                'id': str(self.bot.user.id) if self.bot and self.bot.user else None,
+            },
             'connections': connections,
             'active_sessions': len(self.active_sessions),
         }

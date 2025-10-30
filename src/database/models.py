@@ -25,7 +25,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import declarative_base, relationship
-from sqlalchemy.sql import func
+from sqlalchemy.sql import func, text
 
 Base = declarative_base()
 
@@ -51,9 +51,19 @@ class Agent(Base):
     # LLM Configuration
     llm_provider = Column(
         String(50), nullable=False
-    )  # 'openrouter' or 'local_llm'
+    )  # 'openrouter' or 'local_llm' (LEGACY - use llm_provider_id instead)
     llm_model = Column(String(100), nullable=False)  # e.g., 'openai/gpt-4'
     temperature = Column(Float, nullable=False, default=0.7)
+
+    # VoxBridge 2.0 Phase 6.5: LLM Provider Management
+    # Foreign key to llm_providers table (nullable for backward compatibility)
+    # Priority: database provider (llm_provider_id) > env var provider (OPENROUTER_API_KEY)
+    llm_provider_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("llm_providers.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True
+    )
 
     # TTS Configuration
     tts_voice = Column(String(100), nullable=True)  # Voice ID for Chatterbox
@@ -70,6 +80,9 @@ class Agent(Base):
     # VoxBridge 2.0 Phase 6: Plugin System
     plugins = Column(JSONB, nullable=False, default={})  # Plugin configurations (discord, n8n, slack, etc.)
 
+    # Voice Configuration
+    max_utterance_time_ms = Column(Integer, nullable=True, default=120000)  # Max duration per speaking turn (ms)
+
     # Metadata
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(
@@ -79,6 +92,7 @@ class Agent(Base):
 
     # Relationships
     sessions = relationship("Session", back_populates="agent", cascade="all, delete-orphan")
+    llm_provider_ref = relationship("LLMProvider", foreign_keys=[llm_provider_id])
 
     def __repr__(self):
         return f"<Agent(id={self.id}, name='{self.name}', llm_provider='{self.llm_provider}')>"
@@ -118,6 +132,12 @@ class Session(Base):
         String(20), nullable=False
     )  # 'web', 'discord', 'extension'
     session_metadata = Column(Text, nullable=True)  # JSON string for extension-specific data
+
+    # Discord Integration (Phase 6.X: Unified Conversation Threading)
+    # Tracks which Discord guild is currently linked to this session
+    # Allows Discord voice input and web input to share same conversation thread
+    # One session per guild at a time (guild isolation), but multiple sessions per guild over time
+    discord_guild_id = Column(String(100), nullable=True, index=True)  # Discord guild (server) ID if linked
 
     # Relationships
     conversations = relationship(
@@ -171,3 +191,49 @@ class Conversation(Base):
 # - sessions.active (index for finding active sessions)
 # - conversations.session_id (index for conversation history queries)
 # - conversations.timestamp (index for time-based queries)
+
+
+class LLMProvider(Base):
+    """
+    LLM Provider Configuration
+
+    Stores OpenAI-compatible API endpoint configurations for flexible LLM routing.
+    Supports multiple provider types: OpenRouter, Ollama, OpenAI, vLLM, custom.
+
+    Phase 6.5.4: LLM Provider Management System
+    - Providers are OpenAI-compatible API endpoints
+    - API keys are encrypted before storing in database
+    - Models are fetched from /v1/models and cached as JSONB array
+    - Agents can reference providers for flexible LLM routing
+    """
+
+    __tablename__ = "llm_providers"
+
+    # Primary key - UUID for global uniqueness
+    id = Column(UUID(as_uuid=True), primary_key=True, server_default=text('gen_random_uuid()'))
+
+    # Provider Identity
+    name = Column(String(255), nullable=False)
+    base_url = Column(String(512), nullable=False)
+
+    # Authentication (encrypted)
+    api_key_encrypted = Column(Text, nullable=True)
+
+    # Provider Type (openrouter, ollama, openai, vllm, custom)
+    provider_type = Column(String(50), nullable=True, index=True)
+
+    # Model Configuration
+    models = Column(JSONB, server_default='[]')  # List of available models
+    default_model = Column(String(255), nullable=True)
+
+    # Status
+    is_active = Column(Boolean, server_default=text('true'), index=True)
+
+    # Metadata
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    def __repr__(self):
+        return f"<LLMProvider(id={self.id}, name='{self.name}', provider_type='{self.provider_type}')>"

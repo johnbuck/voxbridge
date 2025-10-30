@@ -50,6 +50,9 @@ export function AgentForm({ open, onOpenChange, agent, onSubmit }: AgentFormProp
   const [ttsRate, setTtsRate] = useState(1.0);
   const [ttsPitch, setTtsPitch] = useState(1.0);
 
+  // Voice Configuration
+  const [maxUtteranceTimeMs, setMaxUtteranceTimeMs] = useState<number>(120000); // 2 minutes default
+
   // Discord Plugin state
   const [discordEnabled, setDiscordEnabled] = useState(false);
   const [discordBotToken, setDiscordBotToken] = useState('');
@@ -71,6 +74,7 @@ export function AgentForm({ open, onOpenChange, agent, onSubmit }: AgentFormProp
       setTtsVoice(agent.tts_voice || '');
       setTtsRate(agent.tts_rate);
       setTtsPitch(agent.tts_pitch);
+      setMaxUtteranceTimeMs(agent.max_utterance_time_ms ?? 120000);
 
       // Load Discord plugin config if present
       if (agent.plugins?.discord) {
@@ -96,6 +100,7 @@ export function AgentForm({ open, onOpenChange, agent, onSubmit }: AgentFormProp
       setTtsVoice('');
       setTtsRate(1.0);
       setTtsPitch(1.0);
+      setMaxUtteranceTimeMs(120000);
       setDiscordEnabled(false);
       setDiscordBotToken('');
       setDiscordAutoJoin(false);
@@ -131,6 +136,7 @@ export function AgentForm({ open, onOpenChange, agent, onSubmit }: AgentFormProp
         tts_voice: ttsVoice || null,
         tts_rate: ttsRate,
         tts_pitch: ttsPitch,
+        max_utterance_time_ms: maxUtteranceTimeMs,
         plugins: Object.keys(plugins).length > 0 ? plugins : undefined,
       });
       onOpenChange(false);
@@ -305,6 +311,29 @@ export function AgentForm({ open, onOpenChange, agent, onSubmit }: AgentFormProp
                   className="w-full"
                 />
               </div>
+            </div>
+          </div>
+
+          {/* Voice Configuration */}
+          <div className="space-y-4 pt-4 border-t">
+            <h4 className="text-sm font-medium">Voice Configuration</h4>
+
+            <div className="space-y-2">
+              <Label htmlFor="maxUtteranceTimeMs">
+                Max Utterance Time (ms)
+              </Label>
+              <Input
+                id="maxUtteranceTimeMs"
+                type="number"
+                value={maxUtteranceTimeMs}
+                onChange={(e) => setMaxUtteranceTimeMs(parseInt(e.target.value) || 120000)}
+                placeholder="120000"
+                min={0}
+                step={1000}
+              />
+              <p className="text-xs text-muted-foreground">
+                Maximum duration for a single speaking turn in milliseconds. Force-finalize if user speaks continuously beyond this limit. Default: 120000 (2 minutes). Set to 0 for unlimited.
+              </p>
             </div>
           </div>
 
