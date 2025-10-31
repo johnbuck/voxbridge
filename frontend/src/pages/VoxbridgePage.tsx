@@ -332,6 +332,25 @@ export function VoxbridgePage() {
       return;
     }
 
+    // Real-time metrics updates (after every conversation turn)
+    if (message.event === 'metrics_updated') {
+      // Invalidate metrics query to trigger refetch with new data
+      queryClient.setQueryData(['metrics'], message.data);
+      return;
+    }
+
+    // LLM retry notification
+    if (message.event === 'llm_retry') {
+      toast.info("Retrying AI Response", message.data.message);
+      return;
+    }
+
+    // LLM fallback notification
+    if (message.event === 'llm_fallback') {
+      toast.warning("AI Response Fallback", message.data.message);
+      return;
+    }
+
     // Track speaker activity for status cards
     if (message.event === 'speaker_started') {
       setActiveSpeaker(message.data.userId);

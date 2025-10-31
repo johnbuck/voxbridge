@@ -953,6 +953,7 @@ class DiscordPlugin(PluginBase):
             # Initialize session timing tracker (Phase 1 integration)
             self.session_timings[session_id] = {
                 't_start': t_start,
+                't_utterance_start': t_start,  # Start of current utterance (resets for each turn)
                 't_whisper_connected': None,
                 't_first_partial': None,
                 't_transcription_complete': None
@@ -1045,6 +1046,15 @@ class DiscordPlugin(PluginBase):
                         finalized = False
                         last_finalization_time = time.time()  # Reset utterance timer
                         iteration_count = 0
+
+                        # Reset per-turn timing markers for accurate latency tracking
+                        if session_id in self.session_timings:
+                            t_now = time.time()
+                            self.session_timings[session_id]['t_start'] = t_now
+                            self.session_timings[session_id]['t_utterance_start'] = t_now  # Track start of THIS utterance
+                            self.session_timings[session_id]['t_first_partial'] = None
+                            self.session_timings[session_id]['t_transcription_complete'] = None
+                            logger.debug(f"🔄 [METRICS] Reset timing markers for new utterance (session={session_id[:8]}...)")
 
                     # Check for silence threshold (only if not already finalized)
                     if not finalized and elapsed_ms >= silence_threshold_ms:
@@ -1170,11 +1180,11 @@ class DiscordPlugin(PluginBase):
             # Record first partial latency (Phase 1 integration)
             if session_id in self.session_timings:
                 timings = self.session_timings[session_id]
-                if timings['t_first_partial'] is None and timings['t_whisper_connected']:
+                if timings['t_first_partial'] is None and timings['t_utterance_start']:
                     t_now = time.time()
                     timings['t_first_partial'] = t_now
-                    latency = t_now - timings['t_whisper_connected']
-                    logger.info(f"⏱️ LATENCY [WhisperX connected → first partial]: {latency:.3f}s")
+                    latency = t_now - timings['t_utterance_start']
+                    logger.info(f"⏱️ LATENCY [utterance start → first partial]: {latency:.3f}s")
                     self.metrics.record_first_partial_transcript_latency(latency)
 
             # Broadcast partial transcript via WebSocket (Phase 2 Tests)
@@ -1338,25 +1348,80 @@ class DiscordPlugin(PluginBase):
                 except Exception as e:
                     logger.error(f"❌ Failed to broadcast AI response chunk: {e}")
 
+            # Retry logic for empty LLM responses
+            max_retries = 2
+            retry_count = 0
+
             try:
-                # Phase 1 integration: Use LLMService
-                await self.llm_service.generate_response(
-                    session_id=session_id,
-                    messages=llm_messages,
-                    config=llm_config,
-                    stream=True,
-                    callback=on_llm_chunk
-                )
+                while retry_count <= max_retries:
+                    # Phase 1 integration: Use LLMService
+                    await self.llm_service.generate_response(
+                        session_id=session_id,
+                        messages=llm_messages,
+                        config=llm_config,
+                        stream=True,
+                        callback=on_llm_chunk
+                    )
 
-                # Record total LLM latency (Phase 1 integration)
-                t_llm_complete = time.time()
-                llm_duration = t_llm_complete - t_llm_start
-                logger.info(f"⏱️ LATENCY [total LLM generation]: {llm_duration:.3f}s")
-                self.metrics.record_ai_generation_latency(llm_duration)
+                    # Record total LLM latency (Phase 1 integration)
+                    t_llm_complete = time.time()
+                    llm_duration = t_llm_complete - t_llm_start
+                    logger.info(f"⏱️ LATENCY [total LLM generation]: {llm_duration:.3f}s")
+                    self.metrics.record_ai_generation_latency(llm_duration)
 
-                # Store LLM complete time for TTS queue latency metric
-                if session_id in self.session_timings:
-                    self.session_timings[session_id]['t_llm_complete'] = t_llm_complete
+                    # Store LLM complete time for TTS queue latency metric
+                    if session_id in self.session_timings:
+                        self.session_timings[session_id]['t_llm_complete'] = t_llm_complete
+
+                    # Check if response is empty
+                    if not full_response or not full_response.strip():
+                        retry_count += 1
+                        if retry_count <= max_retries:
+                            logger.warning(f"⚠️ LLM returned empty response (attempt {retry_count}/{max_retries + 1}), retrying...")
+
+                            # Broadcast retry notification to frontend
+                            try:
+                                from src.api import get_ws_manager
+                                ws_manager = get_ws_manager()
+                                await ws_manager.broadcast({
+                                    "event": "llm_retry",
+                                    "data": {
+                                        "userId": user_id,
+                                        "username": username,
+                                        "attempt": retry_count,
+                                        "maxAttempts": max_retries + 1,
+                                        "message": f"Retrying... (attempt {retry_count}/{max_retries + 1})"
+                                    }
+                                })
+                            except Exception as e:
+                                logger.error(f"❌ Failed to broadcast LLM retry notification: {e}")
+
+                            full_response = ""  # Reset for retry
+                            first_chunk = True  # Reset first chunk flag
+                            t_llm_start = time.time()  # Reset timer for retry
+                            continue
+                        else:
+                            logger.error(f"❌ LLM returned empty response after {max_retries + 1} attempts")
+                            full_response = "I apologize, but I'm having trouble generating a response right now. Could you please try again?"
+
+                            # Broadcast fallback notification to frontend
+                            try:
+                                from src.api import get_ws_manager
+                                ws_manager = get_ws_manager()
+                                await ws_manager.broadcast({
+                                    "event": "llm_fallback",
+                                    "data": {
+                                        "userId": user_id,
+                                        "username": username,
+                                        "message": "AI response failed after multiple attempts. Using fallback message.",
+                                        "fallbackMessage": full_response
+                                    }
+                                })
+                            except Exception as e:
+                                logger.error(f"❌ Failed to broadcast LLM fallback notification: {e}")
+
+                    # Success - break out of retry loop
+                    break
 
             except (LLMError, LLMConnectionError, LLMTimeoutError) as e:
                 # LLM providers unavailable - fall back to n8n webhook
@@ -1617,6 +1682,19 @@ class DiscordPlugin(PluginBase):
                     total_latency = t_playback_complete - t_start
                     logger.info(f"⏱️ ⭐⭐⭐ TOTAL PIPELINE LATENCY: {total_latency:.3f}s")
                     self.metrics.record_total_pipeline_latency(total_latency)
+
+                    # Broadcast metrics update to frontend
+                    try:
+                        from src.api import get_ws_manager
+                        ws_manager = get_ws_manager()
+                        metrics_snapshot = self.metrics.get_metrics()
+                        await ws_manager.broadcast({
+                            "event": "metrics_updated",
+                            "data": metrics_snapshot
+                        })
+                        logger.debug(f"📊 Broadcast metrics update to frontend")
+                    except Exception as e:
+                        logger.error(f"❌ Failed to broadcast metrics update: {e}")
 
                 return temp_path
 

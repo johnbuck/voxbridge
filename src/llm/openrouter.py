@@ -204,8 +204,12 @@ class OpenRouterProvider(LLMProvider):
         Yields:
             str: Content deltas from SSE stream
         """
+        line_count = 0
+        content_chunks = 0
+
         async for line in response.aiter_lines():
             line = line.strip()
+            line_count += 1
 
             # Skip empty lines and non-data lines
             if not line or not line.startswith("data: "):
@@ -216,11 +220,16 @@ class OpenRouterProvider(LLMProvider):
 
             # Check for stream end marker
             if data == "[DONE]":
+                logger.info(f"🤖 LLM [openrouter]: SSE stream ended after {line_count} lines, {content_chunks} content chunks")
                 break
 
             # Parse JSON chunk
             try:
                 chunk = json.loads(data)
+
+                # Debug: Log first chunk structure
+                if line_count <= 2:
+                    logger.info(f"🤖 LLM [openrouter]: SSE chunk #{line_count} structure: {json.dumps(chunk)[:250]}")
 
                 # Extract content delta
                 choices = chunk.get("choices", [])
@@ -229,10 +238,14 @@ class OpenRouterProvider(LLMProvider):
                     content = delta.get("content", "")
 
                     if content:
+                        content_chunks += 1
                         yield content
+                    elif line_count <= 5:
+                        # Debug: Log why content is empty (first 5 chunks only)
+                        logger.info(f"🤖 LLM [openrouter]: Empty content in chunk #{line_count} (delta keys: {list(delta.keys())})")
 
             except json.JSONDecodeError as e:
-                logger.warning(f"🤖 LLM [openrouter]: Failed to parse SSE chunk: {e}")
+                logger.warning(f"🤖 LLM [openrouter]: Failed to parse SSE chunk: {e}, data: {data[:100]}")
                 continue
 
     async def health_check(self) -> bool:
