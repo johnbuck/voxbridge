@@ -10,7 +10,7 @@
 
 ## 📊 Progress Summary
 
-**Overall Progress**: 5.5 / 8 phases complete (68.75%)
+**Overall Progress**: 6.35 / 8 phases complete (79%)
 
 | Phase | Status | Completion Date | Key Deliverables |
 |-------|--------|----------------|------------------|
@@ -19,26 +19,37 @@
 | 3. LLM Provider Abstraction | ✅ Complete | Oct 27, 2025 | OpenRouter + Local LLM providers, streaming support |
 | 4. Web Voice Interface | ✅ Complete | Oct 28, 2025 | WebRTC audio, voice chat UI, real-time transcription |
 | 5. Core Pipeline Refactor | ✅ Complete | Oct 28, 2025 | 4 new services (2,342 lines), session-based routing |
-| 6. Extension System | 🟡 In Progress | Started Oct 29 | Discord plugin complete, extension base pending |
+| 6. Plugin System | 🟡 85% Complete | Started Oct 29 | Discord plugin complete, Phase 6.5 in progress |
 | 7. Documentation Overhaul | ⏳ Pending | - | Major doc rewrite needed |
 | 8. Testing & Migration | ⏳ Pending | - | Test updates, coverage verification |
 
-**Recent Achievements** (October 29, 2025):
-- ✅ Discord Plugin Integration complete (6 commits)
+**Recent Achievements** (October 29-30, 2025):
+- ✅ **LLM Provider Management System** (Phase 6.5.4) - October 30
+  - Full CRUD UI for managing OpenRouter, Ollama, OpenAI, custom providers
+  - API key encryption using existing plugin encryption system
+  - Model fetching with caching, connection testing with metrics
+  - 4 new database migrations (005, 006, 007, 008)
+- ✅ **Multi-Turn Voice Conversations** - October 30
+  - Per-utterance timeout (configurable per agent, 2 min default)
+  - Replaces global speaker lock with continuous monitoring
+  - Database migration 008 for `max_utterance_time_ms` field
+- ✅ **Discord Plugin Integration** - October 29
   - Per-agent Discord bot controls in UI
   - Discord snowflake ID precision fix (critical bug fix)
   - Channel selector modal with guild/channel browsing
   - Auto-reconnect logic for state desync
-  - localStorage persistence for guild IDs
-- ✅ Documentation updated (README.md, CLAUDE.md)
-- ✅ Legacy components removed (net -164 lines)
+- ✅ **Frontend Consolidation** - October 30
+  - Settings hub architecture (`/settings/*` routes)
+  - LLMProvidersPage, settings pages organized
+  - Agent configuration cleanup (removed 4 deprecated agents)
 
 **Next Steps**:
-1. Complete Phase 6: Generic extension base class and registry
-2. Implement n8n webhook extension
-3. Add extension manager UI
-4. Phase 7: Documentation overhaul
-5. Phase 8: Testing updates
+1. Complete Phase 6.5: Frontend Experience & LLM Provider Management
+2. Clean up test suite (remove 3 legacy test files)
+3. Phase 7: Documentation overhaul
+4. Phase 8: Testing updates
+
+**Note**: n8n plugin work has been removed from scope. Agents can still use n8n via the existing `use_n8n` boolean field.
 
 ---
 
@@ -308,66 +319,34 @@ WebSocket Audio → STT Service → Conversation Service → Agent Router
   - Backend: plugin-based endpoints, per-agent status tracking
 
 **Remaining Work**:
-- ⏳ Generic extension base class and registry
-- ⏳ n8n webhook extension
-- ⏳ Extension manager UI for enabling/disabling extensions
-- ⏳ Environment variable toggles for extensions
+- ⏳ Complete Phase 6.5: Frontend Experience & LLM Provider Management
+  - Route consolidation (voice chat to `/` route)
+  - UX behavior unification (STT/AI indicators)
+  - Settings hub refinement
 
-**Deliverables**:
-- Extension base class with lifecycle hooks
-- Discord bot extension (refactored from current code)
-- n8n webhook extension (refactored from current code)
-- Extension registry and manager
-- Environment variable toggles
-- Frontend settings UI for enabling/disabling extensions
+**Note**: Generic extension base class and n8n webhook extension have been removed from scope. Discord plugin implementation is sufficient for Phase 6 completion.
 
-**Extension Interface**:
-```python
-class Extension(ABC):
-    name: str
-    enabled: bool
+**Deliverables** (Revised):
+- ✅ Discord plugin system (per-agent bot controls) - COMPLETE
+- ✅ Plugin-based voice endpoints (`/api/plugins/discord/voice/*`) - COMPLETE
+- ✅ Frontend plugin UI (DiscordPluginCard, modals) - COMPLETE
+- ⏳ Phase 6.5: Frontend Experience & LLM Provider Management - IN PROGRESS
 
-    @abstractmethod
-    async def on_enable(self):
-        """Called when extension is enabled"""
-        pass
-
-    @abstractmethod
-    async def on_audio_input(self, audio: bytes) -> Optional[str]:
-        """Handle audio input (e.g., from Discord voice)"""
-        pass
-
-    @abstractmethod
-    async def on_text_output(self, text: str, session_id: str):
-        """Handle text output (e.g., send to Discord)"""
-        pass
-
-    @abstractmethod
-    async def on_disable(self):
-        """Called when extension is disabled"""
-        pass
-```
-
-**New Files**:
-- `src/extensions/base.py` - Base extension class
-- `src/extensions/manager.py` - Extension registry/manager
-- `src/extensions/discord_extension.py` - Discord integration
-- `src/extensions/n8n_extension.py` - n8n integration
-- `frontend/src/pages/ExtensionsPage.tsx` - Extension UI
-- `frontend/src/components/ExtensionCard.tsx` - Extension card
+**Plugin Architecture**:
+The Discord plugin system uses a plugin-based architecture with:
+- `src/plugins/base.py` - PluginBase abstract class
+- `src/plugins/registry.py` - PluginRegistry (singleton pattern)
+- `src/plugins/discord_plugin.py` - Discord bot implementation (per-agent)
+- `src/services/plugin_manager.py` - PluginManager orchestration
 
 **Environment Variables**:
-- `ENABLE_DISCORD_EXTENSION=true/false`
-- `ENABLE_N8N_EXTENSION=true/false`
-- `DISCORD_TOKEN` (if Discord enabled)
-- `N8N_WEBHOOK_URL` (if n8n enabled)
+- `USE_LEGACY_DISCORD_BOT=true/false` - Toggle legacy bot (deprecated)
+- `DISCORD_TOKEN` - Discord bot token (stored encrypted in database per-agent)
 
 **Documentation**:
-- Update ARCHITECTURE.md: Add "Extension System Architecture"
-- Update CLAUDE.md: Document extension environment variables
-- Update AGENTS.md: Add "Extension Development Guidelines"
-- Update README.md: Add extension configuration guide
-- Create `.claude/agents/extension-builder.md`: Extension development agent
+- ✅ Update ARCHITECTURE.md: Add "Plugin System Architecture" - COMPLETE
+- ✅ Update CLAUDE.md: Document plugin environment variables - COMPLETE
+- ✅ Update README.md: Add plugin configuration guide - COMPLETE
 
 ---
 
@@ -583,12 +562,14 @@ POST   /api/settings/llm-providers/:id/test - Test connection
 | 3. LLM Providers | 2 | 2 | ✅ Complete | Oct 27 - OpenRouter + Local |
 | 4. Web Voice | 3 | 2.5 | ✅ Complete | Oct 28 - WebRTC + audio UI |
 | 5. Core Refactor | 3 | 2.5 | ✅ Complete | Oct 28 - Service layer |
-| 6. Extensions | 2 | 1.5 (partial) | 🟡 In Progress | Oct 29 - Discord plugin done |
+| 6. Plugin System | 2 | 2.7 | 🟡 85% Complete | Oct 29-30 - Discord + LLM Provider Mgmt |
 | 7. Documentation | 1 | - | ⏳ Pending | Major doc rewrite |
 | 8. Testing | 1 | - | ⏳ Pending | Test updates needed |
-| **Total** | **16** | **11.5 (so far)** | **68.75%** | On track |
+| **Total** | **16** | **13.2 (so far)** | **79%** | On track |
 
-**Velocity**: Averaging 1.9 days per phase (vs estimated 2.0 days) - ahead of schedule!
+**Velocity**: Averaging 2.1 days per phase (vs estimated 2.0 days) - on schedule!
+
+**Note**: Phase 6 expanded to include Phase 6.5 (Frontend Experience & LLM Provider Management). n8n plugin work removed from scope.
 
 ---
 
@@ -637,19 +618,25 @@ POST   /api/settings/llm-providers/:id/test - Test connection
 - ✅ Agents use configurable LLM (OpenRouter or local) *(Complete - Oct 27)*
 - ✅ Conversation history persisted in PostgreSQL *(Complete - Oct 26)*
 - ✅ Discord plugin integration working per-agent *(Complete - Oct 29)*
-- 🟡 Extensions can be enabled/disabled via env vars *(Partial - Discord only)*
-- 🟡 Discord extension fully decoupled *(Partial - plugin endpoints complete)*
-- ⏳ n8n extension works (optional) *(Pending)*
-- ⏳ Extension manager UI *(Pending)*
-- ⏳ All tests passing (88%+ coverage) *(Needs update for new features)*
+- ✅ LLM Provider Management UI complete *(Complete - Oct 30)*
+- 🟡 Frontend experience unified (Phase 6.5) *(In Progress)*
+- ⏳ Test suite cleaned up (3 legacy files removed) *(Pending)*
+- ⏳ All tests passing (88%+ coverage) *(Needs cleanup)*
 - ⏳ Documentation fully updated *(Major rewrite pending - Phase 7)*
 
-**Current Score**: 5.5 / 11 criteria met (50%)
+**Current Score**: 6.5 / 10 criteria met (65%)
+
+**Note**: n8n extension and generic extension manager removed from scope. Existing `use_n8n` boolean field on agents provides n8n integration without requiring a separate plugin system.
 
 ---
 
-**Status**: 🟢 Implementation In Progress - Phase 6 (68.75% complete)
-**Current Phase**: Phase 6 - Extension System (Discord plugin done, extension base pending)
-**Next Milestone**: Complete Phase 6 (extension base class + n8n extension)
+**Status**: 🟢 Implementation In Progress - Phase 6 (79% complete)
+**Current Phase**: Phase 6.5 - Frontend Experience & LLM Provider Management (85% complete)
+**Next Milestone**: Complete Phase 6.5, then proceed to Phase 7 (Documentation)
 **Original Estimated Completion**: November 11, 2025
-**Revised Estimated Completion**: November 8, 2025 (ahead of schedule by 3 days)
+**Revised Estimated Completion**: November 5, 2025 (ahead of schedule by 6 days)
+
+**Scope Changes**:
+- ✅ Phase 6.5 added (Frontend Experience & LLM Provider Management)
+- ❌ n8n plugin removed from scope (use existing `use_n8n` boolean field instead)
+- ❌ Generic extension base class removed from scope (Discord plugin implementation sufficient)
