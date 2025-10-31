@@ -90,264 +90,8 @@ from src.llm import LLMError, LLMConnectionError, LLMTimeoutError
 
 logger = logging.getLogger(__name__)
 
-
-# ============================================================
-# METRICS TRACKER (from discord_bot.py)
-# ============================================================
-
-class MetricsTracker:
-    """Track performance metrics for the application"""
-
-    def __init__(self, max_samples=100):
-        self.max_samples = max_samples
-
-        # Legacy metrics
-        self.latencies = deque(maxlen=max_samples)
-        self.n8n_response_latencies = deque(maxlen=max_samples)  # LLM → first response
-        self.n8n_first_chunk_latencies = deque(maxlen=max_samples)  # LLM → first chunk
-        self.tts_first_byte_latencies = deque(maxlen=max_samples)  # response complete → first audio byte
-
-        # Phase 1: Speech → Transcription
-        self.whisper_connection_latencies = deque(maxlen=max_samples)  # user starts speaking → WhisperX connected
-        self.first_partial_transcript_latencies = deque(maxlen=max_samples)  # WhisperX connected → first partial
-        self.transcription_duration_latencies = deque(maxlen=max_samples)  # first partial → final transcript
-        self.silence_detection_latencies = deque(maxlen=max_samples)  # last audio → silence detected (ms)
-
-        # Phase 2: AI Processing
-        self.ai_generation_latencies = deque(maxlen=max_samples)  # webhook sent → response received
-        self.response_parsing_latencies = deque(maxlen=max_samples)  # response received → text extracted (ms)
-
-        # Phase 3: TTS Generation
-        self.tts_queue_latencies = deque(maxlen=max_samples)  # text ready → TTS request sent
-        self.tts_generation_latencies = deque(maxlen=max_samples)  # TTS sent → all audio downloaded
-
-        # Phase 4: Audio Playback
-        self.audio_playback_latencies = deque(maxlen=max_samples)  # audio ready → playback complete
-        self.ffmpeg_processing_latencies = deque(maxlen=max_samples)  # FFmpeg conversion time (ms)
-
-        # End-to-End
-        self.total_pipeline_latencies = deque(maxlen=max_samples)  # user starts speaking → audio playback complete
-        self.time_to_first_audio_latencies = deque(maxlen=max_samples)  # user starts speaking → first audio byte plays
-
-        # UX Enhancement
-        self.thinking_indicator_durations = deque(maxlen=max_samples)  # thinking sound duration (gap filled)
-
-        # Counters
-        self.transcript_count = 0
-        self.error_count = 0
-        self.total_requests = 0
-        self.start_time = time.time()
-        self.lock = Lock()
-
-    def record_latency(self, latency_ms: float):
-        """Record a latency measurement (overall transcript latency)"""
-        with self.lock:
-            self.latencies.append(latency_ms)
-            self.total_requests += 1
-
-    def record_n8n_response_latency(self, latency_s: float):
-        """Record LLM response latency (time to first response)"""
-        with self.lock:
-            self.n8n_response_latencies.append(latency_s)
-
-    def record_n8n_first_chunk_latency(self, latency_s: float):
-        """Record LLM first chunk latency (time to first text chunk)"""
-        with self.lock:
-            self.n8n_first_chunk_latencies.append(latency_s)
-
-    def record_tts_first_byte_latency(self, latency_s: float):
-        """Record TTS first byte latency (time to first audio byte from Chatterbox)"""
-        with self.lock:
-            self.tts_first_byte_latencies.append(latency_s)
-
-    # Phase 1: Speech → Transcription recording methods
-    def record_whisper_connection_latency(self, latency_s: float):
-        """Record WhisperX connection latency (user starts speaking → connected)"""
-        with self.lock:
-            self.whisper_connection_latencies.append(latency_s)
-
-    def record_first_partial_transcript_latency(self, latency_s: float):
-        """Record first partial transcript latency (WhisperX connected → first partial)"""
-        with self.lock:
-            self.first_partial_transcript_latencies.append(latency_s)
-
-    def record_transcription_duration(self, latency_s: float):
-        """Record transcription duration (first partial → final transcript)"""
-        with self.lock:
-            self.transcription_duration_latencies.append(latency_s)
-
-    def record_silence_detection_latency(self, latency_ms: float):
-        """Record silence detection latency (last audio → silence detected) in ms"""
-        with self.lock:
-            self.silence_detection_latencies.append(latency_ms)
-
-    # Phase 2: AI Processing recording methods
-    def record_ai_generation_latency(self, latency_s: float):
-        """Record AI generation latency (webhook sent → response received)"""
-        with self.lock:
-            self.ai_generation_latencies.append(latency_s)
-
-    def record_response_parsing_latency(self, latency_ms: float):
-        """Record response parsing latency (response received → text extracted) in ms"""
-        with self.lock:
-            self.response_parsing_latencies.append(latency_ms)
-
-    # Phase 3: TTS Generation recording methods
-    def record_tts_queue_latency(self, latency_s: float):
-        """Record TTS queue latency (text ready → TTS request sent)"""
-        with self.lock:
-            self.tts_queue_latencies.append(latency_s)
-
-    def record_tts_generation_latency(self, latency_s: float):
-        """Record TTS generation latency (TTS sent → all audio downloaded)"""
-        with self.lock:
-            self.tts_generation_latencies.append(latency_s)
-
-    # Phase 4: Audio Playback recording methods
-    def record_audio_playback_latency(self, latency_s: float):
-        """Record audio playback latency (audio ready → playback complete)"""
-        with self.lock:
-            self.audio_playback_latencies.append(latency_s)
-
-    def record_ffmpeg_processing_latency(self, latency_ms: float):
-        """Record FFmpeg processing latency (conversion time) in ms"""
-        with self.lock:
-            self.ffmpeg_processing_latencies.append(latency_ms)
-
-    # End-to-End recording methods
-    def record_total_pipeline_latency(self, latency_s: float):
-        """Record total pipeline latency (user starts speaking → audio playback complete)"""
-        with self.lock:
-            self.total_pipeline_latencies.append(latency_s)
-
-    def record_time_to_first_audio(self, latency_s: float):
-        """Record time to first audio (user starts speaking → first audio byte plays)"""
-        with self.lock:
-            self.time_to_first_audio_latencies.append(latency_s)
-
-    def record_thinking_indicator_duration(self, duration_s: float):
-        """Record thinking indicator duration (gap filled between transcript and TTS)"""
-        with self.lock:
-            self.thinking_indicator_durations.append(duration_s)
-
-    def record_transcript(self):
-        """Record a transcript completion"""
-        with self.lock:
-            self.transcript_count += 1
-
-    def record_error(self):
-        """Record an error"""
-        with self.lock:
-            self.error_count += 1
-            self.total_requests += 1
-
-    def _calc_stats(self, latencies_deque) -> dict:
-        """Calculate statistics for a latency deque"""
-        if not latencies_deque:
-            return {"avg": 0, "p50": 0, "p95": 0, "p99": 0}
-
-        sorted_latencies = sorted(latencies_deque)
-        return {
-            "avg": round(statistics.mean(sorted_latencies), 3),
-            "p50": round(statistics.median(sorted_latencies), 3),
-            "p95": round(sorted_latencies[int(len(sorted_latencies) * 0.95)], 3) if len(sorted_latencies) > 1 else round(sorted_latencies[0], 3),
-            "p99": round(sorted_latencies[int(len(sorted_latencies) * 0.99)], 3) if len(sorted_latencies) > 1 else round(sorted_latencies[0], 3)
-        }
-
-    def get_metrics(self) -> dict:
-        """Get current metrics snapshot"""
-        with self.lock:
-            # Overall transcript latency (ms) - legacy
-            if not self.latencies:
-                latency_stats = {"avg": 0, "p50": 0, "p95": 0, "p99": 0}
-            else:
-                sorted_latencies = sorted(self.latencies)
-                latency_stats = {
-                    "avg": int(statistics.mean(sorted_latencies)),
-                    "p50": int(statistics.median(sorted_latencies)),
-                    "p95": int(sorted_latencies[int(len(sorted_latencies) * 0.95)]) if len(sorted_latencies) > 1 else int(sorted_latencies[0]),
-                    "p99": int(sorted_latencies[int(len(sorted_latencies) * 0.99)]) if len(sorted_latencies) > 1 else int(sorted_latencies[0])
-                }
-
-            # Legacy detailed latencies (seconds)
-            n8n_response_stats = self._calc_stats(self.n8n_response_latencies)
-            n8n_first_chunk_stats = self._calc_stats(self.n8n_first_chunk_latencies)
-            tts_first_byte_stats = self._calc_stats(self.tts_first_byte_latencies)
-
-            # Phase 1: Speech → Transcription (seconds)
-            whisper_connection_stats = self._calc_stats(self.whisper_connection_latencies)
-            first_partial_stats = self._calc_stats(self.first_partial_transcript_latencies)
-            transcription_duration_stats = self._calc_stats(self.transcription_duration_latencies)
-
-            # Silence detection in ms - convert to int stats
-            silence_detection_stats = self._calc_stats(self.silence_detection_latencies)
-            if silence_detection_stats["avg"] > 0:
-                silence_detection_stats = {k: int(v) for k, v in silence_detection_stats.items()}
-
-            # Phase 2: AI Processing
-            ai_generation_stats = self._calc_stats(self.ai_generation_latencies)
-            response_parsing_stats = self._calc_stats(self.response_parsing_latencies)
-            if response_parsing_stats["avg"] > 0:
-                response_parsing_stats = {k: int(v) for k, v in response_parsing_stats.items()}
-
-            # Phase 3: TTS Generation (seconds)
-            tts_queue_stats = self._calc_stats(self.tts_queue_latencies)
-            tts_generation_stats = self._calc_stats(self.tts_generation_latencies)
-
-            # Phase 4: Audio Playback (seconds)
-            audio_playback_stats = self._calc_stats(self.audio_playback_latencies)
-            ffmpeg_processing_stats = self._calc_stats(self.ffmpeg_processing_latencies)
-            if ffmpeg_processing_stats["avg"] > 0:
-                ffmpeg_processing_stats = {k: int(v) for k, v in ffmpeg_processing_stats.items()}
-
-            # End-to-End (seconds)
-            total_pipeline_stats = self._calc_stats(self.total_pipeline_latencies)
-            time_to_first_audio_stats = self._calc_stats(self.time_to_first_audio_latencies)
-
-            # UX Enhancement (seconds)
-            thinking_indicator_stats = self._calc_stats(self.thinking_indicator_durations)
-
-            error_rate = self.error_count / self.total_requests if self.total_requests > 0 else 0.0
-            uptime = int(time.time() - self.start_time)
-
-            return {
-                # Legacy metrics
-                "latency": latency_stats,
-                "n8nResponseLatency": n8n_response_stats,
-                "n8nFirstChunkLatency": n8n_first_chunk_stats,
-                "ttsFirstByteLatency": tts_first_byte_stats,
-
-                # Phase 1: Speech → Transcription
-                "whisperConnectionLatency": whisper_connection_stats,
-                "firstPartialTranscriptLatency": first_partial_stats,
-                "transcriptionDuration": transcription_duration_stats,
-                "silenceDetectionLatency": silence_detection_stats,
-
-                # Phase 2: AI Processing
-                "aiGenerationLatency": ai_generation_stats,
-                "responseParsingLatency": response_parsing_stats,
-
-                # Phase 3: TTS Generation
-                "ttsQueueLatency": tts_queue_stats,
-                "ttsGenerationLatency": tts_generation_stats,
-
-                # Phase 4: Audio Playback
-                "audioPlaybackLatency": audio_playback_stats,
-                "ffmpegProcessingLatency": ffmpeg_processing_stats,
-
-                # End-to-End
-                "totalPipelineLatency": total_pipeline_stats,
-                "timeToFirstAudio": time_to_first_audio_stats,
-
-                # UX Enhancement
-                "thinkingIndicatorDuration": thinking_indicator_stats,
-
-                # Counters
-                "transcriptCount": self.transcript_count,
-                "errorRate": error_rate,
-                "uptime": uptime
-            }
-
+# Note: MetricsTracker is imported from src.api to ensure
+# metrics are shared between the plugin and API endpoints
 
 # ============================================================
 # DISCORD PLUGIN
@@ -414,7 +158,9 @@ class DiscordPlugin(PluginBase):
         self.session_timings: Dict[str, Dict[str, float]] = {}  # session_id → {key: timestamp}
 
         # Phase 1: Metrics tracker for performance monitoring
-        self.metrics = MetricsTracker()
+        # Use global metrics tracker shared with API server (lazy import to avoid circular dependency)
+        from src.api import get_metrics_tracker
+        self.metrics = get_metrics_tracker()
 
         # Phase 2: Audio receiver instances (one per voice client)
         self.audio_receivers: Dict[int, 'AudioReceiver'] = {}  # guild_id → AudioReceiver
@@ -1608,6 +1354,10 @@ class DiscordPlugin(PluginBase):
                 logger.info(f"⏱️ LATENCY [total LLM generation]: {llm_duration:.3f}s")
                 self.metrics.record_ai_generation_latency(llm_duration)
 
+                # Store LLM complete time for TTS queue latency metric
+                if session_id in self.session_timings:
+                    self.session_timings[session_id]['t_llm_complete'] = t_llm_complete
+
             except (LLMError, LLMConnectionError, LLMTimeoutError) as e:
                 # LLM providers unavailable - fall back to n8n webhook
                 n8n_webhook_url = os.getenv('N8N_WEBHOOK_URL')
@@ -1647,8 +1397,17 @@ class DiscordPlugin(PluginBase):
                         logger.info(f"⏱️ LATENCY [n8n webhook]: {n8n_duration:.3f}s")
                         self.metrics.record_ai_generation_latency(n8n_duration)
 
+                        # Store LLM complete time for TTS queue latency metric (n8n path)
+                        if session_id in self.session_timings:
+                            self.session_timings[session_id]['t_llm_complete'] = t_n8n_complete
+
                         # Parse n8n response
+                        t_parse_start = time.time()
                         response_data = response.json()
+                        t_parse_end = time.time()
+                        parse_latency_ms = (t_parse_end - t_parse_start) * 1000
+                        self.metrics.record_response_parsing_latency(parse_latency_ms)
+                        logger.info(f"⏱️ LATENCY [response parsing]: {parse_latency_ms:.2f}ms")
 
                         # Handle various n8n response formats
                         # Format 1: {"response": "text"} or {"output": "text"} or {"text": "text"}
@@ -1782,6 +1541,13 @@ class DiscordPlugin(PluginBase):
         try:
             t_tts_start = time.time()
 
+            # Record TTS queue latency (LLM complete → TTS start)
+            if session_id in self.session_timings and 't_llm_complete' in self.session_timings[session_id]:
+                t_llm_complete = self.session_timings[session_id]['t_llm_complete']
+                tts_queue_latency = t_tts_start - t_llm_complete
+                self.metrics.record_tts_queue_latency(tts_queue_latency)
+                logger.info(f"⏱️ LATENCY [TTS queue wait]: {tts_queue_latency:.3f}s")
+
             # Phase 1 integration: Synthesize using TTSService (non-streaming for Discord)
             audio_bytes = await self.tts_service.synthesize_speech(
                 session_id=session_id,
@@ -1809,6 +1575,13 @@ class DiscordPlugin(PluginBase):
             try:
                 t_playback_start = time.time()
 
+                # Record time to first audio (user starts speaking → first audio plays)
+                if session_id in self.session_timings:
+                    t_start = self.session_timings[session_id]['t_start']
+                    time_to_first_audio = t_playback_start - t_start
+                    self.metrics.record_time_to_first_audio(time_to_first_audio)
+                    logger.info(f"⏱️ ⭐⭐⭐ LATENCY [time to first audio]: {time_to_first_audio:.3f}s")
+
                 # Wait for current audio to finish if playing
                 while voice_client.is_playing():
                     await asyncio.sleep(0.1)
@@ -1821,9 +1594,8 @@ class DiscordPlugin(PluginBase):
                 t_ffmpeg_end = time.time()
 
                 ffmpeg_latency_ms = (t_ffmpeg_end - t_ffmpeg_start) * 1000
-                if ffmpeg_latency_ms > 1.0:
-                    logger.info(f"⏱️ LATENCY [FFmpeg processing]: {ffmpeg_latency_ms:.2f}ms")
-                    self.metrics.record_ffmpeg_processing_latency(ffmpeg_latency_ms)
+                logger.info(f"⏱️ LATENCY [FFmpeg processing]: {ffmpeg_latency_ms:.2f}ms")
+                self.metrics.record_ffmpeg_processing_latency(ffmpeg_latency_ms)
 
                 # Play audio
                 voice_client.play(audio_source)

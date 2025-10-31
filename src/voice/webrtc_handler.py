@@ -33,6 +33,7 @@ from src.services.stt_service import STTService
 from src.services.llm_service import LLMService, LLMConfig, ProviderType
 from src.services.tts_service import TTSService
 from src.types.error_events import ServiceErrorEvent
+from src.api.server import get_metrics_tracker
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +71,9 @@ class WebRTCVoiceHandler:
         self.llm_service = LLMService(error_callback=self._handle_service_error)
         self.tts_service = TTSService(error_callback=self._handle_service_error)
 
+        # Get global metrics tracker (shared with Discord plugin)
+        self.metrics = get_metrics_tracker()
+
         # Audio processing
         self.audio_buffer = BytesIO()
         self.opus_decoder = opuslib.Decoder(16000, 1)  # 16kHz mono
@@ -87,6 +91,7 @@ class WebRTCVoiceHandler:
         self.t_start = time.time()
         self.t_first_audio = None
         self.t_first_transcript = None
+        self.t_llm_complete = None  # Track LLM completion for TTS queue metric
 
         logger.info(f"🎙️ WebRTC handler initialized for user={user_id}, session={session_id}")
         logger.info(f"   Silence threshold: {self.silence_threshold_ms}ms")
@@ -414,6 +419,7 @@ class WebRTCVoiceHandler:
 
             # Record latency
             t_llm_complete = time.time()
+            self.t_llm_complete = t_llm_complete  # Store for TTS queue metric
             latency_s = t_llm_complete - t_llm_start
             logger.info(f"⏱️ LATENCY [total LLM generation]: {latency_s:.3f}s")
 
@@ -500,6 +506,13 @@ class WebRTCVoiceHandler:
         """
         try:
             t_tts_start = time.time()
+
+            # Record TTS queue latency (LLM complete → TTS start)
+            if self.t_llm_complete:
+                tts_queue_latency = t_tts_start - self.t_llm_complete
+                self.metrics.record_tts_queue_latency(tts_queue_latency)
+                logger.info(f"⏱️ LATENCY [TTS queue wait]: {tts_queue_latency:.3f}s")
+
             logger.info(f"🔊 Starting TTS synthesis for text: \"{text[:50]}...\"")
 
             # Check TTS health first
@@ -526,6 +539,13 @@ class WebRTCVoiceHandler:
                     t_first_byte = time.time()
                     latency_s = t_first_byte - t_tts_start
                     logger.info(f"⏱️ ⭐ LATENCY [TTS first byte]: {latency_s:.3f}s")
+                    self.metrics.record_tts_first_byte_latency(latency_s)
+
+                    # Record time to first audio (connection start → first audio byte)
+                    time_to_first_audio = t_first_byte - self.t_start
+                    self.metrics.record_time_to_first_audio(time_to_first_audio)
+                    logger.info(f"⏱️ ⭐⭐⭐ LATENCY [time to first audio]: {time_to_first_audio:.3f}s")
+
                     first_byte = False
 
                 # Stream chunk to browser as binary WebSocket frame
