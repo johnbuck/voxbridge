@@ -37,12 +37,6 @@ import { Copy, CircleCheckBig, Activity, XCircle, AlertCircle, Volume2, VolumeX,
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import { ChannelSelectorModal } from '@/components/ChannelSelectorModal';
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from '@/components/ui/tooltip';
 
 // Use for creating new web sessions (can be changed when auth is added)
 const WEB_USER_ID = 'web_user_default';
@@ -1054,66 +1048,55 @@ export function VoxbridgePage() {
                 </div>
               </div>
 
-              {/* Discord Status Bar (Plugin Only) */}
+              {/* Discord Status Bar (Plugin Only) - Two-Row Layout */}
               {activeAgent?.plugins?.discord?.enabled && (
                 <div className="border-b border-border bg-muted/30 px-6 py-3 shrink-0">
-                  <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
-                    <div className="flex items-center gap-3 flex-wrap">
+                  <div className="flex flex-col gap-3">
+                    {/* Row 1: Bot Status */}
+                    <div className="flex items-center justify-between">
+                      {/* Left: Title + Icon */}
                       <div className="flex items-center gap-2">
-                        <span className="text-sm font-medium">Discord Plugin</span>
+                        <MessageSquare className="h-4 w-4 text-purple-400" />
+                        <span className="text-sm font-medium">Discord Bot Plugin</span>
                       </div>
 
-                      {/* Bot Ready Status - Icon with colored status dot */}
-                      <TooltipProvider>
-                        <Tooltip>
-                          <TooltipTrigger asChild>
-                            <div className="relative inline-flex items-center cursor-help">
-                              <MessageSquare className="h-5 w-5 text-purple-400" />
-                              <span className={cn(
-                                "absolute -top-0.5 -right-0.5 h-2.5 w-2.5 rounded-full border-2 border-background",
-                                discordBotReady ? "bg-green-500" : "bg-red-500"
-                              )} />
-                            </div>
-                          </TooltipTrigger>
-                          <TooltipContent>
-                            {discordBotReady ? 'Bot Ready' : 'Bot Not Ready'}
-                          </TooltipContent>
-                        </Tooltip>
-                      </TooltipProvider>
+                      {/* Right: Connection Status Badge */}
+                      {discordBotReady ? (
+                        <Badge variant="outline" className="text-xs bg-green-500/20 text-green-400 border-green-500/50">
+                          <span className="inline-block h-2 w-2 rounded-full bg-green-500 mr-1.5" />
+                          Connected
+                        </Badge>
+                      ) : (
+                        <Badge variant="outline" className="text-xs bg-red-500/20 text-red-400 border-red-500/50">
+                          <span className="inline-block h-2 w-2 rounded-full border-2 border-red-500 mr-1.5" />
+                          Not Ready
+                        </Badge>
+                      )}
+                    </div>
 
-                      {/* Voice Connection Status */}
+                    {/* Row 2: Location & Session Status + Actions */}
+                    <div className="flex items-center justify-between gap-3 flex-wrap">
+                      {/* Left: Location & Session Badges */}
                       {discordInVoice ? (
                         <div className="flex items-center gap-2 flex-wrap">
-                          {/* Guild Name - Icon only with tooltip */}
-                          <TooltipProvider>
-                            <Tooltip>
-                              <TooltipTrigger asChild>
-                                <Badge variant="outline" className="cursor-help px-2 py-1 bg-purple-500/20 border-purple-500/50">
-                                  <Server className="h-3.5 w-3.5 text-purple-400" />
-                                </Badge>
-                              </TooltipTrigger>
-                              <TooltipContent>{discordGuildName}</TooltipContent>
-                            </Tooltip>
-                          </TooltipProvider>
+                          {/* Guild/Server Badge with text */}
+                          <Badge variant="outline" className="text-xs bg-purple-500/20 text-purple-400 border-purple-500/50">
+                            <Server className="h-3 w-3 mr-1" />
+                            {discordGuildName}
+                          </Badge>
 
-                          {/* Channel Name - Keep icon + text */}
+                          {/* Voice Channel Badge with text */}
                           <Badge variant="outline" className="text-xs bg-blue-500/20 text-blue-400 border-blue-500/50">
                             <Volume2 className="h-3 w-3 mr-1" />
                             {discordChannelName}
                           </Badge>
 
-                          {/* Linked to Conversation - Icon only with tooltip */}
+                          {/* Linked Status Badge with text (conditional) */}
                           {activeSessionId && (
-                            <TooltipProvider>
-                              <Tooltip>
-                                <TooltipTrigger asChild>
-                                  <Badge variant="outline" className="cursor-help px-2 py-1 bg-green-500/20 border-green-500/50">
-                                    <Link className="h-3.5 w-3.5 text-green-400" />
-                                  </Badge>
-                                </TooltipTrigger>
-                                <TooltipContent>Linked to conversation</TooltipContent>
-                              </Tooltip>
-                            </TooltipProvider>
+                            <Badge variant="outline" className="text-xs bg-green-500/20 text-green-400 border-green-500/50">
+                              <Link className="h-3 w-3 mr-1" />
+                              Linked
+                            </Badge>
                           )}
                         </div>
                       ) : (
@@ -1121,64 +1104,65 @@ export function VoxbridgePage() {
                           Not in voice
                         </Badge>
                       )}
-                    </div>
 
-                    <div className="flex items-center gap-2 flex-wrap">
-                      {/* Join/Leave Voice Channel */}
-                      {!discordInVoice ? (
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          onClick={handleJoinVoice}
-                          disabled={isJoiningLeaving}
-                        >
-                          {isJoiningLeaving ? (
-                            <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                          ) : (
-                            <LogIn className="h-4 w-4 mr-2" />
-                          )}
-                          Join Voice
-                        </Button>
-                      ) : (
-                        <Button
-                          size="sm"
-                          variant="destructive"
-                          onClick={handleLeaveVoice}
-                          disabled={isJoiningLeaving}
-                        >
-                          {isJoiningLeaving ? (
-                            <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                          ) : (
-                            <LogOut className="h-4 w-4 mr-2" />
-                          )}
-                          Leave Voice
-                        </Button>
-                      )}
-
-                      {/* Speaker Lock */}
-                      {speakerLocked && (
-                        <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-background border border-border">
-                          <Lock className="h-4 w-4 text-yellow-400" />
-                          <span className="text-xs font-medium">Locked:</span>
-                          <Badge variant="outline" className="text-xs bg-yellow-500/20 text-yellow-400 border-yellow-500/50">
-                            {activeSpeaker || 'Unknown'}
-                          </Badge>
+                      {/* Right: Action Buttons */}
+                      <div className="flex items-center gap-2 flex-wrap">
+                        {/* Join/Leave Voice Channel */}
+                        {!discordInVoice ? (
                           <Button
                             size="sm"
-                            variant="ghost"
-                            onClick={handleUnlockSpeaker}
-                            disabled={isUnlocking}
-                            className="h-6 px-2 text-xs"
+                            variant="outline"
+                            onClick={handleJoinVoice}
+                            disabled={isJoiningLeaving}
                           >
-                            {isUnlocking ? (
-                              <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+                            {isJoiningLeaving ? (
+                              <Loader2 className="h-4 w-4 mr-2 animate-spin" />
                             ) : (
-                              <Unlock className="h-3 w-3 mr-1" />
+                              <LogIn className="h-4 w-4 mr-2" />
                             )}
-                            Unlock
+                            Join Voice
                           </Button>
-                        </div>
-                      )}
+                        ) : (
+                          <Button
+                            size="sm"
+                            variant="destructive"
+                            onClick={handleLeaveVoice}
+                            disabled={isJoiningLeaving}
+                          >
+                            {isJoiningLeaving ? (
+                              <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                            ) : (
+                              <LogOut className="h-4 w-4 mr-2" />
+                            )}
+                            Leave Voice
+                          </Button>
+                        )}
+
+                        {/* Speaker Lock */}
+                        {speakerLocked && (
+                          <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-background border border-border">
+                            <Lock className="h-4 w-4 text-yellow-400" />
+                            <span className="text-xs font-medium">Locked:</span>
+                            <Badge variant="outline" className="text-xs bg-yellow-500/20 text-yellow-400 border-yellow-500/50">
+                              {activeSpeaker || 'Unknown'}
+                            </Badge>
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              onClick={handleUnlockSpeaker}
+                              disabled={isUnlocking}
+                              className="h-6 px-2 text-xs"
+                            >
+                              {isUnlocking ? (
+                                <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+                              ) : (
+                                <Unlock className="h-3 w-3 mr-1" />
+                              )}
+                              Unlock
+                            </Button>
+                          </div>
+                        )}
+                      </div>
                     </div>
                   </div>
                 </div>
