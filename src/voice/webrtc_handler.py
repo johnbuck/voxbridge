@@ -32,6 +32,7 @@ from src.services.conversation_service import ConversationService
 from src.services.stt_service import STTService
 from src.services.llm_service import LLMService, LLMConfig, ProviderType
 from src.services.tts_service import TTSService
+from src.types.error_events import ServiceErrorEvent
 
 logger = logging.getLogger(__name__)
 
@@ -63,11 +64,11 @@ class WebRTCVoiceHandler:
         self.session_id = str(session_id)  # Convert UUID to string for service layer
         self.is_active = True
 
-        # Initialize service instances
+        # Initialize service instances with error callback
         self.conversation_service = ConversationService()
-        self.stt_service = STTService()
-        self.llm_service = LLMService()
-        self.tts_service = TTSService()
+        self.stt_service = STTService(error_callback=self._handle_service_error)
+        self.llm_service = LLMService(error_callback=self._handle_service_error)
+        self.tts_service = TTSService(error_callback=self._handle_service_error)
 
         # Audio processing
         self.audio_buffer = BytesIO()
@@ -89,6 +90,30 @@ class WebRTCVoiceHandler:
 
         logger.info(f"🎙️ WebRTC handler initialized for user={user_id}, session={session_id}")
         logger.info(f"   Silence threshold: {self.silence_threshold_ms}ms")
+
+    async def _handle_service_error(self, error_event: ServiceErrorEvent) -> None:
+        """
+        Handle service error events and broadcast to frontend via WebSocket.
+
+        This callback is invoked by STTService, TTSService, and LLMService when errors occur.
+        Errors are logged and forwarded to the WebSocket client for user-friendly display.
+
+        Args:
+            error_event: ServiceErrorEvent from backend service
+        """
+        logger.warning(
+            f"⚠️ Service error: {error_event.service_name} - {error_event.error_type} "
+            f"(severity={error_event.severity})"
+        )
+
+        # Broadcast error to frontend via WebSocket
+        try:
+            await self.websocket.send_json({
+                "type": "service_error",
+                "data": error_event.dict()
+            })
+        except Exception as e:
+            logger.error(f"❌ Failed to broadcast error event to WebSocket: {e}")
 
     async def start(self):
         """

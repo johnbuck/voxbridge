@@ -23,11 +23,13 @@ import os
 import asyncio
 import time
 import logging
-from typing import Dict, List, Optional, Callable, Any
+from typing import Dict, List, Optional, Callable, Any, Awaitable
 from dataclasses import dataclass
 from enum import Enum
 import httpx
 import json
+
+from src.types.error_events import ServiceErrorEvent, ServiceErrorType
 
 logger = logging.getLogger(__name__)
 
@@ -151,7 +153,8 @@ class TTSService:
         chatterbox_url: Optional[str] = None,
         default_voice_id: Optional[str] = None,
         timeout_s: Optional[float] = None,
-        chunk_size: Optional[int] = None
+        chunk_size: Optional[int] = None,
+        error_callback: Optional[Callable[[ServiceErrorEvent], Awaitable[None]]] = None
     ):
         """
         Initialize TTSService.
@@ -161,6 +164,7 @@ class TTSService:
             default_voice_id: Override default voice ID
             timeout_s: Override default timeout
             chunk_size: Override default chunk size
+            error_callback: Optional async callback for error events
         """
         # Initialize Chatterbox URL and validate format
         base_url = chatterbox_url or CHATTERBOX_URL
@@ -177,6 +181,7 @@ class TTSService:
         self.default_voice_id = default_voice_id or CHATTERBOX_VOICE_ID
         self.timeout = timeout_s or TTS_TIMEOUT_S
         self.chunk_size = chunk_size or TTS_STREAM_CHUNK_SIZE
+        self.error_callback = error_callback
 
         # HTTP client (lazy initialized)
         self._client: Optional[httpx.AsyncClient] = None
@@ -511,7 +516,9 @@ class TTSService:
 
         except httpx.HTTPStatusError as e:
             error_msg = f"HTTP {e.response.status_code}"
-            logger.error(f"❌ Chatterbox HTTP error: session={session_id}, status={e.response.status_code}", exc_info=True)
+            tech_details = f"Chatterbox HTTP error: status={e.response.status_code}, url={self.chatterbox_url}"
+            logger.error(f"❌ {tech_details}", exc_info=True)
+
             self._record_metrics(
                 session_id=session_id,
                 text_length=len(text),
@@ -523,10 +530,35 @@ class TTSService:
                 success=False,
                 error=error_msg
             )
+
+            # Emit error event if callback registered
+            if self.error_callback:
+                # Determine error type based on status code
+                if e.response.status_code == 503:
+                    error_type = ServiceErrorType.TTS_SERVICE_UNAVAILABLE
+                    user_msg = "Voice synthesis service unavailable. Response will be text-only."
+                elif e.response.status_code == 404:
+                    error_type = ServiceErrorType.TTS_INVALID_VOICE
+                    user_msg = f"Voice '{voice_id}' not found. Using default voice."
+                else:
+                    error_type = ServiceErrorType.TTS_SYNTHESIS_FAILED
+                    user_msg = "Voice synthesis failed. Response will be text-only."
+
+                await self.error_callback(ServiceErrorEvent(
+                    service_name="chatterbox",
+                    error_type=error_type,
+                    user_message=user_msg,
+                    technical_details=tech_details,
+                    session_id=session_id,
+                    severity="warning"
+                ))
+
             return b''
 
         except httpx.TimeoutException:
-            logger.error(f"❌ Chatterbox TTS timeout: session={session_id}", exc_info=True)
+            tech_details = f"Chatterbox TTS timeout: session={session_id}, timeout={self.timeout}s"
+            logger.error(f"❌ {tech_details}", exc_info=True)
+
             self._record_metrics(
                 session_id=session_id,
                 text_length=len(text),
@@ -538,6 +570,19 @@ class TTSService:
                 success=False,
                 error="Timeout"
             )
+
+            # Emit error event if callback registered
+            if self.error_callback:
+                await self.error_callback(ServiceErrorEvent(
+                    service_name="chatterbox",
+                    error_type=ServiceErrorType.TTS_TIMEOUT,
+                    user_message="Voice synthesis timed out. Response will be text-only.",
+                    technical_details=tech_details,
+                    session_id=session_id,
+                    severity="warning",
+                    retry_suggested=True
+                ))
+
             return b''
 
         except asyncio.CancelledError:
@@ -545,7 +590,9 @@ class TTSService:
             raise
 
         except Exception as e:
-            logger.error(f"❌ TTS stream error: session={session_id}, error={e}", exc_info=True)
+            tech_details = f"TTS stream error: session={session_id}, error={e}"
+            logger.error(f"❌ {tech_details}", exc_info=True)
+
             self._record_metrics(
                 session_id=session_id,
                 text_length=len(text),
@@ -557,6 +604,18 @@ class TTSService:
                 success=False,
                 error=str(e)
             )
+
+            # Emit error event if callback registered
+            if self.error_callback:
+                await self.error_callback(ServiceErrorEvent(
+                    service_name="chatterbox",
+                    error_type=ServiceErrorType.TTS_SYNTHESIS_FAILED,
+                    user_message="Voice synthesis failed. Response will be text-only.",
+                    technical_details=tech_details,
+                    session_id=session_id,
+                    severity="warning"
+                ))
+
             return b''
 
     def _record_metrics(

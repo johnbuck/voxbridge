@@ -2,10 +2,12 @@
  * WebRTC Audio Capture Hook
  * Handles microphone access, Opus encoding, and WebSocket streaming
  * VoxBridge 2.0 Phase 4: Web Voice Interface
+ * Phase 2: Error Handling Integration
  */
 
 import { useState, useCallback, useRef, useEffect } from 'react';
 import type { WebRTCAudioMessage, ConnectionState } from '@/types/webrtc';
+import type { ServiceErrorEvent } from '@/types/errors';
 
 // WebSocket URL configuration (same as useWebSocket)
 const getWebSocketUrl = () => {
@@ -23,6 +25,7 @@ export interface UseWebRTCAudioOptions {
   onMessage?: (message: WebRTCAudioMessage) => void;
   onBinaryMessage?: (data: Uint8Array) => void;  // NEW: Binary audio chunks
   onError?: (error: string) => void;
+  onServiceError?: (error: ServiceErrorEvent) => void; // NEW: Service error events
   autoStart?: boolean;
   timeslice?: number; // milliseconds between audio chunks
 }
@@ -43,6 +46,7 @@ export function useWebRTCAudio(options: UseWebRTCAudioOptions): UseWebRTCAudioRe
     onMessage,
     onBinaryMessage,
     onError,
+    onServiceError,
     autoStart = false,
     timeslice = 100, // 100ms chunks for low latency
   } = options;
@@ -110,6 +114,12 @@ export function useWebRTCAudio(options: UseWebRTCAudioOptions): UseWebRTCAudioRe
             const message: WebRTCAudioMessage = JSON.parse(event.data);
             console.log('[WebRTC] Received message:', message.event, message.data.text?.substring(0, 50));
 
+            // Handle service error events (Phase 2)
+            if (message.event === 'service_error' && onServiceError) {
+              onServiceError(message.data as any as ServiceErrorEvent);
+              return;
+            }
+
             if (onMessage) {
               onMessage(message);
             }
@@ -159,7 +169,7 @@ export function useWebRTCAudio(options: UseWebRTCAudioOptions): UseWebRTCAudioRe
         onError('Failed to connect to voice server');
       }
     }
-  }, [sessionId, isMuted, onMessage, onError]);
+  }, [sessionId, isMuted, onMessage, onBinaryMessage, onServiceError, onError]);
 
   // Disconnect WebSocket
   const disconnectWebSocket = useCallback(() => {

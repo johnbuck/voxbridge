@@ -23,7 +23,16 @@ import { Badge } from '@/components/ui/badge';
 import { useToastHelpers } from '@/components/ui/toast';
 import { useWebRTCAudio } from '@/hooks/useWebRTCAudio';
 import { useAudioPlayback } from '@/hooks/useAudioPlayback';
+import { useServiceErrors } from '@/hooks/useServiceErrors';
 import type { WebRTCAudioMessage } from '@/types/webrtc';
+import type { ServiceErrorEvent } from '@/types/errors';
+import {
+  STT_CONNECTION_FAILED,
+  LLM_PROVIDER_FAILED,
+  LLM_TIMEOUT,
+  TTS_SYNTHESIS_FAILED,
+  TTS_SERVICE_UNAVAILABLE,
+} from '@/types/errors';
 import { Copy, CircleCheckBig, Activity, XCircle, AlertCircle, Volume2, VolumeX, Menu, MessageSquare, Brain, Lock, Unlock, Loader2, LogIn, LogOut } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
@@ -69,6 +78,26 @@ export function VoxbridgePage() {
   const listeningStartTimeRef = useRef<number | null>(null);
   const aiStartTimeRef = useRef<number | null>(null);
   const scrollAreaRef = useRef<HTMLDivElement>(null);
+
+  // Service error handling
+  const { handleServiceError } = useServiceErrors({
+    onError: (error) => {
+      // Custom error handling logic
+      if (error.error_type === STT_CONNECTION_FAILED) {
+        // Stop recording if STT connection fails
+        setIsListening(false);
+        setVoicePartialTranscript('');
+      } else if (error.error_type === LLM_PROVIDER_FAILED || error.error_type === LLM_TIMEOUT) {
+        // Stop AI generating indicator if LLM fails
+        setIsVoiceAIGenerating(false);
+        setIsStreaming(false);
+        setStreamingChunks([]);
+      } else if (error.error_type === TTS_SYNTHESIS_FAILED || error.error_type === TTS_SERVICE_UNAVAILABLE) {
+        // Clear TTS audio buffer if synthesis fails
+        audioPlayback.stop();
+      }
+    }
+  });
 
   // Poll detailed status
   const { data: status } = useQuery({
@@ -283,6 +312,7 @@ export function VoxbridgePage() {
     onMessage: handleWebRTCAudioMessage,
     onBinaryMessage: handleBinaryMessage,
     onError: handleAudioError,
+    onServiceError: handleServiceError, // Phase 2: Service error handling
     autoStart: false,
     timeslice: 100,
   });
@@ -290,6 +320,12 @@ export function VoxbridgePage() {
 
   // Handle WebSocket messages (Discord conversation monitoring - for metrics updates)
   const handleMessage = useCallback((message: any) => {
+    // VoxBridge 2.0: Handle service error events
+    if (message.event === 'service_error') {
+      handleServiceError(message.data as ServiceErrorEvent);
+      return;
+    }
+
     // VoxBridge 2.0: Handle agent CRUD events (real-time updates)
     if (message.event === 'agent_created' || message.event === 'agent_updated' || message.event === 'agent_deleted') {
       queryClient.invalidateQueries({ queryKey: ['agents'] });
@@ -402,7 +438,7 @@ export function VoxbridgePage() {
       // Legacy event handler - refetch metrics after AI response completes
       queryClient.invalidateQueries({ queryKey: ['metrics'] });
     }
-  }, [queryClient]);
+  }, [queryClient, handleServiceError, activeSessionId]);
 
   // WebSocket for real-time updates (Discord conversation monitoring)
   const { isConnected: wsConnected } = useWebSocket('/ws/events', {

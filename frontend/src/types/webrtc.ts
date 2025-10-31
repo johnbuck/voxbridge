@@ -18,6 +18,7 @@ export type WebRTCAudioEventType =
   | 'ai_response_complete'
   | 'tts_start'
   | 'tts_complete'
+  | 'service_error'  // Phase 2: Service error events
   | 'error';
 
 /**

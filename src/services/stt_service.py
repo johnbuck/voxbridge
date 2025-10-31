@@ -23,11 +23,13 @@ import os
 import asyncio
 import time
 import logging
-from typing import Dict, Optional, Callable, Any
+from typing import Dict, Optional, Callable, Any, Awaitable
 from dataclasses import dataclass
 from enum import Enum
 import websockets
 import json
+
+from src.types.error_events import ServiceErrorEvent, ServiceErrorType
 
 logger = logging.getLogger(__name__)
 
@@ -112,7 +114,8 @@ class STTService:
         default_whisper_url: Optional[str] = None,
         max_retries: int = WHISPER_RECONNECT_MAX_RETRIES,
         backoff_multiplier: float = WHISPER_RECONNECT_BACKOFF,
-        timeout_s: float = WHISPER_TIMEOUT_S
+        timeout_s: float = WHISPER_TIMEOUT_S,
+        error_callback: Optional[Callable[[ServiceErrorEvent], Awaitable[None]]] = None
     ):
         """
         Initialize STTService.
@@ -122,11 +125,13 @@ class STTService:
             max_retries: Maximum reconnection attempts
             backoff_multiplier: Exponential backoff multiplier
             timeout_s: Operation timeout in seconds
+            error_callback: Optional async callback for error events
         """
         self.default_whisper_url = default_whisper_url or WHISPER_SERVER_URL
         self.max_retries = max_retries
         self.backoff_multiplier = backoff_multiplier
         self.timeout_s = timeout_s
+        self.error_callback = error_callback
 
         # Connection pool: session_id -> WhisperXConnection
         self.connections: Dict[str, WhisperXConnection] = {}
@@ -218,7 +223,20 @@ class STTService:
                 await connection.websocket.send(close_message)
                 await connection.websocket.close()
             except Exception as e:
-                logger.error(f"❌ Error closing STT WebSocket: {e}")
+                error_msg = f"Error closing STT WebSocket: {e}"
+                logger.error(f"❌ {error_msg}")
+
+                # Emit error event if callback registered (non-critical, just a warning)
+                if self.error_callback:
+                    await self.error_callback(ServiceErrorEvent(
+                        service_name="whisperx",
+                        error_type=ServiceErrorType.STT_WEBSOCKET_CLOSED,
+                        user_message="Speech recognition cleanup warning (non-critical).",
+                        technical_details=error_msg,
+                        session_id=session_id,
+                        severity="warning",
+                        retry_suggested=False
+                    ))
 
         # Remove from pool
         del self.connections[session_id]
@@ -255,8 +273,21 @@ class STTService:
             return True
 
         except Exception as e:
-            logger.error(f"❌ Error sending audio to STT: {e}")
+            error_msg = f"Error sending audio to STT: {e}"
+            logger.error(f"❌ {error_msg}")
             connection.status = ConnectionStatus.DISCONNECTED
+
+            # Emit error event if callback registered
+            if self.error_callback:
+                await self.error_callback(ServiceErrorEvent(
+                    service_name="whisperx",
+                    error_type=ServiceErrorType.STT_CONNECTION_FAILED,
+                    user_message="Speech recognition connection lost. Reconnecting...",
+                    technical_details=error_msg,
+                    session_id=session_id,
+                    severity="warning",
+                    retry_suggested=True
+                ))
 
             # Attempt reconnect in background
             asyncio.create_task(self._attempt_reconnect(session_id))
@@ -314,7 +345,21 @@ class STTService:
             return True
 
         except Exception as e:
-            logger.error(f"❌ Error sending finalize message to STT: {e}")
+            error_msg = f"Error sending finalize message to STT: {e}"
+            logger.error(f"❌ {error_msg}")
+
+            # Emit error event if callback registered
+            if self.error_callback:
+                await self.error_callback(ServiceErrorEvent(
+                    service_name="whisperx",
+                    error_type=ServiceErrorType.STT_TRANSCRIPTION_FAILED,
+                    user_message="Speech recognition failed. Please speak again.",
+                    technical_details=error_msg,
+                    session_id=session_id,
+                    severity="warning",
+                    retry_suggested=True
+                ))
+
             return False
 
     async def is_connected(self, session_id: str) -> bool:

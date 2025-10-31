@@ -14,7 +14,7 @@ Design Patterns:
 import logging
 import os
 import time
-from typing import Dict, List, Optional, Callable, AsyncIterator
+from typing import Dict, List, Optional, Callable, AsyncIterator, Awaitable
 from dataclasses import dataclass
 from enum import Enum
 
@@ -29,6 +29,7 @@ from src.llm import (
     LLMConnectionError,
     LLMAuthenticationError,
 )
+from src.types.error_events import ServiceErrorEvent, ServiceErrorType
 
 logger = logging.getLogger(__name__)
 
@@ -79,6 +80,7 @@ class LLMService:
         timeout_s: float = 60.0,
         max_retries: int = 2,
         db_provider_config: Optional[dict] = None,
+        error_callback: Optional[Callable[[ServiceErrorEvent], Awaitable[None]]] = None
     ):
         """
         Initialize LLM service with provider configuration.
@@ -98,6 +100,7 @@ class LLMService:
                 - provider_type: str (openrouter, local, etc.)
                 - api_key: str (decrypted API key)
                 - base_url: str (API endpoint)
+            error_callback: Optional async callback for error events
         """
         # Configuration
         # Priority: db_provider_config > function params > env vars
@@ -131,6 +134,7 @@ class LLMService:
         ).lower() in ("true", "1", "yes")
         self.timeout_s = timeout_s
         self.max_retries = max_retries
+        self.error_callback = error_callback
 
         # Provider cache (shared instances for connection pooling)
         self._providers: Dict[ProviderType, Optional[LLMProvider]] = {}
@@ -311,21 +315,57 @@ class LLMService:
 
         except (LLMTimeoutError, LLMRateLimitError, LLMConnectionError) as e:
             # Transient errors - consider fallback
+            error_type_str = type(e).__name__
+            tech_details = f"Primary provider failed: {error_type_str}: {e}"
             logger.warning(
-                f"🤖 LLM Service [{session_id[:8]}]: Primary provider failed: {e}"
+                f"🤖 LLM Service [{session_id[:8]}]: {tech_details}"
             )
+
+            # Determine error type for event
+            if isinstance(e, LLMRateLimitError):
+                svc_error_type = ServiceErrorType.LLM_RATE_LIMITED
+            elif isinstance(e, LLMTimeoutError):
+                svc_error_type = ServiceErrorType.LLM_TIMEOUT
+            else:
+                svc_error_type = ServiceErrorType.LLM_PROVIDER_FAILED
 
             # Check if fallback is enabled and available
             if not self.fallback_enabled:
                 logger.error(
                     f"🤖 LLM Service [{session_id[:8]}]: Fallback disabled, failing"
                 )
+
+                # Emit error event (no fallback available)
+                if self.error_callback:
+                    await self.error_callback(ServiceErrorEvent(
+                        service_name="llm_provider",
+                        error_type=svc_error_type,
+                        user_message="AI response failed. Please try again.",
+                        technical_details=f"{tech_details} (fallback disabled)",
+                        session_id=session_id,
+                        severity="error",
+                        retry_suggested=True
+                    ))
+
                 raise
 
             if primary_provider_type == ProviderType.LOCAL:
                 logger.error(
                     f"🤖 LLM Service [{session_id[:8]}]: No fallback for local provider"
                 )
+
+                # Emit error event (no fallback available for local)
+                if self.error_callback:
+                    await self.error_callback(ServiceErrorEvent(
+                        service_name="llm_provider",
+                        error_type=svc_error_type,
+                        user_message="Local AI failed. Please try again.",
+                        technical_details=f"{tech_details} (no fallback for local provider)",
+                        session_id=session_id,
+                        severity="error",
+                        retry_suggested=True
+                    ))
+
                 raise
 
             # Try fallback to local
@@ -334,6 +374,19 @@ class LLMService:
                 logger.error(
                     f"🤖 LLM Service [{session_id[:8]}]: Fallback provider not available"
                 )
+
+                # Emit error event (fallback not available)
+                if self.error_callback:
+                    await self.error_callback(ServiceErrorEvent(
+                        service_name="llm_provider",
+                        error_type=svc_error_type,
+                        user_message="AI response failed. Please try again.",
+                        technical_details=f"{tech_details} (fallback provider not available)",
+                        session_id=session_id,
+                        severity="error",
+                        retry_suggested=True
+                    ))
+
                 raise LLMError(
                     f"Primary provider failed and fallback is unavailable: {e}"
                 ) from e
@@ -341,6 +394,18 @@ class LLMService:
             logger.info(
                 f"🤖 LLM Service [{session_id[:8]}]: Falling back to local LLM"
             )
+
+            # Emit warning event (fallback triggered)
+            if self.error_callback:
+                await self.error_callback(ServiceErrorEvent(
+                    service_name="llm_provider",
+                    error_type=ServiceErrorType.LLM_FALLBACK_TRIGGERED,
+                    user_message="Primary AI unavailable. Using local AI as fallback.",
+                    technical_details=f"{tech_details} (falling back to local LLM)",
+                    session_id=session_id,
+                    severity="warning",
+                    retry_suggested=False
+                ))
 
             try:
                 # Update request model to local model (if needed)
@@ -360,24 +425,64 @@ class LLMService:
                 )
 
             except Exception as fallback_error:
+                tech_details_fallback = f"Both primary and fallback providers failed. Primary: {e}, Fallback: {fallback_error}"
                 logger.error(
                     f"🤖 LLM Service [{session_id[:8]}]: Fallback also failed: {fallback_error}"
                 )
-                raise LLMError(
-                    f"Both primary and fallback providers failed. "
-                    f"Primary: {e}, Fallback: {fallback_error}"
-                ) from fallback_error
 
-        except LLMAuthenticationError:
+                # Emit error event (both providers failed)
+                if self.error_callback:
+                    await self.error_callback(ServiceErrorEvent(
+                        service_name="llm_provider",
+                        error_type=ServiceErrorType.LLM_PROVIDER_FAILED,
+                        user_message="AI response failed. Both primary and fallback providers unavailable.",
+                        technical_details=tech_details_fallback,
+                        session_id=session_id,
+                        severity="critical",
+                        retry_suggested=True
+                    ))
+
+                raise LLMError(tech_details_fallback) from fallback_error
+
+        except LLMAuthenticationError as e:
             # Don't attempt fallback on auth errors
+            tech_details = f"LLM authentication failed: {e}"
+            logger.error(f"🤖 LLM Service [{session_id[:8]}]: {tech_details}")
+
+            # Emit error event (authentication failed)
+            if self.error_callback:
+                await self.error_callback(ServiceErrorEvent(
+                    service_name="llm_provider",
+                    error_type=ServiceErrorType.LLM_AUTHENTICATION_FAILED,
+                    user_message="AI authentication failed. Please check API key configuration.",
+                    technical_details=tech_details,
+                    session_id=session_id,
+                    severity="error",
+                    retry_suggested=False
+                ))
+
             raise
 
         except Exception as e:
             # Unexpected errors
+            tech_details = f"Unexpected LLM error: {e}"
             logger.error(
-                f"🤖 LLM Service [{session_id[:8]}]: Unexpected error: {e}"
+                f"🤖 LLM Service [{session_id[:8]}]: {tech_details}"
             )
-            raise LLMError(f"Unexpected LLM error: {e}") from e
+
+            # Emit error event (unexpected error)
+            if self.error_callback:
+                await self.error_callback(ServiceErrorEvent(
+                    service_name="llm_provider",
+                    error_type=ServiceErrorType.LLM_INVALID_RESPONSE,
+                    user_message="AI response failed due to unexpected error.",
+                    technical_details=tech_details,
+                    session_id=session_id,
+                    severity="error",
+                    retry_suggested=True
+                ))
+
+            raise LLMError(tech_details) from e
 
     async def _generate_with_provider(
         self,
