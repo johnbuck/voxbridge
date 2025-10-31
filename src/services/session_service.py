@@ -69,6 +69,33 @@ class SessionService:
             return session
 
     @staticmethod
+    async def get_all_sessions(
+        active_only: bool = False,
+        limit: int = 50,
+    ) -> List[Session]:
+        """
+        Get all sessions across all users.
+
+        Args:
+            active_only: If True, only return active sessions
+            limit: Maximum number of sessions to return
+
+        Returns:
+            List of Session instances (most recent first)
+        """
+        async with get_db_session() as db:
+            query = select(Session)
+
+            if active_only:
+                query = query.where(Session.active == True)
+
+            query = query.order_by(desc(Session.started_at)).limit(limit)
+
+            result = await db.execute(query)
+            sessions = result.scalars().all()
+            return list(sessions)
+
+    @staticmethod
     async def get_user_sessions(
         user_id: str,
         active_only: bool = False,

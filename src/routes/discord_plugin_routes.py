@@ -13,7 +13,7 @@ Endpoints:
 - GET /api/plugins/discord/voice/status/{agent_id} - Get voice status for an agent
 """
 
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 from uuid import UUID
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
@@ -32,6 +32,7 @@ class VoiceJoinRequest(BaseModel):
     agent_id: str
     guild_id: int
     channel_id: int
+    session_id: Optional[str] = None  # Phase 6.X: Optional session for unified conversation threading
 
 
 class VoiceLeaveRequest(BaseModel):
@@ -50,9 +51,10 @@ async def join_voice_channel(request: VoiceJoinRequest) -> Dict[str, Any]:
     Join Discord voice channel for an agent.
 
     Phase 3: Plugin-scoped voice control
+    Phase 6.X: Unified Conversation Threading - accepts optional session_id
 
     Args:
-        request: VoiceJoinRequest with agent_id, guild_id, channel_id
+        request: VoiceJoinRequest with agent_id, guild_id, channel_id, session_id (optional)
 
     Returns:
         Dict with connection status and metadata
@@ -68,7 +70,8 @@ async def join_voice_channel(request: VoiceJoinRequest) -> Dict[str, Any]:
         result = await plugin_manager.discord_join_voice(
             agent_id,
             request.guild_id,
-            request.channel_id
+            request.channel_id,
+            request.session_id  # Pass through session_id
         )
 
         return result

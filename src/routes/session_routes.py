@@ -138,27 +138,34 @@ async def create_session(request: SessionCreateRequest):
     "",
     response_model=List[SessionResponse],
     summary="List Sessions",
-    description="Get all sessions for a user"
+    description="Get all sessions (optionally filtered by user)"
 )
 async def list_sessions(
-    user_id: str,
+    user_id: Optional[str] = None,
     active_only: bool = False,
     limit: int = 50
 ):
     """
-    Get all sessions for a user.
+    Get all sessions (optionally filtered by user).
 
     Query parameters:
-    - user_id: User identifier (required)
+    - user_id: User identifier (optional - if not provided, returns all sessions)
     - active_only: Only return active sessions (default: false)
     - limit: Maximum number of sessions to return (default: 50)
     """
     try:
-        sessions = await SessionService.get_user_sessions(
-            user_id=user_id,
-            active_only=active_only,
-            limit=limit
-        )
+        # Fetch all sessions or user-specific sessions
+        if user_id:
+            sessions = await SessionService.get_user_sessions(
+                user_id=user_id,
+                active_only=active_only,
+                limit=limit
+            )
+        else:
+            sessions = await SessionService.get_all_sessions(
+                active_only=active_only,
+                limit=limit
+            )
 
         # Get message count for each session
         responses = []

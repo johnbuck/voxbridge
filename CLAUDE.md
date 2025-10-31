@@ -8,6 +8,28 @@ For comprehensive architecture and patterns, see [AGENTS.md](./AGENTS.md).
 
 **Active implementation plans** are in `docs/`. See [ARCHITECTURE.md](ARCHITECTURE.md) for complete index.
 
+### ⚠️ Critical Architecture Decision: Single Unified Voice Interface
+
+**VoxBridge uses ONE unified interface at the root path ("/") for ALL voice interactions:**
+
+- **VoxbridgePage.tsx** (`frontend/src/pages/VoxbridgePage.tsx`) is the ONLY voice interface page
+- Handles BOTH Discord voice chat AND browser WebRTC voice chat in a unified experience
+- Unified conversation management with real-time animations (STT waiting indicators, AI generating indicators)
+- Real-time WebSocket connections:
+  - `/ws/events` - Discord events (partial_transcript, final_transcript, ai_response_chunk, ai_response_complete)
+  - `/ws/voice` - Browser WebRTC audio streaming
+- Both Discord and WebRTC events trigger the SAME animation states for a consistent UX
+
+**❌ NO separate `/voice-chat` route should EVER exist:**
+- VoiceChatPage.tsx was obsolete and has been deleted
+- All voice features are consolidated in VoxbridgePage.tsx
+- This prevents user confusion and code duplication
+
+**Navigation Structure:**
+- `/` - VoxbridgePage (Analytics + Voice Chat + Conversation Management)
+- `/agents` - AgentsPage (AI Agent Management)
+- `/settings` - SettingsPage (Service Configuration)
+
 ### ✅ Implemented Features (October 2025)
 
 **Frontend Dashboard** (Port 4903):

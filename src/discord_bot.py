@@ -996,7 +996,9 @@ async def get_detailed_status(llm_service, tts_service, stt_service, conversatio
         }
 
     # Get service health
-    llm_provider_status = await llm_service.get_provider_status()
+    # Import here to avoid circular dependency
+    from src.services.llm_service import get_global_provider_status
+    llm_provider_status = await get_global_provider_status()  # Check both database AND env vars
     tts_health = await tts_service.test_tts_health()
     stt_metrics = await stt_service.get_metrics()
 

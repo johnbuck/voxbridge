@@ -1,6 +1,8 @@
 ---
-agent_name: frontend-developer
+name: frontend-developer
 description: Builds React UI components, WebRTC interfaces, and frontend integrations for VoxBridge 2.0
+model: sonnet
+color: blue
 ---
 
 # Frontend Developer Agent

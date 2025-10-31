@@ -14,7 +14,7 @@ This package contains service layer implementations for VoxBridge 2.0:
 
 from .agent_service import AgentService
 from .conversation_service import ConversationService
-from .llm_service import LLMService, get_llm_service
+from .llm_service import LLMService, get_llm_service, get_llm_service_for_agent
 from .stt_service import STTService, get_stt_service
 from .tts_service import TTSService, get_tts_service
 from .plugin_manager import PluginManager, get_plugin_manager
@@ -26,6 +26,7 @@ __all__ = [
     "ConversationService",
     "LLMService",
     "get_llm_service",
+    "get_llm_service_for_agent",
     "STTService",
     "get_stt_service",
     "TTSService",

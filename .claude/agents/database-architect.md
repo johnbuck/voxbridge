@@ -1,6 +1,8 @@
 ---
-agent_name: database-architect
-description: Designs PostgreSQL schemas, creates migrations, optimizes queries for VoxBridge 2.0
+name: database-architect
+description: Designs PostgreSQL schemas, creates migrations, optimizes queries for software project
+model: sonnet
+color: blue
 ---
 
 # Database Architect Agent

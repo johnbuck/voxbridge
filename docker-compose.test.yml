@@ -36,7 +36,7 @@ services:
       - DISCORD_TOKEN=test_token_12345678901234567890
       - WHISPER_SERVER_URL=ws://mock-whisperx:4901
       - N8N_WEBHOOK_URL=http://mock-n8n:8888/webhook/test
-      - CHATTERBOX_URL=http://mock-chatterbox:4123/v1
+      - CHATTERBOX_URL=http://mock-chatterbox:4123
       - CHATTERBOX_VOICE_ID=test_voice
       - SILENCE_THRESHOLD_MS=500
       - MAX_SPEAKING_TIME_MS=10000

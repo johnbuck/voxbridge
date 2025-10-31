@@ -585,8 +585,8 @@ async def test_chatterbox_health_check_success():
     mock_voice_client = MagicMock()
     handler = StreamingResponseHandler(mock_voice_client, "user_123")
 
-    # Set Chatterbox URL with /v1 suffix
-    handler.chatterbox_url = "http://chatterbox-tts:4123/v1"
+    # Set Chatterbox URL (base URL without /v1 suffix)
+    handler.chatterbox_url = "http://chatterbox-tts:4123"
 
     with patch('httpx.AsyncClient') as MockClient:
         mock_client = MagicMock()

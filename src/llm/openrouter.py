@@ -5,17 +5,12 @@ OpenRouter provides access to multiple LLM providers (Anthropic, OpenAI, Google,
 through a unified API with pay-per-use pricing.
 """
 
+import asyncio
 import json
 import logging
 from typing import AsyncIterator, Optional
 
 import httpx
-from tenacity import (
-    retry,
-    stop_after_attempt,
-    wait_exponential,
-    retry_if_exception_type,
-)
 
 from src.llm.base import LLMProvider
 from src.llm.types import (
@@ -145,25 +140,24 @@ class OpenRouterProvider(LLMProvider):
             # Don't close client here - it's reused across requests
             pass
 
-    @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=2, max=10),
-        retry=retry_if_exception_type((httpx.RequestError, httpx.TimeoutException)),
-        reraise=True,
-    )
     async def _make_request_with_retry(
         self,
         url: str,
         headers: dict,
         payload: dict,
+        attempt: int = 1,
     ) -> httpx.Response:
         """
-        Make POST request with retry logic for transient errors.
+        Make streaming POST request with manual retry logic for transient errors.
+
+        Note: httpx.AsyncClient.post() doesn't support stream parameter.
+        Instead, we use client.stream() context manager for SSE streaming.
 
         Args:
             url: API endpoint URL
             headers: Request headers
             payload: JSON payload
+            attempt: Current attempt number (for retry logic)
 
         Returns:
             httpx.Response: Streaming response
@@ -173,13 +167,28 @@ class OpenRouterProvider(LLMProvider):
             httpx.TimeoutException: Timeout
             httpx.RequestError: Connection error
         """
-        response = await self.client.post(
-            url,
-            headers=headers,
-            json=payload,
-        )
-        response.raise_for_status()
-        return response
+        try:
+            # Use stream() context manager for SSE streaming
+            # This returns an httpx.Response with streaming enabled
+            request = self.client.build_request(
+                "POST",
+                url,
+                headers=headers,
+                json=payload,
+            )
+            response = await self.client.send(request, stream=True)
+            response.raise_for_status()
+            return response
+
+        except (httpx.RequestError, httpx.TimeoutException) as e:
+            if attempt < 3:
+                wait_time = min(2 ** attempt, 10)  # Exponential backoff: 2, 4, 8 seconds
+                logger.warning(f"🤖 LLM [openrouter]: Request failed (attempt {attempt}/3), retrying in {wait_time}s: {e}")
+                await asyncio.sleep(wait_time)
+                return await self._make_request_with_retry(url, headers, payload, attempt + 1)
+            else:
+                logger.error(f"🤖 LLM [openrouter]: All retry attempts exhausted: {e}")
+                raise
 
     async def _parse_sse_stream(self, response: httpx.Response) -> AsyncIterator[str]:
         """

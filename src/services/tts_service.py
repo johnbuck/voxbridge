@@ -162,7 +162,18 @@ class TTSService:
             timeout_s: Override default timeout
             chunk_size: Override default chunk size
         """
-        self.chatterbox_url = chatterbox_url or CHATTERBOX_URL
+        # Initialize Chatterbox URL and validate format
+        base_url = chatterbox_url or CHATTERBOX_URL
+
+        # Strip /v1 suffix if present (backward compatibility)
+        if base_url.endswith('/v1'):
+            logger.warning(
+                f"⚠️ CHATTERBOX_URL should not include '/v1' suffix. "
+                f"Got: {base_url}. Stripping '/v1' for compatibility."
+            )
+            base_url = base_url.rstrip('/v1')
+
+        self.chatterbox_url = base_url
         self.default_voice_id = default_voice_id or CHATTERBOX_VOICE_ID
         self.timeout = timeout_s or TTS_TIMEOUT_S
         self.chunk_size = chunk_size or TTS_STREAM_CHUNK_SIZE

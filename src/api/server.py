@@ -30,6 +30,7 @@ from src.services.plugin_manager import get_plugin_manager
 from src.routes.agent_routes import router as agent_router, set_websocket_manager
 from src.routes.session_routes import router as session_router
 from src.routes.discord_plugin_routes import router as discord_plugin_router
+from src.routes.llm_provider_routes import router as llm_provider_router
 
 # LLM exceptions for error handling
 from src.llm import LLMError, LLMConnectionError, LLMTimeoutError
@@ -330,6 +331,9 @@ app.include_router(session_router)
 # Include Discord plugin voice control routes (VoxBridge 2.0 Phase 3)
 app.include_router(discord_plugin_router)
 
+# Include LLM provider management routes (VoxBridge 2.0 Phase 6.5.4)
+app.include_router(llm_provider_router)
+
 # Pydantic models for API
 class JoinVoiceRequest(BaseModel):
     channelId: str
@@ -469,24 +473,20 @@ async def leave_voice():
 
 @app.get("/health")
 async def health_check():
-    """Health check endpoint"""
+    """
+    Generic health check endpoint.
+
+    Returns basic server health status. For Discord-specific status,
+    use /api/plugins/discord/voice/status/{agent_id} endpoint.
+    """
     if not _bot_bridge:
         return {
             "status": "starting",
-            "botReady": False,
-            "inVoiceChannel": False,
-            "activeSessions": 0,
             "timestamp": datetime.now().isoformat()
         }
 
-    # Get bot status from bot module
-    bot_status = _bot_bridge['get_bot_status']()
-
     return {
         "status": "ok",
-        "botReady": bot_status['ready'],
-        "inVoiceChannel": bot_status['in_voice'],
-        "activeSessions": bot_status['active_sessions'],
         "timestamp": datetime.now().isoformat()
     }
 

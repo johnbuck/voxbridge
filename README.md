@@ -250,7 +250,7 @@ SILENCE_THRESHOLD_MS=800              # Silence detection threshold (ms)
 MAX_SPEAKING_TIME_MS=45000            # Max speaking time (45 seconds)
 
 # Chatterbox TTS Configuration
-CHATTERBOX_URL=http://host.docker.internal:4800/v1
+CHATTERBOX_URL=http://host.docker.internal:4800
 CHATTERBOX_VOICE_ID=your_voice_id
 
 # n8n Integration

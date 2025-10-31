@@ -244,7 +244,7 @@ def setup_test_environment():
     os.environ["DISCORD_TOKEN"] = "test_discord_token_12345"
     os.environ["WHISPER_SERVER_URL"] = "ws://localhost:4901"
     os.environ["N8N_WEBHOOK_URL"] = "http://localhost:8888/webhook/test"
-    os.environ["CHATTERBOX_URL"] = "http://localhost:4123/v1"
+    os.environ["CHATTERBOX_URL"] = "http://localhost:4123"
     os.environ["CHATTERBOX_VOICE_ID"] = "test_voice"
     os.environ["SILENCE_THRESHOLD_MS"] = "500"  # Faster for tests
     os.environ["MAX_SPEAKING_TIME_MS"] = "10000"  # Shorter for tests

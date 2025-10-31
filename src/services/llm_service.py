@@ -78,9 +78,15 @@ class LLMService:
         fallback_enabled: bool = True,
         timeout_s: float = 60.0,
         max_retries: int = 2,
+        db_provider_config: Optional[dict] = None,
     ):
         """
         Initialize LLM service with provider configuration.
+
+        Priority for API keys:
+        1. Database provider (db_provider_config) - highest priority
+        2. Function parameters (openrouter_api_key, local_base_url)
+        3. Environment variables (OPENROUTER_API_KEY, LOCAL_LLM_BASE_URL)
 
         Args:
             openrouter_api_key: OpenRouter API key (None = read from env)
@@ -88,12 +94,38 @@ class LLMService:
             fallback_enabled: Enable fallback to local LLM on failures
             timeout_s: Request timeout in seconds
             max_retries: Max retry attempts (handled by providers)
+            db_provider_config: Database provider config dict with keys:
+                - provider_type: str (openrouter, local, etc.)
+                - api_key: str (decrypted API key)
+                - base_url: str (API endpoint)
         """
         # Configuration
-        self.openrouter_api_key = openrouter_api_key or os.getenv("OPENROUTER_API_KEY")
-        self.local_base_url = local_base_url or os.getenv(
-            "LOCAL_LLM_BASE_URL", "http://localhost:11434/v1"
-        )
+        # Priority: db_provider_config > function params > env vars
+        if db_provider_config:
+            # Use database provider config (highest priority)
+            provider_type = db_provider_config.get('provider_type', 'openrouter')
+            if provider_type == 'openrouter':
+                self.openrouter_api_key = db_provider_config.get('api_key')
+                # Still need local_base_url for fallback
+                self.local_base_url = local_base_url or os.getenv("LOCAL_LLM_BASE_URL", "http://localhost:11434/v1")
+                logger.info("🤖 LLM Service: Using database provider config for OpenRouter")
+            elif provider_type in ('local', 'ollama', 'vllm'):
+                self.local_base_url = db_provider_config.get('base_url', 'http://localhost:11434/v1')
+                # Still need openrouter_api_key for fallback
+                self.openrouter_api_key = openrouter_api_key or os.getenv("OPENROUTER_API_KEY")
+                logger.info(f"🤖 LLM Service: Using database provider config for local LLM ({self.local_base_url})")
+            else:
+                # Unknown provider type - log warning and fall back to env vars
+                logger.warning(f"🤖 LLM Service: Unknown provider type '{provider_type}' in database config, falling back to env vars")
+                self.openrouter_api_key = openrouter_api_key or os.getenv("OPENROUTER_API_KEY")
+                self.local_base_url = local_base_url or os.getenv("LOCAL_LLM_BASE_URL", "http://localhost:11434/v1")
+        else:
+            # No database config - use function params or env vars
+            self.openrouter_api_key = openrouter_api_key or os.getenv("OPENROUTER_API_KEY")
+            self.local_base_url = local_base_url or os.getenv(
+                "LOCAL_LLM_BASE_URL", "http://localhost:11434/v1"
+            )
+
         self.fallback_enabled = fallback_enabled or os.getenv(
             "LLM_FALLBACK_ENABLED", "true"
         ).lower() in ("true", "1", "yes")
@@ -487,6 +519,8 @@ def get_llm_service() -> LLMService:
 
     This ensures provider connections are reused across requests for efficiency.
 
+    NOTE: For per-agent database provider configs, use get_llm_service_for_agent() instead.
+
     Returns:
         LLMService: Shared service instance
     """
@@ -497,3 +531,133 @@ def get_llm_service() -> LLMService:
         logger.info("🤖 LLM Service: Created singleton instance")
 
     return _llm_service_instance
+
+
+async def get_llm_service_for_agent(agent) -> LLMService:
+    """
+    Create LLM service instance with database provider config from agent.
+
+    Priority for LLM provider configuration:
+    1. Database provider (agent.llm_provider_id) - highest priority
+    2. Environment variables (OPENROUTER_API_KEY, LOCAL_LLM_BASE_URL)
+
+    Args:
+        agent: Agent database model instance with llm_provider_id relationship
+
+    Returns:
+        LLMService: Service instance configured with agent's database provider or env vars
+
+    Usage:
+        # In Discord plugin initialize()
+        llm_service = await get_llm_service_for_agent(self.agent)
+    """
+    # Import here to avoid circular dependency
+    from src.services.llm_provider_service import LLMProviderService
+
+    db_provider_config = None
+
+    # Check if agent has llm_provider_id set
+    if agent.llm_provider_id:
+        try:
+            # Fetch provider from database
+            db_provider = await LLMProviderService.get_provider(agent.llm_provider_id)
+
+            if db_provider and db_provider.is_active:
+                # Decrypt API key
+                decrypted_api_key = LLMProviderService._decrypt_api_key(
+                    db_provider.api_key_encrypted
+                )
+
+                # Build config dict
+                db_provider_config = {
+                    'provider_type': db_provider.provider_type or 'openrouter',
+                    'api_key': decrypted_api_key,
+                    'base_url': db_provider.base_url,
+                }
+
+                logger.info(
+                    f"🤖 LLM Service: Using database provider '{db_provider.name}' "
+                    f"for agent '{agent.name}' (provider_type={db_provider.provider_type})"
+                )
+            else:
+                logger.warning(
+                    f"🤖 LLM Service: Agent '{agent.name}' has llm_provider_id but provider is "
+                    f"{'inactive' if db_provider else 'not found'}, falling back to env vars"
+                )
+        except Exception as e:
+            logger.error(
+                f"🤖 LLM Service: Failed to fetch database provider for agent '{agent.name}': {e}, "
+                f"falling back to env vars"
+            )
+    else:
+        logger.info(
+            f"🤖 LLM Service: Agent '{agent.name}' has no llm_provider_id, using env vars"
+        )
+
+    # Create LLM service with database config (or None to fall back to env vars)
+    return LLMService(db_provider_config=db_provider_config)
+
+
+async def get_global_provider_status() -> Dict[str, bool]:
+    """
+    Get global LLM provider status checking BOTH database and environment variables.
+
+    This provides a comprehensive health check that reports True if ANY source has
+    a valid API key (database OR env vars), unlike get_provider_status() which only
+    checks the specific instance configuration.
+
+    Returns:
+        Dict[str, bool]: Provider status with True if available from ANY source
+            - 'openrouter': True if OpenRouter API key in database OR env vars
+            - 'local': True if Local LLM base URL in database OR env vars
+            - 'database': True if ANY active database providers exist
+            - 'env': True if ANY env var providers configured
+    """
+    from src.services.llm_provider_service import LLMProviderService
+
+    status = {
+        'openrouter': False,
+        'local': False,
+        'database': False,
+        'env': False
+    }
+
+    # Check environment variables
+    env_openrouter_key = os.getenv("OPENROUTER_API_KEY")
+    env_local_url = os.getenv("LOCAL_LLM_BASE_URL")
+
+    if env_openrouter_key:
+        status['env'] = True
+        status['openrouter'] = True
+        logger.info("🤖 LLM Global Status: OpenRouter available via env vars")
+
+    if env_local_url:
+        status['env'] = True
+        status['local'] = True
+        logger.info(f"🤖 LLM Global Status: Local LLM available via env vars ({env_local_url})")
+
+    # Check database providers
+    try:
+        db_providers = await LLMProviderService.get_all_providers()
+        active_providers = [p for p in db_providers if p.is_active]
+
+        if active_providers:
+            status['database'] = True
+            for provider in active_providers:
+                provider_type = provider.provider_type or 'openrouter'
+                if provider_type in status:
+                    status[provider_type] = True
+                    logger.info(
+                        f"🤖 LLM Global Status: {provider.name} ({provider_type}) "
+                        f"available via database"
+                    )
+    except Exception as e:
+        logger.warning(f"🤖 LLM Global Status: Failed to check database providers: {e}")
+
+    # Summary log
+    logger.info(
+        f"🤖 LLM Global Status: openrouter={status['openrouter']}, "
+        f"local={status['local']}, database={status['database']}, env={status['env']}"
+    )
+
+    return status

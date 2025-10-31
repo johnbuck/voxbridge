@@ -8,11 +8,8 @@ import { Route, Switch } from 'wouter';
 import { ThemeProvider } from '@/components/theme-provider';
 import Header from '@/components/Header';
 import { VoxbridgePage } from '@/pages/VoxbridgePage';
-import { WhisperXPage } from '@/pages/WhisperXPage';
-import { ChatterboxTTSPage } from '@/pages/ChatterboxTTSPage';
-import { VoiceChatPage } from '@/pages/VoiceChatPage';
 import { AgentsPage } from '@/pages/AgentsPage';
-import { PluginsPage } from '@/pages/PluginsPage';
+import { SettingsPage } from '@/pages/SettingsPage';
 import { ToastProvider } from '@/components/ui/toast';
 import '@/styles/globals.css';
 
@@ -39,14 +36,21 @@ function App() {
             {/* Main Content with Routing */}
             <main className="flex-1">
               <Switch>
+                {/* VoxBridge Unified Interface - Analytics, Voice Chat, Conversation Management */}
                 <Route path="/" component={VoxbridgePage} />
+
+                {/* Agent Management */}
                 <Route path="/agents" component={AgentsPage} />
-                <Route path="/plugins" component={PluginsPage} />
-                <Route path="/whisperx" component={WhisperXPage} />
-                <Route path="/chatterbox-tts" component={ChatterboxTTSPage} />
-                <Route path="/voice-chat" component={VoiceChatPage} />
+
+                {/* Settings Hub - all routes render SettingsPage which handles content internally */}
+                <Route path="/settings" component={SettingsPage} />
+                <Route path="/settings/llm-providers" component={SettingsPage} />
+                <Route path="/settings/whisperx" component={SettingsPage} />
+                <Route path="/settings/chatterbox" component={SettingsPage} />
+                <Route path="/settings/plugins" component={SettingsPage} />
+
+                {/* 404 Route */}
                 <Route>
-                  {/* 404 Route */}
                   <div className="container mx-auto px-4 py-8 text-center">
                     <h2 className="text-2xl font-bold mb-2">Page Not Found</h2>
                     <p className="text-muted-foreground">The page you're looking for doesn't exist.</p>

@@ -79,7 +79,7 @@ services:
       - MAX_SPEAKING_TIME_MS=${MAX_SPEAKING_TIME_MS:-45000}
 
       # Chatterbox TTS
-      - CHATTERBOX_URL=${CHATTERBOX_URL:-http://chatterbox:4800}
+      - CHATTERBOX_URL=http://chatterbox-tts:4123
       - CHATTERBOX_VOICE_ID=${CHATTERBOX_VOICE_ID}
 
       # n8n Integration

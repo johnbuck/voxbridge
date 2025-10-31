@@ -1,6 +1,8 @@
 ---
-agent_name: e2e-test-writer
+name: e2e-test-writer
 description: Create end-to-end tests using real services for critical path validation
+model: sonnet
+color: purple
 ---
 
 # End-to-End Test Writer Agent

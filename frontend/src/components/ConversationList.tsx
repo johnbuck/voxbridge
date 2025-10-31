@@ -8,7 +8,8 @@ import { useState } from 'react';
 import type { Session } from '@/services/api';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Button } from '@/components/ui/button';
-import { Plus, MessageSquare, Trash2, Calendar, Hash } from 'lucide-react';
+import { Badge } from '@/components/ui/badge';
+import { Plus, MessageSquare, Trash2, Calendar, Hash, Globe, MessageCircle } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 interface ConversationListProps {
@@ -54,6 +55,34 @@ export function ConversationList({
       hour: '2-digit',
       minute: '2-digit',
     })}`;
+  };
+
+  const getSessionSourceInfo = (session: Session) => {
+    // Determine if this is a web or Discord session
+    const isWebSession = session.user_id === 'web_user_default' || session.session_type === 'web';
+    const isDiscordSession = session.session_type === 'discord' || (!isWebSession && session.user_id !== 'web_user_default');
+
+    if (isWebSession) {
+      return {
+        icon: Globe,
+        label: 'Web',
+        className: 'bg-blue-500/10 text-blue-400 border-blue-500/30',
+      };
+    } else if (isDiscordSession) {
+      return {
+        icon: MessageCircle,
+        label: 'Discord',
+        className: 'bg-purple-500/10 text-purple-400 border-purple-500/30',
+        userId: session.user_id, // Show Discord user ID
+      };
+    }
+
+    // Fallback for unknown session types
+    return {
+      icon: MessageSquare,
+      label: session.session_type || 'Unknown',
+      className: 'bg-muted text-muted-foreground border-border',
+    };
   };
 
   return (
@@ -103,17 +132,32 @@ export function ConversationList({
                 >
                   <div className="flex items-start justify-between gap-2">
                     <div className="flex-1 min-w-0">
-                      {/* Title */}
-                      <h3
-                        className={cn(
-                          'text-sm font-medium truncate mb-1',
-                          activeSessionId === session.id
-                            ? 'text-primary'
-                            : 'text-foreground'
-                        )}
-                      >
-                        {getSessionTitle(session)}
-                      </h3>
+                      {/* Title with Source Badge */}
+                      <div className="flex items-center gap-2 mb-1">
+                        <h3
+                          className={cn(
+                            'text-sm font-medium truncate flex-1',
+                            activeSessionId === session.id
+                              ? 'text-primary'
+                              : 'text-foreground'
+                          )}
+                        >
+                          {getSessionTitle(session)}
+                        </h3>
+                        {(() => {
+                          const sourceInfo = getSessionSourceInfo(session);
+                          const SourceIcon = sourceInfo.icon;
+                          return (
+                            <Badge
+                              variant="outline"
+                              className={cn('text-xs h-5 px-1.5 gap-1', sourceInfo.className)}
+                            >
+                              <SourceIcon className="h-3 w-3" />
+                              {sourceInfo.label}
+                            </Badge>
+                          );
+                        })()}
+                      </div>
 
                       {/* Metadata */}
                       <div className="flex items-center gap-3 text-xs text-muted-foreground">
@@ -126,6 +170,16 @@ export function ConversationList({
                           <span>{formatDate(session.started_at)}</span>
                         </div>
                       </div>
+
+                      {/* Discord User ID (if applicable) */}
+                      {(() => {
+                        const sourceInfo = getSessionSourceInfo(session);
+                        return sourceInfo.userId && (
+                          <div className="mt-1 text-xs text-muted-foreground truncate">
+                            User: {sourceInfo.userId}
+                          </div>
+                        );
+                      })()}
 
                       {/* Active Badge */}
                       {session.active && (

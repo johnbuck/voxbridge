@@ -1,6 +1,8 @@
 ---
-agent_name: unit-test-writer
+name: unit-test-writer
 description: Create unit tests for uncovered code paths to increase coverage
+model: sonnet
+color: purple
 ---
 
 # Unit Test Writer Agent

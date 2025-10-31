@@ -1,46 +1,74 @@
 /**
  * VoxBridge Main Dashboard Page
- * Status cards, conversation, system info, and metrics
+ * Analytics at TOP, Unified Conversation Interface at BOTTOM
+ * VoxBridge 2.0 - Proper conversation management integration
  */
 
-import { useState, useRef, useCallback } from 'react';
+import { useState, useRef, useCallback, useEffect } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { api } from '@/services/api';
+import { api, type Message } from '@/services/api';
 import { useWebSocket } from '@/hooks/useWebSocket';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { MetricsPanel } from '@/components/MetricsPanel';
 import { StatusSummary } from '@/components/StatusSummary';
 import { RuntimeSettings } from '@/components/RuntimeSettings';
+import { ConversationList } from '@/components/ConversationList';
+import { NewConversationDialog } from '@/components/NewConversationDialog';
+import { AudioControls } from '@/components/AudioControls';
+import { STTWaitingIndicator } from '@/components/STTWaitingIndicator';
+import { AIGeneratingIndicator } from '@/components/AIGeneratingIndicator';
+import { StreamingMessageDisplay } from '@/components/StreamingMessageDisplay';
+import { ScrollArea } from '@/components/ui/scroll-area';
+import { Badge } from '@/components/ui/badge';
 import { useToastHelpers } from '@/components/ui/toast';
-import { Copy, CircleCheckBig, Activity, XCircle, AlertCircle, Mic } from 'lucide-react';
+import { useWebRTCAudio } from '@/hooks/useWebRTCAudio';
+import { useAudioPlayback } from '@/hooks/useAudioPlayback';
+import type { WebRTCAudioMessage } from '@/types/webrtc';
+import { Copy, CircleCheckBig, Activity, XCircle, AlertCircle, Volume2, VolumeX, Menu, MessageSquare, Brain, Lock, Unlock, Loader2, LogIn, LogOut } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { cn } from '@/lib/utils';
+import { ChannelSelectorModal } from '@/components/ChannelSelectorModal';
 
-interface TranscriptItem {
-  id: string;
-  type: 'user' | 'ai';
-  userId?: string;
-  username?: string;
-  text: string;
-  timestamp: string;
-  isFinal?: boolean;
-}
+// Use for creating new web sessions (can be changed when auth is added)
+const WEB_USER_ID = 'web_user_default';
 
 export function VoxbridgePage() {
+  // Analytics state (Discord conversation monitoring) - kept for future Discord transcript integration
   const [activeSpeaker, setActiveSpeaker] = useState<string | null>(null);
-  const [activeSpeakerUsername, setActiveSpeakerUsername] = useState<string | null>(null);
   const [partialTranscript, setPartialTranscript] = useState<string>('');
-  const [isAIGenerating, setIsAIGenerating] = useState<boolean>(false);
-  const [transcriptHistory, setTranscriptHistory] = useState<TranscriptItem[]>([]);
   const [showStatistics, setShowStatistics] = useState(false);
-  const seenMessageIdsRef = useRef(new Set<string>());
+
+  // Conversation Management state
+  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
+  const [newConversationDialogOpen, setNewConversationDialogOpen] = useState(false);
+  const [speakerLocked, setSpeakerLocked] = useState(false);
+  const [isUnlocking, setIsUnlocking] = useState(false);
+
+  // Discord voice connection state
+  const [showChannelSelector, setShowChannelSelector] = useState(false);
+  const [discordBotReady, setDiscordBotReady] = useState(false);
+  const [discordInVoice, setDiscordInVoice] = useState(false);
+  const [discordChannelName, setDiscordChannelName] = useState<string | null>(null);
+  const [discordGuildName, setDiscordGuildName] = useState<string | null>(null);
+  const [discordGuildId, setDiscordGuildId] = useState<string | null>(null);
+  const [isJoiningLeaving, setIsJoiningLeaving] = useState(false);
+
+  // Unified conversation state (adapts for Discord/WebRTC)
+  const [isListening, setIsListening] = useState(false);
+  const [listeningDuration, setListeningDuration] = useState(0);
+  const [isVoiceAIGenerating, setIsVoiceAIGenerating] = useState(false);
+  const [aiGeneratingDuration, setAiGeneratingDuration] = useState(0);
+  const [streamingChunks, setStreamingChunks] = useState<string[]>([]);
+  const [isStreaming, setIsStreaming] = useState(false);
+  const [isSpeakerMuted, setIsSpeakerMuted] = useState(false);
+  const [voicePartialTranscript, setVoicePartialTranscript] = useState<string>('');
+
   const queryClient = useQueryClient();
   const toast = useToastHelpers();
-
-  // Poll health status
-  const { data: health } = useQuery({
-    queryKey: ['health'],
-    queryFn: () => api.getHealth(),
-    refetchInterval: 2000,
-  });
+  const listeningStartTimeRef = useRef<number | null>(null);
+  const aiStartTimeRef = useRef<number | null>(null);
+  const scrollAreaRef = useRef<HTMLDivElement>(null);
 
   // Poll detailed status
   const { data: status } = useQuery({
@@ -56,7 +84,211 @@ export function VoxbridgePage() {
     // Metrics are refetched when AI responses complete (via invalidation)
   });
 
-  // Handle WebSocket messages
+  // Fetch ALL sessions (both web and Discord) for conversation management
+  const { data: sessions = [], isLoading: isLoadingSessions, refetch: refetchSessions } = useQuery({
+    queryKey: ['sessions'], // Remove USER_ID from key - fetch all sessions
+    queryFn: () => api.getSessions(undefined, false, 50), // undefined = all users
+    refetchInterval: 5000, // Poll every 5 seconds
+  });
+
+  // Fetch agents for new conversation dialog
+  const { data: agents = [], isLoading: isLoadingAgents } = useQuery({
+    queryKey: ['agents'],
+    queryFn: () => api.getAgents(),
+  });
+
+  // Fetch messages for active session
+  const { data: messages = [], isLoading: isLoadingMessages } = useQuery({
+    queryKey: ['messages', activeSessionId],
+    queryFn: () => activeSessionId ? api.getSessionMessages(activeSessionId) : Promise.resolve([]),
+    enabled: !!activeSessionId,
+    refetchInterval: 2000, // Poll every 2 seconds for real-time updates
+  });
+
+  // Get active session details
+  const activeSession = sessions.find((s) => s.id === activeSessionId);
+
+  // Get agent for active session
+  const activeAgent = agents.find((a) => a.id === activeSession?.agent_id);
+
+  // Audio playback hook for TTS (web voice chat)
+  const audioPlayback = useAudioPlayback({
+    autoPlay: true,
+    onPlaybackStart: () => console.log('🔊 Playing TTS audio'),
+    onPlaybackEnd: () => console.log('✅ TTS playback complete'),
+    onError: (error) => toast.error('Audio playback failed', error),
+  });
+
+  // Handle WebRTC audio messages (web voice chat with database persistence)
+  const handleWebRTCAudioMessage = useCallback(
+    async (message: WebRTCAudioMessage) => {
+      switch (message.event) {
+        case 'partial_transcript':
+          // Update voice chat partial transcript
+          setVoicePartialTranscript(message.data.text || '');
+          setIsListening(true);
+          if (!listeningStartTimeRef.current) {
+            listeningStartTimeRef.current = Date.now();
+          }
+          break;
+
+        case 'final_transcript':
+          // Clear voice chat partial transcript
+          setVoicePartialTranscript('');
+          setIsListening(false);
+          listeningStartTimeRef.current = null;
+          setListeningDuration(0);
+
+          // Save user message to database (if we have an active session)
+          if (activeSessionId) {
+            try {
+              await api.addMessage(activeSessionId, {
+                role: 'user',
+                content: message.data.text || '',
+              });
+              queryClient.invalidateQueries({ queryKey: ['messages', activeSessionId] });
+            } catch (error) {
+              console.error('[WebRTC] Failed to save user message:', error);
+              toast.error('Failed to save message', error instanceof Error ? error.message : 'Unknown error');
+            }
+          }
+
+          // Start AI generation indicator for voice chat
+          setIsVoiceAIGenerating(true);
+          aiStartTimeRef.current = Date.now();
+          break;
+
+        case 'ai_response_chunk':
+          // Stream AI response chunks for voice chat
+          setStreamingChunks((prev) => [...prev, message.data.text || '']);
+          setIsStreaming(true);
+
+          // Real-time update in messages list (if we have an active session)
+          if (activeSessionId) {
+            queryClient.setQueryData(['messages', activeSessionId], (oldData: Message[] | undefined) => {
+              if (!oldData) return oldData;
+
+              const lastMessage = oldData[oldData.length - 1];
+              if (lastMessage && lastMessage.role === 'assistant') {
+                // Append to existing assistant message
+                return [
+                  ...oldData.slice(0, -1),
+                  {
+                    ...lastMessage,
+                    content: lastMessage.content + (message.data.text || ''),
+                  },
+                ];
+              } else {
+                // Create new assistant message
+                return [
+                  ...oldData,
+                  {
+                    id: Date.now(), // Temporary ID
+                    session_id: activeSessionId,
+                    role: 'assistant',
+                    content: message.data.text || '',
+                    timestamp: new Date().toISOString(),
+                    audio_duration_ms: null,
+                    tts_duration_ms: null,
+                    llm_latency_ms: null,
+                    total_latency_ms: null,
+                  },
+                ];
+              }
+            });
+          }
+          break;
+
+        case 'ai_response_complete':
+          // Complete AI response for voice chat
+          setIsStreaming(false);
+          setStreamingChunks([]);
+          setIsVoiceAIGenerating(false);
+          aiStartTimeRef.current = null;
+          setAiGeneratingDuration(0);
+
+          // Save final AI message to database (if we have an active session)
+          if (activeSessionId) {
+            try {
+              await api.addMessage(activeSessionId, {
+                role: 'assistant',
+                content: message.data.text || '',
+              });
+              queryClient.invalidateQueries({ queryKey: ['messages', activeSessionId] });
+            } catch (error) {
+              console.error('[WebRTC] Failed to save AI message:', error);
+              toast.error('Failed to save AI response', error instanceof Error ? error.message : 'Unknown error');
+            }
+          }
+
+          // Play buffered TTS audio if not muted
+          if (!isSpeakerMuted) {
+            await audioPlayback.completeAudio();
+          } else {
+            console.log('🔇 Speaker muted, discarding TTS audio');
+            audioPlayback.stop();
+          }
+          break;
+
+        case 'tts_start':
+          console.log('🔊 TTS generation started');
+          break;
+
+        case 'tts_complete':
+          console.log(`✅ TTS complete (${message.data.duration_s?.toFixed(2)}s)`);
+          break;
+
+        case 'error':
+          console.error('[VoiceChat] Backend error:', message.data.message);
+          toast.error('Voice Chat Error', message.data.message || 'Unknown error');
+          break;
+
+        default:
+          console.warn('[VoiceChat] Unknown message event:', message.event);
+      }
+    },
+    [activeSessionId, audioPlayback, isSpeakerMuted, queryClient, toast]
+  );
+
+  // Handle binary audio chunks from TTS (web voice chat)
+  const handleBinaryMessage = useCallback(
+    (audioData: Uint8Array) => {
+      if (!isSpeakerMuted) {
+        console.log(`🎵 Buffering audio chunk: ${audioData.length} bytes`);
+        audioPlayback.addAudioChunk(audioData);
+      } else {
+        console.log('🔇 Speaker muted, discarding audio chunk');
+      }
+    },
+    [audioPlayback, isSpeakerMuted]
+  );
+
+  // Handle WebRTC errors (web voice chat)
+  const handleAudioError = useCallback(
+    (error: string) => {
+      toast.error('Audio Error', error);
+    },
+    [toast]
+  );
+
+  // WebRTC Audio Hook (web voice chat - uses active session)
+  const {
+    isMuted,
+    toggleMute,
+    connectionState,
+    permissionError,
+    isRecording,
+  } = useWebRTCAudio({
+    sessionId: activeSessionId, // Use active session ID from conversation management
+    onMessage: handleWebRTCAudioMessage,
+    onBinaryMessage: handleBinaryMessage,
+    onError: handleAudioError,
+    autoStart: false,
+    timeslice: 100,
+  });
+
+
+  // Handle WebSocket messages (Discord conversation monitoring - for metrics updates)
   const handleMessage = useCallback((message: any) => {
     // VoxBridge 2.0: Handle agent CRUD events (real-time updates)
     if (message.event === 'agent_created' || message.event === 'agent_updated' || message.event === 'agent_deleted') {
@@ -64,90 +296,398 @@ export function VoxbridgePage() {
       return;
     }
 
-    switch (message.event) {
-      case 'speaker_started':
-        setActiveSpeaker(message.data.userId);
-        setActiveSpeakerUsername(message.data.username);
-        break;
-      case 'speaker_stopped':
-        setActiveSpeaker(null);
-        setActiveSpeakerUsername(null);
-        setPartialTranscript('');
-        break;
-      case 'partial_transcript':
-        setPartialTranscript(message.data.text);
-        break;
-      case 'final_transcript':
-        // Clear active speaker section immediately
-        setActiveSpeaker(null);
-        setActiveSpeakerUsername(null);
-        setPartialTranscript('');
+    // Track speaker activity for status cards
+    if (message.event === 'speaker_started') {
+      setActiveSpeaker(message.data.userId);
+    } else if (message.event === 'speaker_stopped') {
+      setActiveSpeaker(null);
+    } else if (message.event === 'partial_transcript') {
+      // Update analytics partial transcript (for status cards)
+      setPartialTranscript(message.data.text);
 
-        // Start AI generation indicator
-        setIsAIGenerating(true);
+      // Start listening animation indicator (unified experience)
+      if (!isListening && message.data.text) {
+        setIsListening(true);
+        listeningStartTimeRef.current = Date.now();
+      }
+      setVoicePartialTranscript(message.data.text);
+    } else if (message.event === 'final_transcript') {
+      // Clear analytics state
+      setActiveSpeaker(null);
+      setPartialTranscript('');
 
-        const userMessageId = `user-${message.data.userId}-${message.data.timestamp}-${message.data.text.substring(0, 50)}`;
+      // Stop listening, start AI generating animation (unified experience)
+      setIsListening(false);
+      listeningStartTimeRef.current = null;
+      setListeningDuration(0);
+      setVoicePartialTranscript('');
 
-        if (seenMessageIdsRef.current.has(userMessageId)) {
-          console.log('[Final Transcript] Duplicate message, skipping:', userMessageId);
-          break;
-        }
+      setIsVoiceAIGenerating(true);
+      aiStartTimeRef.current = Date.now();
 
-        console.log('[Final Transcript] Adding new message:', userMessageId);
-        seenMessageIdsRef.current.add(userMessageId);
-
-        setTranscriptHistory((prev) => {
-          const newItem: TranscriptItem = {
-            id: userMessageId,
-            type: 'user',
-            userId: message.data.userId,
-            username: message.data.username,
-            text: message.data.text,
-            timestamp: message.data.timestamp,
-          };
-          return [newItem, ...prev].slice(0, 100);
+      // Save Discord message to database (if we have an active session)
+      if (activeSessionId && message.data.text) {
+        api.addMessage(activeSessionId, {
+          role: 'user',
+          content: message.data.text,
+        }).then(() => {
+          queryClient.invalidateQueries({ queryKey: ['messages', activeSessionId] });
+        }).catch((error) => {
+          console.error('[Discord] Failed to save user message:', error);
         });
-        break;
-      case 'ai_response':
-        // Clear AI generation indicator
-        setIsAIGenerating(false);
+      }
+    } else if (message.event === 'ai_response_chunk') {
+      // Handle Discord AI response chunks (unified experience)
+      if (activeSessionId) {
+        queryClient.setQueryData(['messages', activeSessionId], (oldData: Message[] | undefined) => {
+          if (!oldData) return oldData;
 
-        const messageId = message.data.id;
-        console.log('[AI Response] Received:', { id: messageId, text: message.data.text });
-
-        if (seenMessageIdsRef.current.has(messageId)) {
-          console.log('[AI Response] Duplicate message, skipping:', messageId);
-          break;
-        }
-
-        console.log('[AI Response] Adding new message:', messageId);
-        seenMessageIdsRef.current.add(messageId);
-
-        setTranscriptHistory((prev) => {
-          const newItem: TranscriptItem = {
-            id: messageId,
-            type: 'ai',
-            text: message.data.text,
-            timestamp: message.data.timestamp,
-            isFinal: message.data.isFinal,
-          };
-          return [newItem, ...prev].slice(0, 100);
+          const lastMessage = oldData[oldData.length - 1];
+          if (lastMessage && lastMessage.role === 'assistant') {
+            // Append to existing assistant message
+            return [
+              ...oldData.slice(0, -1),
+              {
+                ...lastMessage,
+                content: lastMessage.content + (message.data.text || ''),
+              },
+            ];
+          } else {
+            // Create new assistant message
+            return [
+              ...oldData,
+              {
+                id: Date.now(),
+                session_id: activeSessionId,
+                role: 'assistant',
+                content: message.data.text || '',
+                timestamp: new Date().toISOString(),
+                audio_duration_ms: null,
+                tts_duration_ms: null,
+                llm_latency_ms: null,
+                total_latency_ms: null,
+              },
+            ];
+          }
         });
+      }
+    } else if (message.event === 'ai_response_complete') {
+      // Stop AI generating animation (unified experience)
+      setIsVoiceAIGenerating(false);
+      aiStartTimeRef.current = null;
+      setAiGeneratingDuration(0);
 
-        if (message.data.isFinal) {
-          console.log('[Metrics] Refetching metrics after AI response completion');
-          queryClient.invalidateQueries({ queryKey: ['metrics'] });
-        }
-        break;
-      case 'status_update':
-        break;
+      // Check for errors
+      if (message.data.error) {
+        console.error('[Discord] LLM error:', message.data.error);
+        // Show error toast to user
+        toast.error("AI Response Error", message.data.error);
+      }
+
+      // Save final Discord AI message to database (if we have an active session and got a response)
+      if (activeSessionId && message.data.text) {
+        api.addMessage(activeSessionId, {
+          role: 'assistant',
+          content: message.data.text,
+        }).then(() => {
+          queryClient.invalidateQueries({ queryKey: ['messages', activeSessionId] });
+        }).catch((error) => {
+          console.error('[Discord] Failed to save AI message:', error);
+        });
+      }
+
+      // Refetch metrics after AI response completes
+      queryClient.invalidateQueries({ queryKey: ['metrics'] });
+    } else if (message.event === 'ai_response' && message.data.isFinal) {
+      // Legacy event handler - refetch metrics after AI response completes
+      queryClient.invalidateQueries({ queryKey: ['metrics'] });
     }
   }, [queryClient]);
 
-  // WebSocket for real-time updates
+  // WebSocket for real-time updates (Discord conversation monitoring)
   const { isConnected: wsConnected } = useWebSocket('/ws/events', {
     onMessage: handleMessage
   });
+
+  // Auto-select first session on load
+  useEffect(() => {
+    if (sessions.length > 0 && !activeSessionId) {
+      setActiveSessionId(sessions[0].id);
+    }
+  }, [sessions, activeSessionId]);
+
+  // Fetch speaker lock status when agent has Discord plugin
+  useEffect(() => {
+    if (!activeAgent?.plugins?.discord?.enabled) {
+      // Reset speaker lock state if no Discord plugin
+      setSpeakerLocked(false);
+      return;
+    }
+
+    // Fetch status immediately
+    const fetchSpeakerStatus = async () => {
+      try {
+        const statusData = await api.getStatus();
+        setSpeakerLocked(statusData.speaker?.locked || false);
+      } catch (error) {
+        console.error('[VoxBridge] Failed to fetch speaker status:', error);
+      }
+    };
+
+    fetchSpeakerStatus();
+
+    // Poll every 3 seconds while agent has Discord plugin
+    const interval = setInterval(fetchSpeakerStatus, 3000);
+    return () => clearInterval(interval);
+  }, [activeAgent]);
+
+  // Fetch Discord voice connection status when agent has Discord plugin
+  useEffect(() => {
+    if (!activeAgent?.plugins?.discord?.enabled) {
+      // Reset Discord voice state if no Discord plugin
+      setDiscordBotReady(false);
+      setDiscordInVoice(false);
+      setDiscordChannelName(null);
+      setDiscordGuildName(null);
+      setDiscordGuildId(null);
+      return;
+    }
+
+    // Initialize guild ID from localStorage (persists across reloads)
+    const storedGuildId = localStorage.getItem(`discord_guild_${activeAgent.id}`);
+    if (storedGuildId) {
+      setDiscordGuildId(storedGuildId);
+    }
+
+    const fetchDiscordStatus = async () => {
+      try {
+        const status = await api.getAgentDiscordStatus(activeAgent.id);
+        const connection = status.connections && status.connections.length > 0 ? status.connections[0] : null;
+
+        console.log('[VoxbridgePage] Discord status update:', {
+          bot_ready: status.bot?.ready,
+          connections_count: status.connections?.length,
+          connection_connected: connection?.connected,
+          channel_name: connection?.channel_name,
+          guild_name: connection?.guild_name,
+          full_status: status,
+        });
+
+        const botReady = status.bot?.ready || false;
+        const inVoice = connection?.connected || false;
+        const channelName = connection?.channel_name || null;
+        const guildName = connection?.guild_name || null;
+
+        console.log('[VoxbridgePage] Setting state:', { botReady, inVoice, channelName, guildName });
+
+        setDiscordBotReady(botReady);
+        setDiscordInVoice(inVoice);
+        setDiscordChannelName(channelName);
+        setDiscordGuildName(guildName);
+
+        // Backend now returns guild_id as string to preserve precision
+        // Store it to localStorage if we don't have one yet
+        const storedId = localStorage.getItem(`discord_guild_${activeAgent.id}`);
+        if (!storedId && connection?.guild_id) {
+          const guildIdStr = String(connection.guild_id);
+          setDiscordGuildId(guildIdStr);
+          localStorage.setItem(`discord_guild_${activeAgent.id}`, guildIdStr);
+        } else if (storedId) {
+          setDiscordGuildId(storedId);
+        }
+      } catch (error) {
+        console.error('[VoxbridgePage] Failed to fetch Discord status:', error);
+        setDiscordBotReady(false);
+        setDiscordInVoice(false);
+      }
+    };
+
+    fetchDiscordStatus();
+
+    // Poll every 3 seconds while agent has Discord plugin
+    const interval = setInterval(fetchDiscordStatus, 3000);
+    return () => clearInterval(interval);
+  }, [activeAgent]);
+
+  // Update listening duration (web voice chat)
+  useEffect(() => {
+    if (isListening && listeningStartTimeRef.current) {
+      const interval = setInterval(() => {
+        setListeningDuration(Date.now() - listeningStartTimeRef.current!);
+      }, 100);
+      return () => clearInterval(interval);
+    }
+  }, [isListening]);
+
+  // Update AI generating duration (web voice chat)
+  useEffect(() => {
+    if (isVoiceAIGenerating && aiStartTimeRef.current) {
+      const interval = setInterval(() => {
+        setAiGeneratingDuration(Date.now() - aiStartTimeRef.current!);
+      }, 100);
+      return () => clearInterval(interval);
+    }
+  }, [isVoiceAIGenerating]);
+
+  // Conversation Management Handlers
+
+  // Handle create conversation
+  const handleCreateConversation = useCallback(
+    async (agentId: string, title?: string) => {
+      try {
+        const newSession = await api.createSession({
+          user_id: WEB_USER_ID,
+          agent_id: agentId,
+          title: title || null,
+          session_type: 'web',
+        });
+
+        // Refetch sessions and select new one
+        await refetchSessions();
+        setActiveSessionId(newSession.id);
+        toast.success('Conversation created', `Started new conversation with agent`);
+      } catch (error) {
+        toast.error('Failed to create conversation', error instanceof Error ? error.message : 'Unknown error');
+        throw error;
+      }
+    },
+    [refetchSessions, toast]
+  );
+
+  // Handle delete conversation
+  const handleDeleteSession = useCallback(
+    async (sessionId: string) => {
+      if (!confirm('Delete this conversation? This cannot be undone.')) {
+        return;
+      }
+
+      try {
+        await api.deleteSession(sessionId);
+
+        // If we deleted the active session, select another
+        if (sessionId === activeSessionId) {
+          const remainingSessions = sessions.filter((s) => s.id !== sessionId);
+          setActiveSessionId(remainingSessions.length > 0 ? remainingSessions[0].id : null);
+        }
+
+        await refetchSessions();
+        toast.success('Conversation deleted');
+      } catch (error) {
+        toast.error('Failed to delete conversation', error instanceof Error ? error.message : 'Unknown error');
+      }
+    },
+    [activeSessionId, sessions, refetchSessions, toast]
+  );
+
+  // Handle select session
+  const handleSelectSession = useCallback((sessionId: string) => {
+    setActiveSessionId(sessionId);
+  }, []);
+
+  // Handle unlock speaker
+  const handleUnlockSpeaker = useCallback(async () => {
+    setIsUnlocking(true);
+    try {
+      const result = await api.unlockSpeaker();
+      setSpeakerLocked(false);
+      toast.success('Speaker unlocked', result.previousSpeaker ? `Unlocked ${result.previousSpeaker}` : undefined);
+    } catch (error) {
+      toast.error('Failed to unlock speaker', error instanceof Error ? error.message : 'Unknown error');
+    } finally {
+      setIsUnlocking(false);
+    }
+  }, [toast]);
+
+  // Helper to get stored guild ID (avoids precision loss from status endpoint)
+  const getStoredGuildId = useCallback(() => {
+    if (!activeAgent) return null;
+    try {
+      return localStorage.getItem(`discord_guild_${activeAgent.id}`);
+    } catch {
+      return null;
+    }
+  }, [activeAgent]);
+
+  // Handle join Discord voice channel
+  const handleJoinVoice = useCallback(() => {
+    setShowChannelSelector(true);
+  }, []);
+
+  // Handle channel selected
+  const handleChannelSelected = useCallback(async (guildId: string, channelId: string) => {
+    if (!activeAgent) return;
+
+    setIsJoiningLeaving(true);
+    try {
+      // Phase 6.X: Pass activeSessionId for unified conversation threading
+      // If user has active conversation, Discord voice will link to it
+      await api.joinChannel(activeAgent.id, channelId, guildId, activeSessionId);
+      // Store guild ID locally to avoid precision loss from status endpoint
+      setDiscordGuildId(guildId);
+      localStorage.setItem(`discord_guild_${activeAgent.id}`, guildId);
+
+      // Show appropriate toast message
+      if (activeSessionId) {
+        toast.success('Joined voice channel (linked to active conversation)');
+      } else {
+        toast.success('Joined voice channel');
+      }
+      setShowChannelSelector(false);
+    } catch (error: any) {
+      console.error('[VoxbridgePage] Failed to join voice:', error);
+
+      // If already connected, try to force leave first then retry
+      if (error?.message?.includes('Already connected')) {
+        try {
+          console.log('Already connected detected, forcing leave and retry...');
+          await api.leaveChannel(activeAgent.id, guildId);
+          await api.joinChannel(activeAgent.id, channelId, guildId, activeSessionId);
+          setDiscordGuildId(guildId);
+          localStorage.setItem(`discord_guild_${activeAgent.id}`, guildId);
+          toast.success('Reconnected to voice channel');
+          setShowChannelSelector(false);
+          return;
+        } catch (retryError) {
+          toast.error('Failed to reconnect', retryError instanceof Error ? retryError.message : 'Unknown error');
+        }
+      } else {
+        toast.error('Failed to join voice channel', error instanceof Error ? error.message : 'Unknown error');
+      }
+    } finally {
+      setIsJoiningLeaving(false);
+    }
+  }, [activeAgent, activeSessionId, toast]);
+
+  // Handle leave Discord voice channel
+  const handleLeaveVoice = useCallback(async () => {
+    if (!activeAgent) {
+      toast.error('Cannot leave voice', 'No active agent');
+      return;
+    }
+
+    // Use locally stored guild ID to avoid precision loss from status endpoint
+    const guildIdToUse = getStoredGuildId() || discordGuildId;
+
+    if (!guildIdToUse) {
+      toast.error('Cannot leave voice', 'No guild ID available');
+      return;
+    }
+
+    console.log(`[VoxbridgePage] Leaving voice with guild ID: ${guildIdToUse}`);
+
+    setIsJoiningLeaving(true);
+    try {
+      await api.leaveChannel(activeAgent.id, guildIdToUse);
+      // Clear stored guild ID after leaving
+      setDiscordGuildId(null);
+      localStorage.removeItem(`discord_guild_${activeAgent.id}`);
+      toast.success('Left voice channel');
+    } catch (error) {
+      toast.error('Failed to leave voice channel', error instanceof Error ? error.message : 'Unknown error');
+    } finally {
+      setIsJoiningLeaving(false);
+    }
+  }, [activeAgent, discordGuildId, getStoredGuildId, toast]);
 
   const copyToClipboard = async (text: string) => {
     try {
@@ -165,40 +705,13 @@ export function VoxbridgePage() {
     return `${start}...`;
   };
 
-  // Status helper functions for dynamic service status displays
-  const getDiscordStatus = () => {
-    if (!health?.botReady) {
-      return {
-        color: 'text-red-600 dark:text-red-400',
-        icon: <XCircle className="w-4 h-4" />,
-        text: 'Offline',
-        info: 'Not Ready'
-      };
-    }
-    if (activeSpeaker) {
-      return {
-        color: 'text-purple-600 dark:text-purple-400',
-        icon: <Mic className="w-4 h-4" />,
-        text: 'Active',
-        info: status?.voice.channelName || 'Processing audio'
-      };
-    }
-    if (status?.voice.connected) {
-      return {
-        color: 'text-green-600 dark:text-green-400',
-        icon: <CircleCheckBig className="w-4 h-4" />,
-        text: 'Ready',
-        info: status.voice.channelName || 'Connected'
-      };
-    }
-    return {
-      color: 'text-yellow-600 dark:text-yellow-400',
-      icon: <AlertCircle className="w-4 h-4" />,
-      text: 'Ready',
-      info: 'Not in voice channel'
-    };
+  // Format timestamp for messages
+  const formatTimestamp = (timestamp: string) => {
+    const date = new Date(timestamp);
+    return date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
   };
 
+  // Status helper functions for dynamic service status displays
   const getWhisperXStatus = () => {
     if (!status?.whisperx.serverConfigured) {
       return {
@@ -233,19 +746,6 @@ export function VoxbridgePage() {
         info: 'Service not responding'
       };
     }
-    // Check if there's a recent non-final AI response (indicates generating)
-    const isGenerating = transcriptHistory.length > 0 &&
-      transcriptHistory[0].type === 'ai' &&
-      !transcriptHistory[0].isFinal;
-
-    if (isGenerating) {
-      return {
-        color: 'text-blue-600 dark:text-blue-400',
-        icon: <Activity className="w-4 h-4 animate-pulse" />,
-        text: 'Generating',
-        info: 'Creating audio'
-      };
-    }
     return {
       color: 'text-green-600 dark:text-green-400',
       icon: <CircleCheckBig className="w-4 h-4" />,
@@ -274,6 +774,10 @@ export function VoxbridgePage() {
   return (
     <div className="min-h-screen bg-page-background p-6">
       <div className="max-w-7xl mx-auto space-y-6">
+        {/* ============================================ */}
+        {/* ANALYTICS SECTION (TOP) */}
+        {/* ============================================ */}
+
         {/* Header */}
         <div className="text-center relative">
           <h1 className="text-4xl font-bold">VoxBridge Dashboard</h1>
@@ -288,7 +792,11 @@ export function VoxbridgePage() {
         </div>
 
         {/* Summary Statistics */}
-        <StatusSummary metrics={metrics} isLoadingMetrics={isLoadingMetrics} wsConnected={wsConnected} />
+        <StatusSummary
+          metrics={metrics}
+          isLoadingMetrics={isLoadingMetrics}
+          wsConnected={wsConnected}
+        />
 
         {/* Show/Hide Stats Button */}
         <div className="flex justify-center">
@@ -303,44 +811,8 @@ export function VoxbridgePage() {
         {/* Metrics Panel (Conditional) */}
         {showStatistics && <MetricsPanel />}
 
-        {/* Connection Status Grid */}
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-          <Card>
-            <CardHeader className="pb-3">
-              <CardTitle className="text-sm font-medium">Discord Bot</CardTitle>
-            </CardHeader>
-            <CardContent>
-              {(() => {
-                const statusInfo = getDiscordStatus();
-                return (
-                  <>
-                    <div className={`flex items-center gap-2 text-sm font-semibold ${statusInfo.color}`}>
-                      {statusInfo.icon}
-                      <span>{statusInfo.text}</span>
-                    </div>
-                    <p className="text-xs text-muted-foreground mt-1">
-                      {statusInfo.info}
-                    </p>
-                    {status?.bot.id && (
-                      <div className="flex items-center gap-1 mt-1">
-                        <p className="text-xs text-muted-foreground font-mono flex-1" title={status.bot.id}>
-                          {status.bot.id}
-                        </p>
-                        <button
-                          onClick={() => copyToClipboard(status.bot.id)}
-                          className="p-1 hover:bg-muted rounded"
-                          title="Copy Bot ID"
-                        >
-                          <Copy className="w-3 h-3" />
-                        </button>
-                      </div>
-                    )}
-                  </>
-                );
-              })()}
-            </CardContent>
-          </Card>
-
+        {/* Service Status Grid */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           <Card>
             <CardHeader className="pb-3">
               <CardTitle className="text-sm font-medium">WhisperX</CardTitle>
@@ -450,90 +922,345 @@ export function VoxbridgePage() {
           </Card>
         </div>
 
-        {/* Conversation Card */}
-        <Card className="flex flex-col">
-          <CardHeader>
-            <CardTitle>Conversation</CardTitle>
-          </CardHeader>
-          <CardContent className="flex flex-col flex-1 min-h-0 space-y-4">
-            {/* Active Speaker Section */}
-            {activeSpeaker && (
-              <div className="pb-4 shrink-0">
-                <div className="flex items-center gap-2 mb-3">
-                  <div className="w-3 h-3 bg-green-500 rounded-full animate-pulse"></div>
-                  <span className="font-medium">{activeSpeakerUsername || activeSpeaker}</span>
-                </div>
+        {/* ============================================ */}
+        {/* UNIFIED CONVERSATION INTERFACE (BOTTOM) */}
+        {/* ============================================ */}
 
-                {/* Animated Ellipsis Bubble */}
-                <div className="flex justify-start">
-                  <div className="max-w-[80%] p-3 rounded-lg bg-primary/10 border border-primary/20">
-                    <div className="flex gap-1">
-                      <div className="w-2 h-2 bg-primary rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></div>
-                      <div className="w-2 h-2 bg-primary rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></div>
-                      <div className="w-2 h-2 bg-primary rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            )}
+        <Card className="flex flex-col h-[600px]">
+          <CardContent className="flex flex-1 min-h-0 p-0">
+            {/* Sidebar - Conversation List */}
+            <div
+              className={cn(
+                'transition-all duration-300 border-r border-border overflow-hidden',
+                sidebarOpen ? 'w-80' : 'w-0'
+              )}
+            >
+              {sidebarOpen && (
+                <ConversationList
+                  sessions={sessions}
+                  activeSessionId={activeSessionId}
+                  onSelectSession={handleSelectSession}
+                  onCreateSession={() => setNewConversationDialogOpen(true)}
+                  onDeleteSession={handleDeleteSession}
+                  isLoading={isLoadingSessions}
+                />
+              )}
+            </div>
 
-            {/* AI Generation Indicator */}
-            {isAIGenerating && (
-              <div className="pb-4 shrink-0">
-                <div className="flex justify-end">
-                  <div className="max-w-[80%] p-3 rounded-lg bg-purple-500/10 border border-purple-500/20">
-                    <div className="flex gap-1">
-                      <div className="w-2 h-2 bg-purple-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></div>
-                      <div className="w-2 h-2 bg-purple-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></div>
-                      <div className="w-2 h-2 bg-purple-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* Conversation History */}
-            {transcriptHistory.length > 0 ? (
-              <div className="flex-1 overflow-y-auto space-y-3 min-h-0">
-                {transcriptHistory.map((item) => (
-                  <div
-                    key={item.id}
-                    className={`flex ${item.type === 'ai' ? 'justify-end' : 'justify-start'}`}
+            {/* Main Conversation View */}
+            <div className="flex-1 flex flex-col min-w-0">
+              {/* Conversation Header */}
+              <div className="h-16 border-b border-border flex items-center justify-between px-6 shrink-0">
+                <div className="flex items-center gap-4">
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    onClick={() => setSidebarOpen(!sidebarOpen)}
+                    title={sidebarOpen ? 'Hide sidebar' : 'Show sidebar'}
                   >
-                    <div
-                      className={`max-w-[80%] p-3 rounded-lg ${
-                        item.type === 'user'
-                          ? 'bg-primary/10 border border-primary/20'
-                          : 'bg-purple-500/10 border border-purple-500/20'
-                      }`}
-                    >
-                      <div className="flex items-center justify-between mb-1 gap-2">
-                        <span className={`text-xs font-medium ${
-                          item.type === 'user' ? 'text-primary' : 'text-purple-400'
-                        }`}>
-                          {item.type === 'user' ? item.username : (status?.bot.username || 'AI Assistant')}
-                        </span>
-                        <span className="text-xs text-muted-foreground whitespace-nowrap">
-                          {new Date(item.timestamp).toLocaleTimeString()}
-                        </span>
+                    <Menu className="h-5 w-5" />
+                  </Button>
+
+                  {activeSession && activeAgent ? (
+                    <div className="flex items-center gap-3">
+                      <Brain className="h-5 w-5 text-primary" />
+                      <div>
+                        <h2 className="text-sm font-semibold">
+                          {activeSession.title || `Conversation ${new Date(activeSession.started_at).toLocaleDateString()}`}
+                        </h2>
+                        <p className="text-xs text-muted-foreground">
+                          {activeAgent.name} • {activeAgent.llm_model}
+                        </p>
                       </div>
-                      <p className="text-sm">{item.text}</p>
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-3">
+                      <MessageSquare className="h-5 w-5 text-muted-foreground" />
+                      <div>
+                        <h2 className="text-sm font-semibold">No Conversation Selected</h2>
+                        <p className="text-xs text-muted-foreground">Create or select a conversation</p>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* Audio Controls (WebRTC) */}
+                <div className="flex items-center gap-4">
+                  {activeSessionId && (
+                    <div className="flex items-center gap-2">
+                      <AudioControls
+                        isMuted={isMuted}
+                        onToggleMute={toggleMute}
+                        connectionState={connectionState}
+                        permissionError={permissionError}
+                        isRecording={isRecording}
+                      />
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        onClick={() => setIsSpeakerMuted(!isSpeakerMuted)}
+                        title={isSpeakerMuted ? 'Unmute speaker' : 'Mute speaker'}
+                      >
+                        {isSpeakerMuted ? (
+                          <VolumeX className="h-5 w-5 text-muted-foreground" />
+                        ) : (
+                          <Volume2 className="h-5 w-5" />
+                        )}
+                      </Button>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Discord Status Bar (Plugin Only) */}
+              {activeAgent?.plugins?.discord?.enabled && (
+                <div className="border-b border-border bg-muted/30 px-6 py-3 shrink-0">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-3">
+                      <div className="flex items-center gap-2">
+                        <MessageSquare className="h-4 w-4 text-purple-400" />
+                        <span className="text-sm font-medium">Discord Plugin</span>
+                      </div>
+
+                      {/* Bot Ready Status */}
+                      {discordBotReady ? (
+                        <Badge variant="outline" className="text-xs bg-green-500/20 text-green-400 border-green-500/50">
+                          Bot Ready
+                        </Badge>
+                      ) : (
+                        <Badge variant="outline" className="text-xs bg-red-500/20 text-red-400 border-red-500/50">
+                          Bot Not Ready
+                        </Badge>
+                      )}
+
+                      {/* Voice Connection Status */}
+                      {discordInVoice ? (
+                        <div className="flex items-center gap-2">
+                          <Badge variant="outline" className="text-xs bg-purple-500/20 text-purple-400 border-purple-500/50">
+                            {discordGuildName}
+                          </Badge>
+                          <Badge variant="outline" className="text-xs bg-blue-500/20 text-blue-400 border-blue-500/50">
+                            <Volume2 className="h-3 w-3 mr-1" />
+                            {discordChannelName}
+                          </Badge>
+                          {/* Phase 6.X: Show linked conversation indicator */}
+                          {activeSessionId && (
+                            <Badge variant="outline" className="text-xs bg-green-500/20 text-green-400 border-green-500/50">
+                              🔗 Linked to conversation
+                            </Badge>
+                          )}
+                        </div>
+                      ) : (
+                        <Badge variant="outline" className="text-xs bg-muted text-muted-foreground">
+                          Not in voice
+                        </Badge>
+                      )}
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      {/* Join/Leave Voice Channel */}
+                      {!discordInVoice ? (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={handleJoinVoice}
+                          disabled={isJoiningLeaving}
+                        >
+                          {isJoiningLeaving ? (
+                            <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                          ) : (
+                            <LogIn className="h-4 w-4 mr-2" />
+                          )}
+                          Join Voice
+                        </Button>
+                      ) : (
+                        <Button
+                          size="sm"
+                          variant="destructive"
+                          onClick={handleLeaveVoice}
+                          disabled={isJoiningLeaving}
+                        >
+                          {isJoiningLeaving ? (
+                            <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                          ) : (
+                            <LogOut className="h-4 w-4 mr-2" />
+                          )}
+                          Leave Voice
+                        </Button>
+                      )}
+
+                      {/* Speaker Lock */}
+                      {speakerLocked && (
+                        <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-background border border-border">
+                          <Lock className="h-4 w-4 text-yellow-400" />
+                          <span className="text-xs font-medium">Locked:</span>
+                          <Badge variant="outline" className="text-xs bg-yellow-500/20 text-yellow-400 border-yellow-500/50">
+                            {activeSpeaker || 'Unknown'}
+                          </Badge>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            onClick={handleUnlockSpeaker}
+                            disabled={isUnlocking}
+                            className="h-6 px-2 text-xs"
+                          >
+                            {isUnlocking ? (
+                              <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+                            ) : (
+                              <Unlock className="h-3 w-3 mr-1" />
+                            )}
+                            Unlock
+                          </Button>
+                        </div>
+                      )}
                     </div>
                   </div>
-                ))}
-              </div>
-            ) : (
-              !activeSpeaker && (
-                <div className="text-center py-12 text-muted-foreground flex-1">
-                  <p className="text-sm">Waiting for audio...</p>
-                  <p className="text-xs mt-1">
-                    Speak in the Discord voice channel to see transcriptions
-                  </p>
                 </div>
-              )
-            )}
+              )}
+
+              {/* Messages Area */}
+              <div className="flex-1 overflow-hidden">
+                {!activeSessionId ? (
+                  <div className="h-full flex items-center justify-center text-center text-muted-foreground p-8">
+                    <div>
+                      <MessageSquare className="h-16 w-16 mx-auto mb-4 opacity-50" />
+                      <h3 className="text-lg font-semibold mb-2">No conversation selected</h3>
+                      <p className="text-sm mb-4">Start a new conversation to begin</p>
+                      <Button onClick={() => setNewConversationDialogOpen(true)}>
+                        New Conversation
+                      </Button>
+                    </div>
+                  </div>
+                ) : (
+                  <ScrollArea className="h-full" ref={scrollAreaRef}>
+                    <div className="max-w-4xl mx-auto p-6 space-y-4">
+                      {/* Permission Error */}
+                      {permissionError && (
+                        <div className="flex items-start gap-3 p-4 bg-red-500/10 border border-red-500/20 rounded-lg">
+                          <AlertCircle className="h-5 w-5 text-red-500 flex-shrink-0 mt-0.5" />
+                          <div className="flex-1 min-w-0">
+                            <p className="text-sm font-medium text-red-500 mb-1">Microphone Permission Required</p>
+                            <p className="text-xs text-muted-foreground">{permissionError}</p>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* STT Waiting Indicator */}
+                      {(isListening || voicePartialTranscript) && (
+                        <STTWaitingIndicator
+                          isListening={isListening}
+                          duration={listeningDuration}
+                          partialTranscript={voicePartialTranscript}
+                        />
+                      )}
+
+                      {/* AI Generating Indicator */}
+                      {isVoiceAIGenerating && (
+                        <AIGeneratingIndicator
+                          isGenerating={isVoiceAIGenerating}
+                          duration={aiGeneratingDuration}
+                        />
+                      )}
+
+                      {/* Streaming Message Display */}
+                      {isStreaming && streamingChunks.length > 0 && (
+                        <StreamingMessageDisplay
+                          chunks={streamingChunks}
+                          isStreaming={isStreaming}
+                          agentName={activeAgent?.name || 'AI Assistant'}
+                        />
+                      )}
+
+                      {/* Messages from Database */}
+                      {isLoadingMessages ? (
+                        <div className="text-center py-12 text-muted-foreground">
+                          <p className="text-sm">Loading messages...</p>
+                        </div>
+                      ) : messages.length === 0 && !voicePartialTranscript && !isListening ? (
+                        <div className="text-center py-12 text-muted-foreground">
+                          <MessageSquare className="h-12 w-12 mx-auto mb-3 opacity-50" />
+                          <p className="text-sm">No messages yet</p>
+                          <p className="text-xs mt-1">Start speaking to begin the conversation</p>
+                        </div>
+                      ) : (
+                        <>
+                          {messages.slice().reverse().map((message) => (
+                            <div
+                              key={message.id}
+                              className={cn(
+                                'flex',
+                                message.role === 'user' ? 'justify-start' : 'justify-end'
+                              )}
+                            >
+                              <div
+                                className={cn(
+                                  'max-w-[80%] p-4 rounded-lg',
+                                  message.role === 'user'
+                                    ? 'bg-primary/10 border border-primary/20'
+                                    : 'bg-purple-500/10 border border-purple-500/20'
+                                )}
+                              >
+                                <div className="flex items-center justify-between mb-2 gap-3">
+                                  <span
+                                    className={cn(
+                                      'text-xs font-medium',
+                                      message.role === 'user' ? 'text-primary' : 'text-purple-400'
+                                    )}
+                                  >
+                                    {message.role === 'user' ? 'You' : activeAgent?.name || 'AI Assistant'}
+                                  </span>
+                                  <span className="text-xs text-muted-foreground whitespace-nowrap">
+                                    {formatTimestamp(message.timestamp)}
+                                  </span>
+                                </div>
+                                <p className="text-sm whitespace-pre-wrap leading-relaxed">
+                                  {message.content}
+                                </p>
+
+                                {/* Latency info (if available) */}
+                                {(message.llm_latency_ms || message.tts_duration_ms || message.total_latency_ms) && (
+                                  <div className="mt-2 pt-2 border-t border-border/50 flex flex-wrap gap-3 text-xs text-muted-foreground">
+                                    {message.llm_latency_ms && (
+                                      <span>LLM: {message.llm_latency_ms}ms</span>
+                                    )}
+                                    {message.tts_duration_ms && (
+                                      <span>TTS: {message.tts_duration_ms}ms</span>
+                                    )}
+                                    {message.total_latency_ms && (
+                                      <span>Total: {message.total_latency_ms}ms</span>
+                                    )}
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          ))}
+                        </>
+                      )}
+                    </div>
+                  </ScrollArea>
+                )}
+              </div>
+            </div>
           </CardContent>
         </Card>
+
+        {/* New Conversation Dialog */}
+        <NewConversationDialog
+          open={newConversationDialogOpen}
+          onOpenChange={setNewConversationDialogOpen}
+          agents={agents}
+          isLoadingAgents={isLoadingAgents}
+          onCreateConversation={handleCreateConversation}
+        />
+
+        {/* Channel Selector Modal */}
+        <ChannelSelectorModal
+          open={showChannelSelector}
+          onOpenChange={setShowChannelSelector}
+          onSelect={handleChannelSelected}
+          currentGuildId={undefined}
+          currentChannelId={undefined}
+        />
       </div>
     </div>
   );

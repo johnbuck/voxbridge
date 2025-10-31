@@ -16,6 +16,8 @@ export interface AudioControlsProps {
   connectionState: ConnectionState;
   permissionError: string | null;
   isRecording: boolean;
+  /** Disable mic button (e.g., during AI generation) */
+  disabled?: boolean;
 }
 
 export function AudioControls({
@@ -24,6 +26,7 @@ export function AudioControls({
   connectionState,
   permissionError,
   isRecording,
+  disabled = false,
 }: AudioControlsProps) {
   // Connection status badge
   const getConnectionBadge = () => {
@@ -72,13 +75,20 @@ export function AudioControls({
           variant={isMuted ? 'outline' : 'default'}
           size="icon"
           onClick={onToggleMute}
-          title={isMuted ? 'Unmute microphone' : 'Mute microphone'}
+          title={
+            disabled
+              ? 'Microphone disabled during AI generation'
+              : isMuted
+              ? 'Unmute microphone'
+              : 'Mute microphone'
+          }
           className={cn(
             'transition-all duration-200',
             !isMuted && 'bg-red-500 hover:bg-red-600 border-red-500',
-            isRecording && !isMuted && 'animate-pulse'
+            isRecording && !isMuted && 'animate-pulse',
+            disabled && 'opacity-50 cursor-not-allowed'
           )}
-          disabled={connectionState === 'connecting'}
+          disabled={connectionState === 'connecting' || disabled}
         >
           {isMuted ? (
             <MicOff className="h-4 w-4" />
@@ -87,9 +97,12 @@ export function AudioControls({
           )}
         </Button>
 
-        {/* Recording indicator pulse */}
+        {/* Recording indicator pulse (enhanced with red glow) */}
         {isRecording && !isMuted && (
-          <div className="absolute -inset-1 rounded-lg bg-red-500/30 animate-ping pointer-events-none" />
+          <>
+            <div className="absolute -inset-1 rounded-lg bg-red-500/30 animate-ping pointer-events-none" />
+            <div className="absolute -inset-2 rounded-lg bg-red-500/20 blur-md animate-pulse pointer-events-none" />
+          </>
         )}
       </div>
 

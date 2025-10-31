@@ -453,17 +453,20 @@ class PluginManager:
         self,
         agent_id: UUID,
         guild_id: int,
-        channel_id: int
+        channel_id: int,
+        session_id: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Join Discord voice channel via plugin.
 
         Phase 3: HTTP API entry point
+        Phase 6.X: Unified Conversation Threading - accepts optional session_id
 
         Args:
             agent_id: Agent UUID
             guild_id: Discord guild ID
             channel_id: Discord channel ID
+            session_id: Optional session UUID for unified conversation threading
 
         Returns:
             Connection status dict
@@ -475,7 +478,7 @@ class PluginManager:
         if not plugin:
             raise ValueError(f"Discord plugin not found for agent {agent_id}")
 
-        return await plugin.join_voice_channel(guild_id, channel_id)
+        return await plugin.join_voice_channel(guild_id, channel_id, session_id)
 
     async def discord_leave_voice(
         self,
