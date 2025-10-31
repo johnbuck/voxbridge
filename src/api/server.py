@@ -301,6 +301,20 @@ class MetricsTracker:
 # Global metrics tracker
 metrics_tracker = MetricsTracker()
 
+
+def get_metrics_tracker() -> MetricsTracker:
+    """
+    Get the global metrics tracker instance.
+
+    Used by plugins to share the same metrics instance with the API server,
+    ensuring all recorded metrics are accessible via /api/metrics endpoint.
+
+    Returns:
+        MetricsTracker: The global metrics tracker instance
+    """
+    return metrics_tracker
+
+
 # ============================================================
 # SERVICE LAYER INITIALIZATION (VoxBridge 2.0)
 # ============================================================
