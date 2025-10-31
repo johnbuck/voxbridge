@@ -1575,12 +1575,13 @@ class DiscordPlugin(PluginBase):
             try:
                 t_playback_start = time.time()
 
-                # Record time to first audio (user starts speaking → first audio plays)
-                if session_id in self.session_timings:
-                    t_start = self.session_timings[session_id]['t_start']
-                    time_to_first_audio = t_playback_start - t_start
+                # Record time to first audio (user stops speaking → first audio plays)
+                if session_id in self.session_timings and 't_transcription_complete' in self.session_timings[session_id]:
+                    # Measure from when user STOPPED speaking (transcription complete), not when they started
+                    t_transcription_complete = self.session_timings[session_id]['t_transcription_complete']
+                    time_to_first_audio = t_playback_start - t_transcription_complete
                     self.metrics.record_time_to_first_audio(time_to_first_audio)
-                    logger.info(f"⏱️ ⭐⭐⭐ LATENCY [time to first audio]: {time_to_first_audio:.3f}s")
+                    logger.info(f"⏱️ ⭐⭐⭐ LATENCY [time to first audio]: {time_to_first_audio:.3f}s (transcription complete → audio plays)")
 
                 # Wait for current audio to finish if playing
                 while voice_client.is_playing():
