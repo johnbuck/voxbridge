@@ -161,6 +161,16 @@ class SentenceParser:
             if char == '.' and next_char == '.':
                 return False  # Part of ellipsis
 
+        # Look behind - check if we're after ellipsis dots
+        if char == '.' and pos > 0:
+            prev_char = self.buffer[pos - 1]
+            # Check if previous char is also a dot (we're at end of ellipsis)
+            if prev_char == '.':
+                # Check if there's another dot before that (3+ dots total)
+                if pos > 1 and self.buffer[pos - 2] == '.':
+                    # We're at the end of "..." - NOT a sentence boundary
+                    return False
+
         # Look behind to check for abbreviations and numbers
         if char == '.':
             # Check for numbers (1.5, 3.14, etc.)

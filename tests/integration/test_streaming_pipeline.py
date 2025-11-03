@@ -208,7 +208,7 @@ class TestErrorHandling:
         parser = SentenceParser(min_sentence_length=10)
 
         error_count = 0
-        async def on_error(error: Exception, metadata: dict):
+        async def on_error(sentence: str, error: Exception, metadata: dict):
             nonlocal error_count
             error_count += 1
 
@@ -517,10 +517,20 @@ class TestEdgeCases:
                 )
             # No delay between chunks
 
+        # Get final sentence
+        final = parser.finalize()
+        if final:
+            await tts_manager.enqueue_sentence(
+                sentence=final,
+                session_id="test",
+                voice_id="voice1",
+                speed=1.0
+            )
+
         # Wait for processing
         await asyncio.sleep(0.8)
 
-        # Should have processed all sentences
+        # Should have processed all sentences (1 from chunks + 1 from finalize)
         assert len(streaming_pipeline['synthesized']) >= 2
 
 

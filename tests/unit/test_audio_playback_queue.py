@@ -211,6 +211,9 @@ class TestInterruption:
     @pytest.mark.asyncio
     async def test_immediate_interruption(self, playback_queue, mock_voice_client):
         """Test immediate interruption stops current and cancels queue"""
+        # Make voice client appear to be playing
+        mock_voice_client.is_playing = Mock(return_value=True)
+
         await playback_queue.start()
 
         # Enqueue multiple chunks
@@ -223,7 +226,7 @@ class TestInterruption:
         # Wait a bit
         await asyncio.sleep(0.1)
 
-        # Should have stopped voice client
+        # Should have stopped voice client (because is_playing() returns True)
         mock_voice_client.stop.assert_called()
 
         # Queue should be empty

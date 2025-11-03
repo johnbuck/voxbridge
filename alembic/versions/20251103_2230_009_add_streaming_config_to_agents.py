@@ -1,7 +1,7 @@
 """add streaming config to agents
 
-Revision ID: 009_streaming_config
-Revises: 20251030_1630_008_add_max_utterance_time_to_agents
+Revision ID: 009
+Revises: 008
 Create Date: 2025-11-03 22:30:00.000000
 
 Adds sentence-level streaming configuration fields to agents table
@@ -14,8 +14,8 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision = '009_streaming_config'
-down_revision = '20251030_1630_008_add_max_utterance_time_to_agents'
+revision = '009'
+down_revision = '008'
 branch_labels = None
 depends_on = None
 
