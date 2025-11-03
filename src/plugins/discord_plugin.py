@@ -999,6 +999,10 @@ class DiscordPlugin(PluginBase):
             guild_id = voice_client.guild.id if voice_client and voice_client.guild else None
             mapped_session_id = self.guild_session_mapping.get(guild_id) if guild_id else None
 
+            # Phase 7: Handle user interruption if AI is currently speaking
+            if self.agent.streaming_enabled and guild_id:
+                await self._handle_interruption(guild_id, user_id, username)
+
             if mapped_session_id:
                 # Use the mapped session (unified conversation threading)
                 session_id = mapped_session_id
@@ -1484,6 +1488,113 @@ class DiscordPlugin(PluginBase):
         # Clean up retry count on completion (for skip/fallback strategies)
         if strategy in ('skip', 'fallback') and task_id in self.sentence_retry_counts:
             del self.sentence_retry_counts[task_id]
+
+    # ============================================================
+    # PHASE 7: USER INTERRUPTION HANDLING
+    # ============================================================
+
+    async def _handle_interruption(self, guild_id: int, user_id: str, username: str) -> None:
+        """
+        Handle user interruption when they start speaking while AI is responding.
+
+        Phase 7: Interruption strategies:
+        - immediate: Cancel all queued TTS and stop current playback immediately
+        - graceful: Finish current sentence, cancel queue
+        - drain: Process 1-2 more sentences, then stop
+
+        Args:
+            guild_id: Discord guild ID
+            user_id: Discord user ID (for logging)
+            username: Discord username (for logging)
+        """
+        # Check if there's an active TTS queue or playback
+        has_queued_tts = (
+            self.tts_queue_manager and
+            self.tts_queue_manager.queue.qsize() > 0
+        )
+        has_active_playback = (
+            guild_id in self.audio_playback_queues and
+            self.audio_playback_queues[guild_id].current_chunk is not None
+        )
+
+        if not has_queued_tts and not has_active_playback:
+            # No active TTS/playback, no interruption needed
+            return
+
+        strategy = self.agent.streaming_interruption_strategy
+
+        logger.info(
+            f"🛑 [INTERRUPTION] User {username} started speaking while AI responding "
+            f"(strategy={strategy}, queued={self.tts_queue_manager.queue.qsize() if self.tts_queue_manager else 0}, "
+            f"playing={has_active_playback})"
+        )
+
+        # Record interruption metric
+        self.metrics.record_interruption()
+
+        # Execute interruption strategy
+        if strategy == 'immediate':
+            # Cancel all queued TTS
+            if self.tts_queue_manager:
+                await self.tts_queue_manager.cancel_all()
+                logger.info(f"🚫 [IMMEDIATE] Cancelled all queued TTS sentences")
+
+            # Stop current audio playback immediately
+            if guild_id in self.audio_playback_queues:
+                await self.audio_playback_queues[guild_id].stop_playback('immediate')
+                logger.info(f"⏹️  [IMMEDIATE] Stopped audio playback immediately")
+
+        elif strategy == 'graceful':
+            # Cancel pending TTS (keep active synthesis)
+            if self.tts_queue_manager:
+                await self.tts_queue_manager.cancel_pending()
+                logger.info(
+                    f"🚫 [GRACEFUL] Cancelled pending TTS sentences "
+                    f"(active synthesis will complete)"
+                )
+
+            # Let current audio sentence finish, cancel rest
+            if guild_id in self.audio_playback_queues:
+                await self.audio_playback_queues[guild_id].stop_playback('graceful')
+                logger.info(f"⏸️  [GRACEFUL] Finishing current sentence, cancelling rest")
+
+        elif strategy == 'drain':
+            # Keep next 1-2 sentences, cancel rest
+            if self.tts_queue_manager:
+                await self.tts_queue_manager.cancel_after(num_to_keep=2)
+                logger.info(
+                    f"🚫 [DRAIN] Kept next 2 TTS sentences, cancelled rest "
+                    f"(will complete thought)"
+                )
+
+            # Let current + next 1-2 sentences play
+            if guild_id in self.audio_playback_queues:
+                await self.audio_playback_queues[guild_id].stop_playback('drain')
+                logger.info(f"⏸️  [DRAIN] Processing 1-2 more sentences, then stopping")
+
+        else:
+            logger.error(f"❌ Unknown interruption strategy: {strategy} - defaulting to immediate")
+            # Fallback to immediate
+            if self.tts_queue_manager:
+                await self.tts_queue_manager.cancel_all()
+            if guild_id in self.audio_playback_queues:
+                await self.audio_playback_queues[guild_id].stop_playback('immediate')
+
+        # Broadcast interruption event to frontend
+        try:
+            from src.api import get_ws_manager
+            ws_manager = get_ws_manager()
+            await ws_manager.broadcast({
+                "event": "user_interruption",
+                "data": {
+                    "userId": user_id,
+                    "username": username,
+                    "strategy": strategy,
+                    "timestamp": datetime.now().isoformat()
+                }
+            })
+        except Exception as e:
+            logger.error(f"❌ Failed to broadcast interruption event: {e}")
 
     async def _generate_response(
         self,
