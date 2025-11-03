@@ -85,6 +85,11 @@ from src.services.stt_service import get_stt_service
 from src.services.llm_service import get_llm_service, get_llm_service_for_agent, LLMConfig, ProviderType
 from src.services.tts_service import get_tts_service
 
+# Phase 5: Import sentence-level streaming services
+from src.services.sentence_parser import SentenceParser
+from src.services.tts_queue_manager import TTSQueueManager
+from src.services.audio_playback_queue import AudioPlaybackQueue
+
 # LLM exceptions for error handling
 from src.llm import LLMError, LLMConnectionError, LLMTimeoutError
 
@@ -164,6 +169,12 @@ class DiscordPlugin(PluginBase):
 
         # Phase 2: Audio receiver instances (one per voice client)
         self.audio_receivers: Dict[int, 'AudioReceiver'] = {}  # guild_id → AudioReceiver
+
+        # Phase 5: Sentence-level streaming infrastructure
+        # These will be initialized in initialize() after agent binding
+        self.tts_queue_manager: Optional[TTSQueueManager] = None
+        self.audio_playback_queues: Dict[int, AudioPlaybackQueue] = {}  # guild_id → AudioPlaybackQueue
+        self.sentence_parsers: Dict[str, SentenceParser] = {}  # session_id → SentenceParser
 
         # Phase 6.X: Unified Conversation Threading
         # Maps Discord guild_id to web session_id for unified conversations
@@ -441,6 +452,23 @@ class DiscordPlugin(PluginBase):
 
             self.tts_service = get_tts_service()
 
+            # Phase 5: Initialize TTS queue manager if streaming enabled
+            if self.agent.streaming_enabled:
+                logger.info(
+                    f"🌊 Initializing sentence-level streaming "
+                    f"(concurrency={self.agent.streaming_max_concurrent_tts}, "
+                    f"min_length={self.agent.streaming_min_sentence_length})"
+                )
+
+                self.tts_queue_manager = TTSQueueManager(
+                    max_concurrent=self.agent.streaming_max_concurrent_tts,
+                    tts_service=self.tts_service,
+                    on_complete=self._on_tts_sentence_complete,
+                    on_error=self._on_tts_sentence_error
+                )
+            else:
+                logger.info("📝 Sentence-level streaming disabled for this agent")
+
             logger.info(
                 f"✅ Initialized services for Discord plugin (agent: {self.agent_name})"
             )
@@ -531,6 +559,17 @@ class DiscordPlugin(PluginBase):
                         voice_client.listen(receiver)
                         self.audio_receivers[after.channel.guild.id] = receiver
                         logger.info(f"🎤 Registered audio receiver for guild {after.channel.guild.id} (auto-join)")
+
+                        # Phase 5: Create audio playback queue if streaming enabled
+                        if self.agent.streaming_enabled and after.channel.guild.id not in self.audio_playback_queues:
+                            playback_queue = AudioPlaybackQueue(
+                                voice_client=voice_client,
+                                on_complete=None,  # Optional callback
+                                on_error=None  # Optional callback
+                            )
+                            await playback_queue.start()
+                            self.audio_playback_queues[after.channel.guild.id] = playback_queue
+                            logger.info(f"🎵 Created audio playback queue for guild {after.channel.guild.id} (auto-join)")
 
                     except Exception as e:
                         logger.error(
@@ -752,6 +791,11 @@ class DiscordPlugin(PluginBase):
         if not self.bot_token:
             raise RuntimeError("Discord bot token not configured")
 
+        # Phase 5: Start TTS queue manager if streaming enabled
+        if self.tts_queue_manager:
+            await self.tts_queue_manager.start()
+            logger.info(f"🌊 Started TTS queue manager for agent '{self.agent_name}'")
+
         # Start bot in background task
         self._bot_task = asyncio.create_task(self._run_bot())
 
@@ -805,6 +849,24 @@ class DiscordPlugin(PluginBase):
             session_id = self.active_sessions.get(user_id)
             if session_id:
                 await self._cleanup_session(user_id, session_id)
+
+        # Phase 5: Stop TTS queue manager and audio playback queues
+        if self.tts_queue_manager:
+            try:
+                await self.tts_queue_manager.stop()
+                logger.info(f"✅ TTS queue manager stopped for agent '{self.agent_name}'")
+            except Exception as e:
+                logger.error(f"❌ Error stopping TTS queue manager: {e}")
+
+        for guild_id, playback_queue in list(self.audio_playback_queues.items()):
+            try:
+                await playback_queue.stop()
+                logger.info(f"✅ Audio playback queue stopped for guild {guild_id}")
+            except Exception as e:
+                logger.error(f"❌ Error stopping audio playback queue for guild {guild_id}: {e}")
+
+        self.audio_playback_queues.clear()
+        self.sentence_parsers.clear()
 
         # Disconnect from all voice channels
         for guild_id, voice_client in list(self.voice_clients.items()):
@@ -1260,6 +1322,68 @@ class DiscordPlugin(PluginBase):
 
         await self._generate_response(session_id, user_id, username, text, guild_id)
 
+    # ============================================================
+    # PHASE 5: SENTENCE-LEVEL STREAMING CALLBACKS
+    # ============================================================
+
+    async def _on_tts_sentence_complete(self, audio_bytes: bytes, metadata: Dict[str, Any]) -> None:
+        """
+        Callback when TTS synthesis completes for a sentence.
+
+        Enqueues audio to AudioPlaybackQueue for sequential playback.
+
+        Args:
+            audio_bytes: Synthesized audio (WAV format)
+            metadata: Sentence metadata (task_id, sentence, session_id, latency, etc.)
+        """
+        session_id = metadata.get('session_id')
+        sentence = metadata.get('sentence', '')
+        latency = metadata.get('latency', 0)
+
+        logger.info(
+            f"✅ [STREAMING] TTS complete for sentence "
+            f"(session={session_id[:8] if session_id else 'unknown'}..., "
+            f"sentence_len={len(sentence)} chars, latency={latency:.2f}s)"
+        )
+
+        # Find guild_id for this session
+        guild_id = metadata.get('guild_id')
+
+        if not guild_id or guild_id not in self.audio_playback_queues:
+            logger.warning(
+                f"⚠️ [STREAMING] No audio playback queue for guild {guild_id}, "
+                f"cannot enqueue audio"
+            )
+            return
+
+        # Enqueue audio to playback queue
+        playback_queue = self.audio_playback_queues[guild_id]
+        await playback_queue.enqueue_audio(audio_bytes, metadata)
+
+    async def _on_tts_sentence_error(self, sentence: str, error: Exception, metadata: Dict[str, Any]) -> None:
+        """
+        Callback when TTS synthesis fails for a sentence.
+
+        Implements error handling strategy from agent config.
+
+        Args:
+            sentence: Sentence text that failed
+            error: Exception that occurred
+            metadata: Sentence metadata (task_id, session_id, etc.)
+        """
+        session_id = metadata.get('session_id')
+        strategy = self.agent.streaming_error_strategy
+
+        logger.error(
+            f"❌ [STREAMING] TTS error for sentence "
+            f"(session={session_id[:8] if session_id else 'unknown'}..., "
+            f"strategy={strategy}, sentence=\"{sentence[:50]}...\", error={error})"
+        )
+
+        # Phase 6: Implement error handling strategies
+        # For now, just log the error
+        # TODO: Implement skip/retry/fallback strategies
+
     async def _generate_response(
         self,
         session_id: str,
@@ -1315,6 +1439,18 @@ class DiscordPlugin(PluginBase):
                 logger.debug(f"  [{i}] {msg['role']}: {content_preview}...")
             logger.debug(f"[DEBUG] LLM config: model={llm_config.model}, temp={llm_config.temperature}, provider={llm_config.provider.value}")
 
+            # Phase 5: Initialize sentence parser if streaming enabled
+            sentence_parser = None
+            if self.agent.streaming_enabled and self.tts_queue_manager:
+                sentence_parser = SentenceParser(
+                    min_sentence_length=self.agent.streaming_min_sentence_length
+                )
+                self.sentence_parsers[session_id] = sentence_parser
+                logger.info(
+                    f"🌊 [STREAMING] Initialized sentence parser "
+                    f"(min_length={self.agent.streaming_min_sentence_length})"
+                )
+
             # Stream response from LLM (Phase 1 integration)
             full_response = ""
             first_chunk = True
@@ -1330,6 +1466,31 @@ class DiscordPlugin(PluginBase):
                     logger.info(f"⏱️ LATENCY [LLM first chunk]: {latency:.3f}s")
                     self.metrics.record_n8n_first_chunk_latency(latency)
                     first_chunk = False
+
+                # Phase 5: Process chunk through sentence parser if streaming enabled
+                if sentence_parser and self.tts_queue_manager:
+                    completed_sentences = sentence_parser.add_chunk(chunk)
+
+                    # Enqueue completed sentences to TTS queue
+                    for sentence in completed_sentences:
+                        logger.info(
+                            f"🌊 [STREAMING] Sentence detected: \"{sentence[:50]}...\" "
+                            f"(len={len(sentence)} chars)"
+                        )
+
+                        # Enqueue to TTS queue manager
+                        await self.tts_queue_manager.enqueue_sentence(
+                            sentence=sentence,
+                            session_id=session_id,
+                            voice_id=self.agent.tts_voice or os.getenv('CHATTERBOX_VOICE_ID', 'default'),
+                            speed=self.agent.tts_rate or 1.0,
+                            metadata={
+                                'guild_id': guild_id,
+                                'user_id': user_id,
+                                'username': username,
+                                'timestamp': time.time()
+                            }
+                        )
 
                 # Broadcast AI response chunk to frontend
                 try:
@@ -1515,6 +1676,36 @@ class DiscordPlugin(PluginBase):
                     logger.error(f"❌ n8n webhook fallback failed: {n8n_error}", exc_info=True)
                     raise LLMError(f"Both LLM providers and n8n webhook failed. LLM: {e}, n8n: {n8n_error}") from n8n_error
 
+            # Phase 5: Finalize sentence parser and enqueue remaining text
+            if sentence_parser and self.tts_queue_manager:
+                remaining_text = sentence_parser.finalize()
+
+                if remaining_text:
+                    logger.info(
+                        f"🌊 [STREAMING] Finalizing remaining text: \"{remaining_text[:50]}...\" "
+                        f"(len={len(remaining_text)} chars)"
+                    )
+
+                    # Enqueue remaining text to TTS queue
+                    await self.tts_queue_manager.enqueue_sentence(
+                        sentence=remaining_text,
+                        session_id=session_id,
+                        voice_id=self.agent.tts_voice or os.getenv('CHATTERBOX_VOICE_ID', 'default'),
+                        speed=self.agent.tts_rate or 1.0,
+                        metadata={
+                            'guild_id': guild_id,
+                            'user_id': user_id,
+                            'username': username,
+                            'timestamp': time.time(),
+                            'is_final': True  # Mark as final chunk
+                        }
+                    )
+
+                # Clean up sentence parser
+                if session_id in self.sentence_parsers:
+                    del self.sentence_parsers[session_id]
+                    logger.info(f"🌊 [STREAMING] Cleaned up sentence parser for session {session_id[:8]}...")
+
             # Phase 1 integration: Add assistant message to conversation
             await self.conversation_service.add_message(
                 session_id=session_id,
@@ -1540,10 +1731,17 @@ class DiscordPlugin(PluginBase):
             except Exception as e:
                 logger.error(f"❌ Failed to broadcast AI response complete: {e}")
 
-            logger.info(f"🤖 LLM response generated for session {session_id[:8]}... - starting TTS playback (user={user_id})")
+            logger.info(f"🤖 LLM response generated for session {session_id[:8]}... (user={user_id})")
 
-            # Phase 2: Synthesize and play TTS
-            if guild_id and guild_id in self.voice_clients:
+            # Phase 5: Skip TTS if streaming enabled (already handled by AudioPlaybackQueue)
+            if self.agent.streaming_enabled and sentence_parser:
+                logger.info(
+                    f"🌊 [STREAMING] TTS handled by AudioPlaybackQueue, skipping legacy _play_tts() "
+                    f"(session={session_id[:8]}...)"
+                )
+            # Phase 2: Synthesize and play TTS (legacy non-streaming mode)
+            elif guild_id and guild_id in self.voice_clients:
+                logger.info(f"📝 [NON-STREAMING] Starting legacy TTS playback (session={session_id[:8]}...)")
                 voice_client = self.voice_clients[guild_id]
                 await self._play_tts(full_response, voice_client, session_id)
                 logger.info(f"🔊 TTS playback completed for session {session_id[:8]}... (user={user_id})")
@@ -1812,6 +2010,17 @@ class DiscordPlugin(PluginBase):
             voice_client.listen(receiver)
             self.audio_receivers[guild_id] = receiver
             logger.info(f"🎤 Registered audio receiver for guild {guild_id}")
+
+            # Phase 5: Create audio playback queue if streaming enabled
+            if self.agent.streaming_enabled and guild_id not in self.audio_playback_queues:
+                playback_queue = AudioPlaybackQueue(
+                    voice_client=voice_client,
+                    on_complete=None,  # Optional callback
+                    on_error=None  # Optional callback
+                )
+                await playback_queue.start()
+                self.audio_playback_queues[guild_id] = playback_queue
+                logger.info(f"🎵 Created audio playback queue for guild {guild_id} (manual join)")
 
             # Phase 6.X: Store session mapping if provided
             if session_id:
