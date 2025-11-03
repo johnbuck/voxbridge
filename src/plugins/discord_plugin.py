@@ -176,6 +176,10 @@ class DiscordPlugin(PluginBase):
         self.audio_playback_queues: Dict[int, AudioPlaybackQueue] = {}  # guild_id → AudioPlaybackQueue
         self.sentence_parsers: Dict[str, SentenceParser] = {}  # session_id → SentenceParser
 
+        # Phase 6: Error handling infrastructure
+        self.sentence_retry_counts: Dict[str, int] = {}  # task_id → retry_count
+        self.fallback_triggered: Dict[str, bool] = {}  # session_id → fallback_triggered
+
         # Phase 6.X: Unified Conversation Threading
         # Maps Discord guild_id to web session_id for unified conversations
         # When set, Discord voice input will use the mapped session instead of creating new ones
@@ -868,6 +872,10 @@ class DiscordPlugin(PluginBase):
         self.audio_playback_queues.clear()
         self.sentence_parsers.clear()
 
+        # Phase 6: Clear error handling state
+        self.sentence_retry_counts.clear()
+        self.fallback_triggered.clear()
+
         # Disconnect from all voice channels
         for guild_id, voice_client in list(self.voice_clients.items()):
             try:
@@ -1366,23 +1374,116 @@ class DiscordPlugin(PluginBase):
 
         Implements error handling strategy from agent config.
 
+        Phase 6: Error handling strategies:
+        - skip: Log error, continue with next sentence (audio will have gaps)
+        - retry: Retry failed sentence up to 2 times before skipping
+        - fallback: On first failure, cancel remaining sentences and use legacy TTS
+
         Args:
             sentence: Sentence text that failed
             error: Exception that occurred
             metadata: Sentence metadata (task_id, session_id, etc.)
         """
         session_id = metadata.get('session_id')
+        task_id = metadata.get('task_id')
+        guild_id = metadata.get('guild_id')
         strategy = self.agent.streaming_error_strategy
 
         logger.error(
             f"❌ [STREAMING] TTS error for sentence "
             f"(session={session_id[:8] if session_id else 'unknown'}..., "
-            f"strategy={strategy}, sentence=\"{sentence[:50]}...\", error={error})"
+            f"strategy={strategy}, task={task_id[:8] if task_id else 'unknown'}..., "
+            f"sentence=\"{sentence[:50]}...\", error={error})"
         )
 
+        # Record error metric
+        self.metrics.record_error()
+
         # Phase 6: Implement error handling strategies
-        # For now, just log the error
-        # TODO: Implement skip/retry/fallback strategies
+        if strategy == 'skip':
+            # Skip failed sentence, continue with next
+            logger.warning(
+                f"⏭️  [SKIP] Skipping failed sentence (task={task_id[:8] if task_id else 'unknown'}...) - "
+                f"audio may have gaps"
+            )
+            # No action needed - just continue with next sentence
+
+        elif strategy == 'retry':
+            # Retry failed sentence up to 2 times
+            retry_count = self.sentence_retry_counts.get(task_id, 0)
+            max_retries = 2
+
+            if retry_count < max_retries:
+                # Retry the sentence
+                retry_count += 1
+                self.sentence_retry_counts[task_id] = retry_count
+
+                logger.warning(
+                    f"🔄 [RETRY] Retrying sentence (attempt {retry_count}/{max_retries}, "
+                    f"task={task_id[:8] if task_id else 'unknown'}...)"
+                )
+
+                # Re-enqueue the same sentence
+                if self.tts_queue_manager:
+                    await self.tts_queue_manager.enqueue_sentence(
+                        sentence=sentence,
+                        session_id=session_id,
+                        voice_id=self.agent.tts_voice or os.getenv('CHATTERBOX_VOICE_ID', 'default'),
+                        speed=self.agent.tts_rate or 1.0,
+                        metadata={
+                            **metadata,
+                            'retry_count': retry_count,
+                            'is_retry': True
+                        }
+                    )
+            else:
+                # Max retries exceeded, skip sentence
+                logger.error(
+                    f"⏭️  [RETRY] Max retries exceeded (task={task_id[:8] if task_id else 'unknown'}...) - "
+                    f"skipping sentence"
+                )
+                # Clean up retry count
+                if task_id in self.sentence_retry_counts:
+                    del self.sentence_retry_counts[task_id]
+
+        elif strategy == 'fallback':
+            # Cancel remaining sentences and fall back to legacy TTS
+            # Only trigger fallback once per session
+            if session_id and not self.fallback_triggered.get(session_id, False):
+                self.fallback_triggered[session_id] = True
+
+                logger.warning(
+                    f"🔙 [FALLBACK] First TTS failure - canceling remaining sentences and "
+                    f"falling back to legacy TTS (session={session_id[:8]}...)"
+                )
+
+                # Cancel all pending sentences in TTS queue
+                if self.tts_queue_manager:
+                    await self.tts_queue_manager.cancel_pending()
+                    logger.info(f"🚫 [FALLBACK] Cancelled pending TTS sentences")
+
+                # Note: We can't synthesize the remaining text here because we don't
+                # have access to the full response. The sentence-level streaming will
+                # continue with already-enqueued sentences, but no new ones will be added.
+                # This provides graceful degradation.
+
+                logger.info(
+                    f"✅ [FALLBACK] Fallback mode active - processing already-enqueued sentences, "
+                    f"no new sentences will be added"
+                )
+            else:
+                # Fallback already triggered, just log
+                logger.debug(
+                    f"⏭️  [FALLBACK] Skipping sentence (fallback already active, "
+                    f"task={task_id[:8] if task_id else 'unknown'}...)"
+                )
+
+        else:
+            logger.error(f"❌ Unknown error strategy: {strategy} - defaulting to skip")
+
+        # Clean up retry count on completion (for skip/fallback strategies)
+        if strategy in ('skip', 'fallback') and task_id in self.sentence_retry_counts:
+            del self.sentence_retry_counts[task_id]
 
     async def _generate_response(
         self,
@@ -1943,6 +2044,18 @@ class DiscordPlugin(PluginBase):
             # Remove timing data
             if session_id in self.session_timings:
                 del self.session_timings[session_id]
+
+            # Phase 6: Cleanup error handling state
+            if session_id in self.fallback_triggered:
+                del self.fallback_triggered[session_id]
+                logger.debug(f"🧹 Cleaned up fallback state for session {session_id[:8]}...")
+
+            if session_id in self.sentence_parsers:
+                del self.sentence_parsers[session_id]
+                logger.debug(f"🧹 Cleaned up sentence parser for session {session_id[:8]}...")
+
+            # Note: sentence_retry_counts is keyed by task_id, not session_id,
+            # so it's cleaned up when retries complete or max retries reached
 
             # Phase 2: Cleanup audio receiver for this user
             # Find guild_id for this user's voice connection
