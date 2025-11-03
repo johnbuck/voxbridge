@@ -82,12 +82,26 @@ class MetricsTracker:
         # UX Enhancement
         self.thinking_indicator_durations = deque(maxlen=max_samples)  # thinking sound duration (gap filled)
 
+        # Phase 8: Sentence-Level Streaming Metrics
+        self.sentence_detection_latencies = deque(maxlen=max_samples)  # LLM chunk → sentence detected (ms)
+        self.sentence_tts_latencies = deque(maxlen=max_samples)  # per-sentence TTS synthesis time (s)
+        self.audio_queue_wait_latencies = deque(maxlen=max_samples)  # TTS complete → playback starts (ms)
+        self.sentence_to_audio_latencies = deque(maxlen=max_samples)  # sentence detected → audio plays (s)
+
         # Counters
         self.transcript_count = 0
         self.error_count = 0
         self.total_requests = 0
         self.start_time = time.time()
         self.lock = Lock()
+
+        # Phase 8: Streaming-specific counters
+        self.sentences_detected = 0
+        self.sentences_synthesized = 0
+        self.sentences_failed = 0
+        self.sentences_retried = 0
+        self.interruption_count = 0
+        self.streaming_sessions = 0
 
     def record_latency(self, latency_ms: float):
         """Record a latency measurement (overall transcript latency)"""
@@ -191,6 +205,47 @@ class MetricsTracker:
             self.error_count += 1
             self.total_requests += 1
 
+    # Phase 8: Sentence-Level Streaming recording methods
+    def record_sentence_detection(self, latency_ms: float):
+        """Record sentence detection latency (LLM chunk → sentence detected) in ms"""
+        with self.lock:
+            self.sentence_detection_latencies.append(latency_ms)
+            self.sentences_detected += 1
+
+    def record_sentence_tts(self, latency_s: float, success: bool = True):
+        """Record per-sentence TTS synthesis latency (sentence → audio bytes) in seconds"""
+        with self.lock:
+            if success:
+                self.sentence_tts_latencies.append(latency_s)
+                self.sentences_synthesized += 1
+            else:
+                self.sentences_failed += 1
+
+    def record_sentence_retry(self):
+        """Record a sentence TTS retry"""
+        with self.lock:
+            self.sentences_retried += 1
+
+    def record_audio_queue_wait(self, latency_ms: float):
+        """Record audio queue wait latency (TTS complete → playback starts) in ms"""
+        with self.lock:
+            self.audio_queue_wait_latencies.append(latency_ms)
+
+    def record_sentence_to_audio(self, latency_s: float):
+        """Record sentence-to-audio latency (sentence detected → audio plays) in seconds"""
+        with self.lock:
+            self.sentence_to_audio_latencies.append(latency_s)
+
+    def record_interruption(self):
+        """Record a user interruption"""
+        with self.lock:
+            self.interruption_count += 1
+
+    def record_streaming_session(self):
+        """Record start of a streaming session"""
+        with self.lock:
+            self.streaming_sessions += 1
+
     def _calc_stats(self, latencies_deque) -> dict:
         """Calculate statistics for a latency deque"""
         if not latencies_deque:
@@ -257,6 +312,19 @@ class MetricsTracker:
             # UX Enhancement (seconds)
             thinking_indicator_stats = self._calc_stats(self.thinking_indicator_durations)
 
+            # Phase 8: Sentence-Level Streaming Metrics
+            sentence_detection_stats = self._calc_stats(self.sentence_detection_latencies)
+            if sentence_detection_stats["avg"] > 0:
+                sentence_detection_stats = {k: int(v) for k, v in sentence_detection_stats.items()}
+
+            sentence_tts_stats = self._calc_stats(self.sentence_tts_latencies)
+
+            audio_queue_wait_stats = self._calc_stats(self.audio_queue_wait_latencies)
+            if audio_queue_wait_stats["avg"] > 0:
+                audio_queue_wait_stats = {k: int(v) for k, v in audio_queue_wait_stats.items()}
+
+            sentence_to_audio_stats = self._calc_stats(self.sentence_to_audio_latencies)
+
             error_rate = self.error_count / self.total_requests if self.total_requests > 0 else 0.0
             uptime = int(time.time() - self.start_time)
 
@@ -292,10 +360,24 @@ class MetricsTracker:
                 # UX Enhancement
                 "thinkingIndicatorDuration": thinking_indicator_stats,
 
+                # Phase 8: Sentence-Level Streaming Metrics
+                "sentenceDetectionLatency": sentence_detection_stats,
+                "sentenceTtsLatency": sentence_tts_stats,
+                "audioQueueWaitLatency": audio_queue_wait_stats,
+                "sentenceToAudioLatency": sentence_to_audio_stats,
+
                 # Counters
                 "transcriptCount": self.transcript_count,
                 "errorRate": error_rate,
-                "uptime": uptime
+                "uptime": uptime,
+
+                # Phase 8: Streaming-specific counters
+                "sentencesDetected": self.sentences_detected,
+                "sentencesSynthesized": self.sentences_synthesized,
+                "sentencesFailed": self.sentences_failed,
+                "sentencesRetried": self.sentences_retried,
+                "interruptionCount": self.interruption_count,
+                "streamingSessions": self.streaming_sessions
             }
 
 # Global metrics tracker

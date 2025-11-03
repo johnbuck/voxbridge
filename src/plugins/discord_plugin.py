@@ -1358,6 +1358,9 @@ class DiscordPlugin(PluginBase):
             f"sentence_len={len(sentence)} chars, latency={latency:.2f}s)"
         )
 
+        # Phase 8: Record sentence TTS latency
+        self.metrics.record_sentence_tts(latency, success=True)
+
         # Find guild_id for this session
         guild_id = metadata.get('guild_id')
 
@@ -1368,9 +1371,22 @@ class DiscordPlugin(PluginBase):
             )
             return
 
+        # Track timestamp for audio queue wait latency
+        t_before_enqueue = time.time()
+
         # Enqueue audio to playback queue
         playback_queue = self.audio_playback_queues[guild_id]
         await playback_queue.enqueue_audio(audio_bytes, metadata)
+
+        # Phase 8: Calculate and record sentence-to-audio latency
+        t_sentence_detected = metadata.get('t_sentence_detected')
+        if t_sentence_detected:
+            sentence_to_audio_latency = time.time() - t_sentence_detected
+            self.metrics.record_sentence_to_audio(sentence_to_audio_latency)
+            logger.debug(
+                f"⏱️  [STREAMING METRICS] Sentence-to-audio: {sentence_to_audio_latency:.3f}s "
+                f"(sentence detected → audio enqueued)"
+            )
 
     async def _on_tts_sentence_error(self, sentence: str, error: Exception, metadata: Dict[str, Any]) -> None:
         """
@@ -1400,8 +1416,9 @@ class DiscordPlugin(PluginBase):
             f"sentence=\"{sentence[:50]}...\", error={error})"
         )
 
-        # Record error metric
+        # Phase 8: Record error metric and TTS failure
         self.metrics.record_error()
+        self.metrics.record_sentence_tts(0, success=False)
 
         # Phase 6: Implement error handling strategies
         if strategy == 'skip':
@@ -1421,6 +1438,9 @@ class DiscordPlugin(PluginBase):
                 # Retry the sentence
                 retry_count += 1
                 self.sentence_retry_counts[task_id] = retry_count
+
+                # Phase 8: Record retry
+                self.metrics.record_sentence_retry()
 
                 logger.warning(
                     f"🔄 [RETRY] Retrying sentence (attempt {retry_count}/{max_retries}, "
@@ -1663,6 +1683,9 @@ class DiscordPlugin(PluginBase):
                     f"(min_length={self.agent.streaming_min_sentence_length})"
                 )
 
+                # Phase 8: Record streaming session start
+                self.metrics.record_streaming_session()
+
             # Stream response from LLM (Phase 1 integration)
             full_response = ""
             first_chunk = True
@@ -1685,10 +1708,15 @@ class DiscordPlugin(PluginBase):
 
                     # Enqueue completed sentences to TTS queue
                     for sentence in completed_sentences:
+                        t_sentence_detected = time.time()
+
                         logger.info(
                             f"🌊 [STREAMING] Sentence detected: \"{sentence[:50]}...\" "
                             f"(len={len(sentence)} chars)"
                         )
+
+                        # Phase 8: Record sentence detection (parsing time is negligible, ~0ms)
+                        self.metrics.record_sentence_detection(0)
 
                         # Enqueue to TTS queue manager
                         await self.tts_queue_manager.enqueue_sentence(
@@ -1700,7 +1728,8 @@ class DiscordPlugin(PluginBase):
                                 'guild_id': guild_id,
                                 'user_id': user_id,
                                 'username': username,
-                                'timestamp': time.time()
+                                'timestamp': time.time(),
+                                't_sentence_detected': t_sentence_detected  # Phase 8: for sentence-to-audio latency
                             }
                         )
 
