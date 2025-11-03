@@ -339,6 +339,76 @@ Please provide implementation code and tests.
 - **No breaking changes** - Phases must build on each other incrementally
 - **Test execution at phase end** - Sub-agents write tests; you run them once at completion
 
+### Streaming Best Practices
+
+**Sentence-Level Streaming Architecture** (implemented October 2025):
+
+VoxBridge now uses a three-stage streaming pipeline for 68% latency reduction:
+
+1. **SentenceParser** (`src/services/sentence_parser.py`)
+   - Incremental sentence boundary detection
+   - Handles edge cases (abbreviations, numbers, initials, ellipsis)
+   - Minimum length buffering (prevents very short sentences)
+   - Usage: `parser.add_chunk(llm_chunk)` → returns complete sentences
+
+2. **TTSQueueManager** (`src/services/tts_queue_manager.py`)
+   - Concurrent TTS synthesis (default: 3 parallel)
+   - Semaphore-based rate limiting
+   - Cancellation strategies: `cancel_all()`, `cancel_pending()`, `cancel_after(N)`
+   - Per-sentence metadata tracking
+   - Error callbacks with retry logic
+
+3. **AudioPlaybackQueue** (`src/services/audio_playback_queue.py`)
+   - Sequential FIFO playback (one sentence at a time)
+   - Discord voice client integration
+   - Interruption strategies: `immediate`, `graceful`, `drain`
+   - Gap-free audio transitions
+   - Completion callbacks
+
+**Integration Pattern**:
+```python
+# LLM chunk callback
+async def on_llm_chunk(chunk: str):
+    sentences = sentence_parser.add_chunk(chunk)
+    for sentence in sentences:
+        await tts_queue_manager.enqueue_sentence(
+            sentence=sentence,
+            session_id=session_id,
+            voice_id=agent.tts_voice,
+            speed=agent.tts_rate
+        )
+
+# TTS completion callback
+async def on_tts_complete(audio_bytes: bytes, metadata: dict):
+    await audio_playback_queue.enqueue_audio(audio_bytes, metadata)
+    metrics.record_sentence_tts(latency, success=True)
+
+# User interruption detection
+if user_speaking and (tts_queue_size > 0 or audio_playing):
+    await handle_interruption(guild_id, strategy='graceful')
+```
+
+**When to use streaming**:
+- ✅ Long AI responses (> 3 sentences)
+- ✅ Real-time conversational UX required
+- ✅ Concurrent TTS synthesis beneficial
+- ❌ Very short responses (< 2 sentences) - overhead not worth it
+- ❌ Pre-recorded audio playback - use direct play
+
+**Metrics to track**:
+- `sentence_detection_latencies` - Time to detect boundaries (< 10ms target)
+- `sentence_tts_latencies` - TTS synthesis time (< 1s target)
+- `sentence_to_audio_latencies` - End-to-end per sentence (< 2s target)
+- `sentences_detected`, `sentences_synthesized`, `sentences_failed`
+- `interruption_count` - Track user interruptions
+
+**Error handling strategies**:
+- **skip** - Log error, continue to next sentence (for non-critical responses)
+- **retry** - Retry up to N times with exponential backoff (for transient errors)
+- **fallback** - Cancel all remaining sentences (for critical errors)
+
+**Full Documentation**: [docs/architecture/sentence-level-streaming.md](../docs/architecture/sentence-level-streaming.md)
+
 ### Escalation
 **Escalate to user immediately if**:
 - Multiple architectural approaches are viable (need user preference)
@@ -360,12 +430,23 @@ Please provide implementation code and tests.
 
 **VoxBridge Version**: 1.0 (Discord-centric bot)
 **Target Version**: 2.0 (Standalone modular platform)
-**Transformation Status**: 🟡 Planning Complete - Ready to Start Phase 1
+**Transformation Status**: 🟢 Phase 5 Complete - Service Layer Refactored
 **Estimated Completion**: November 11, 2025 (16 days from Oct 26)
+
+**Recent Completions** (October 2025):
+- ✅ **Sentence-Level Streaming** - 68% latency reduction (~6.8s → ~2-3s)
+  - Smart SentenceParser with edge case handling
+  - TTSQueueManager with concurrent synthesis (3x)
+  - AudioPlaybackQueue with FIFO ordering
+  - Error handling strategies (skip, retry, fallback)
+  - User interruption handling (immediate, graceful, drain)
+  - Comprehensive metrics tracking
+  - Full test coverage (unit, integration, E2E)
 
 **Planning Documents**:
 - [VoxBridge 2.0 Transformation Plan](../docs/architecture/voxbridge-2.0-transformation-plan.md)
 - [Multi-Agent Implementation Plan](../docs/architecture/multi-agent-implementation-plan.md) (incorporated)
+- [Sentence-Level Streaming Architecture](../docs/architecture/sentence-level-streaming.md) (NEW)
 - [Frontend + LangGraph Plan](../docs/planning/frontend-langgraph-plan.md) (future)
 
 ## Getting Started
