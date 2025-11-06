@@ -295,12 +295,15 @@ VoxBridge 2.0 introduces a service-oriented architecture with 4 core services:
 - **.env** - Environment variables (not in repo, see .env.example for template)
 - **.env.example** - Environment variable template with database config
 - **alembic.ini** - Alembic migration configuration
+- **src/config/streaming.py** (177 lines) - Streaming configuration with chunking strategies (StreamingConfig dataclass, environment variable loading, runtime overrides)
+- **src/config/__init__.py** (15 lines) - Configuration module exports
 - **requirements-bot.txt** - Discord bot Python dependencies (includes SQLAlchemy, asyncpg)
 - **requirements.txt** - WhisperX server dependencies
 - **requirements-test.txt** - Testing dependencies
 
 ### Testing
-- **tests/unit/** - Unit tests (260 total: 255+ passing)
+- **tests/unit/** - Unit tests (285 total: 280+ passing)
+- **tests/unit/test_streaming_config.py** (307 lines, 25 tests) - Streaming configuration tests
 - **tests/unit/test_llm_types.py** (350 lines, 21 tests) - LLM type validation tests
 - **tests/unit/test_llm_factory.py** (421 lines, 24 tests) - Factory pattern tests
 - **tests/unit/test_openrouter_provider.py** (772 lines, 21 tests) - OpenRouter provider tests
@@ -348,6 +351,21 @@ VoxBridge 2.0 introduces a service-oriented architecture with 4 core services:
 - `USE_CLAUSE_SPLITTING=true` - Split on clauses for lower latency
 - `USE_THINKING_INDICATORS=true` - Play thinking sound during AI processing
 - `THINKING_INDICATOR_PROBABILITY=0.8` - % chance of playing indicator
+
+**Streaming Configuration with Chunking Strategies (TTS Provider Settings):**
+
+These settings can be configured via:
+1. **Environment variables** (default values, restored on container restart)
+2. **Frontend settings page** (runtime overrides at http://localhost:4903/settings/chatterbox)
+
+- `STREAMING_ENABLED=true` - Enable LLM response streaming (parse responses chunk-by-chunk for lower latency)
+- `STREAMING_CHUNKING_STRATEGY=sentence` - How to chunk responses (sentence/paragraph/word/fixed)
+- `STREAMING_MIN_CHUNK_LENGTH=10` - Minimum chunk length before TTS synthesis (characters, 5-200)
+- `STREAMING_MAX_CONCURRENT_TTS=3` - Maximum concurrent TTS synthesis requests (1-8)
+- `STREAMING_ERROR_STRATEGY=retry` - Error handling strategy (skip/retry/fallback)
+- `STREAMING_INTERRUPTION_STRATEGY=graceful` - Interruption handling (immediate/graceful/drain)
+
+**Note**: Runtime changes via frontend persist until container restart, then environment defaults are restored.
 
 **WhisperX Configuration:**
 - `WHISPERX_MODEL=small` - Model size (tiny, base, small, medium, large-v2)
@@ -476,6 +494,9 @@ docker compose up -d
 - **GET /health** - Health check (bot ready, in voice, speaker status)
 - **GET /status** - Detailed status (bot, voice, whisper, services)
 - **GET /metrics** - Performance metrics (latency, durations, samples)
+- **GET /api/streaming-config** - Get global streaming configuration with chunking strategies (runtime overrides or environment defaults)
+- **PUT /api/streaming-config** - Update streaming configuration at runtime (`{enabled?, chunking_strategy?, min_chunk_length?, max_concurrent_tts?, error_strategy?, interruption_strategy?}`)
+- **POST /api/streaming-config/reset** - Reset streaming configuration to environment variable defaults
 - **GET /api/channels** - Available Discord channels
 - **WS /ws** - WebSocket for real-time events
 

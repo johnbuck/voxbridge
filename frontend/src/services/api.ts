@@ -300,6 +300,15 @@ export interface TTSOptions {
   referenceAudioFilename?: string;
 }
 
+export interface StreamingConfig {
+  enabled: boolean;
+  chunking_strategy: 'sentence' | 'paragraph' | 'word' | 'fixed';
+  min_chunk_length: number;
+  max_concurrent_tts: number;
+  error_strategy: 'skip' | 'retry' | 'fallback';
+  interruption_strategy: 'immediate' | 'graceful' | 'drain';
+}
+
 class ApiClient {
   private baseUrl: string;
 
@@ -396,6 +405,23 @@ class ApiClient {
     return this.request<{ success: boolean }>('/api/config', {
       method: 'POST',
       body: JSON.stringify(config),
+    });
+  }
+
+  async getStreamingConfig(): Promise<StreamingConfig> {
+    return this.request<StreamingConfig>('/api/streaming-config');
+  }
+
+  async updateStreamingConfig(config: Partial<StreamingConfig>): Promise<StreamingConfig> {
+    return this.request<StreamingConfig>('/api/streaming-config', {
+      method: 'PUT',
+      body: JSON.stringify(config),
+    });
+  }
+
+  async resetStreamingConfig(): Promise<StreamingConfig> {
+    return this.request<StreamingConfig>('/api/streaming-config/reset', {
+      method: 'POST',
     });
   }
 

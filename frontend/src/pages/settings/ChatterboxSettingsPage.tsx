@@ -3,7 +3,7 @@
  * Text-to-speech service configuration
  */
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -24,8 +24,9 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { Input } from '@/components/ui/input';
-import { Volume2, Settings, Server, Activity, Zap } from 'lucide-react';
+import { Volume2, Settings, Server, Activity, Zap, Layers } from 'lucide-react';
 import { useToastHelpers } from '@/components/ui/toast';
+import { api, type StreamingConfig } from '@/services/api';
 
 // Chatterbox TTS configuration stored in localStorage
 interface ChatterboxConfig {
@@ -75,7 +76,27 @@ export function ChatterboxSettingsPage() {
     return DEFAULT_CONFIG;
   });
 
+  // Sentence-level streaming config (global, from environment variables)
+  const [streamingConfig, setStreamingConfig] = useState<StreamingConfig | null>(null);
+  const [streamingDialogOpen, setStreamingDialogOpen] = useState(false);
+  const [editedStreamingConfig, setEditedStreamingConfig] = useState<StreamingConfig | null>(null);
+  const [isSavingStreaming, setIsSavingStreaming] = useState(false);
+
   const toast = useToastHelpers();
+
+  // Fetch global streaming config on mount
+  useEffect(() => {
+    const fetchStreamingConfig = async () => {
+      try {
+        const config = await api.getStreamingConfig();
+        setStreamingConfig(config);
+      } catch (error) {
+        console.error('[ChatterboxSettings] Failed to fetch streaming config:', error);
+        toast.error('Failed to load streaming config', 'Using defaults');
+      }
+    };
+    fetchStreamingConfig();
+  }, [toast]);
 
   const handleSaveSettings = () => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(currentSettings));
@@ -85,6 +106,45 @@ export function ChatterboxSettingsPage() {
 
   const handleResetSettings = () => {
     setCurrentSettings(DEFAULT_CONFIG);
+  };
+
+  const handleOpenStreamingDialog = () => {
+    if (streamingConfig) {
+      setEditedStreamingConfig({ ...streamingConfig });
+      setStreamingDialogOpen(true);
+    }
+  };
+
+  const handleSaveStreamingConfig = async () => {
+    if (!editedStreamingConfig) return;
+
+    setIsSavingStreaming(true);
+    try {
+      const updated = await api.updateStreamingConfig(editedStreamingConfig);
+      setStreamingConfig(updated);
+      setStreamingDialogOpen(false);
+      toast.success('Streaming config saved!', 'Changes take effect immediately');
+    } catch (error) {
+      console.error('[ChatterboxSettings] Failed to save streaming config:', error);
+      toast.error('Failed to save streaming config', error instanceof Error ? error.message : 'Unknown error');
+    } finally {
+      setIsSavingStreaming(false);
+    }
+  };
+
+  const handleResetStreamingConfig = async () => {
+    setIsSavingStreaming(true);
+    try {
+      const reset = await api.resetStreamingConfig();
+      setStreamingConfig(reset);
+      setEditedStreamingConfig(reset);
+      toast.success('Streaming config reset!', 'Restored environment defaults');
+    } catch (error) {
+      console.error('[ChatterboxSettings] Failed to reset streaming config:', error);
+      toast.error('Failed to reset streaming config', error instanceof Error ? error.message : 'Unknown error');
+    } finally {
+      setIsSavingStreaming(false);
+    }
   };
 
   return (
@@ -192,6 +252,76 @@ export function ChatterboxSettingsPage() {
           </CardContent>
         </Card>
       </div>
+
+      {/* Streaming Configuration (Global) */}
+      {streamingConfig && (
+        <Card>
+          <CardHeader>
+            <div className="flex items-center justify-between">
+              <div>
+                <CardTitle className="text-lg font-semibold flex items-center gap-2">
+                  <Layers className="h-5 w-5 text-primary" />
+                  Streaming Configuration
+                </CardTitle>
+                <p className="text-xs text-muted-foreground mt-1">
+                  Control how LLM responses are chunked and sent to TTS (similar to Chatterbox streaming)
+                </p>
+              </div>
+              <Button onClick={handleOpenStreamingDialog} size="sm">
+                <Settings className="h-4 w-4 mr-2" />
+                Configure
+              </Button>
+            </div>
+          </CardHeader>
+          <CardContent>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs text-muted-foreground">Enabled</span>
+                  <Badge variant="outline" className={streamingConfig.enabled ? "bg-green-500/20 text-green-400 border-green-500/50" : "bg-red-500/20 text-red-400 border-red-500/50"}>
+                    {streamingConfig.enabled ? 'Yes' : 'No'}
+                  </Badge>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-xs text-muted-foreground">Chunking Strategy</span>
+                  <Badge variant="outline" className="bg-primary/20 text-primary border-primary/50">
+                    {streamingConfig.chunking_strategy}
+                  </Badge>
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs text-muted-foreground">Min Chunk Length</span>
+                  <span className="text-sm font-medium">{streamingConfig.min_chunk_length} chars</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-xs text-muted-foreground">Max Concurrent TTS</span>
+                  <span className="text-sm font-medium">{streamingConfig.max_concurrent_tts}</span>
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs text-muted-foreground">Error Strategy</span>
+                  <Badge variant="outline" className="bg-blue-500/20 text-blue-400 border-blue-500/50">
+                    {streamingConfig.error_strategy}
+                  </Badge>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-xs text-muted-foreground">Interruption</span>
+                  <Badge variant="outline" className="bg-purple-500/20 text-purple-400 border-purple-500/50">
+                    {streamingConfig.interruption_strategy}
+                  </Badge>
+                </div>
+              </div>
+            </div>
+            <div className="text-xs text-muted-foreground mt-4">
+              <span className="font-semibold">Note:</span> Runtime changes reset on container restart (environment defaults restored)
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {/* Configuration Dialog */}
       <Dialog open={settingsDialogOpen} onOpenChange={setSettingsDialogOpen}>
@@ -431,6 +561,179 @@ export function ChatterboxSettingsPage() {
             </Button>
             <Button onClick={handleSaveSettings}>
               Save Changes
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Streaming Configuration Dialog */}
+      <Dialog open={streamingDialogOpen} onOpenChange={setStreamingDialogOpen}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>Streaming Configuration</DialogTitle>
+            <DialogDescription>
+              Control how LLM responses are chunked and sent to TTS. Changes take effect immediately and persist until container restart.
+            </DialogDescription>
+          </DialogHeader>
+
+          {editedStreamingConfig && (
+            <div className="space-y-6">
+              {/* Enable/Disable */}
+              <div className="flex items-center justify-between">
+                <div>
+                  <Label htmlFor="streaming-enabled">Enable Streaming</Label>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    Process LLM responses in chunks for lower latency
+                  </p>
+                </div>
+                <input
+                  id="streaming-enabled"
+                  type="checkbox"
+                  checked={editedStreamingConfig.enabled}
+                  onChange={(e) =>
+                    setEditedStreamingConfig({
+                      ...editedStreamingConfig,
+                      enabled: e.target.checked,
+                    })
+                  }
+                  className="h-4 w-4"
+                />
+              </div>
+
+              {/* Settings Grid */}
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <Label htmlFor="chunking-strategy">Chunking Strategy</Label>
+                  <Select
+                    value={editedStreamingConfig.chunking_strategy}
+                    onValueChange={(value) =>
+                      setEditedStreamingConfig({
+                        ...editedStreamingConfig,
+                        chunking_strategy: value as 'sentence' | 'paragraph' | 'word' | 'fixed',
+                      })
+                    }
+                  >
+                    <SelectTrigger id="chunking-strategy">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="sentence">Sentence</SelectItem>
+                      <SelectItem value="paragraph">Paragraph</SelectItem>
+                      <SelectItem value="word">Word</SelectItem>
+                      <SelectItem value="fixed">Fixed</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <p className="text-xs text-muted-foreground">
+                    How to split LLM responses
+                  </p>
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="min-chunk-length">Min Chunk Length</Label>
+                  <Input
+                    id="min-chunk-length"
+                    type="number"
+                    min="5"
+                    max="200"
+                    value={editedStreamingConfig.min_chunk_length}
+                    onChange={(e) =>
+                      setEditedStreamingConfig({
+                        ...editedStreamingConfig,
+                        min_chunk_length: parseInt(e.target.value),
+                      })
+                    }
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Characters (5-200). Shorter chunks buffered.
+                  </p>
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="max-concurrent-tts">Max Concurrent TTS</Label>
+                  <Input
+                    id="max-concurrent-tts"
+                    type="number"
+                    min="1"
+                    max="8"
+                    value={editedStreamingConfig.max_concurrent_tts}
+                    onChange={(e) =>
+                      setEditedStreamingConfig({
+                        ...editedStreamingConfig,
+                        max_concurrent_tts: parseInt(e.target.value),
+                      })
+                    }
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Parallel TTS requests (1-8)
+                  </p>
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="error-strategy">Error Strategy</Label>
+                  <Select
+                    value={editedStreamingConfig.error_strategy}
+                    onValueChange={(value) =>
+                      setEditedStreamingConfig({
+                        ...editedStreamingConfig,
+                        error_strategy: value as 'skip' | 'retry' | 'fallback',
+                      })
+                    }
+                  >
+                    <SelectTrigger id="error-strategy">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="skip">Skip</SelectItem>
+                      <SelectItem value="retry">Retry</SelectItem>
+                      <SelectItem value="fallback">Fallback</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <p className="text-xs text-muted-foreground">
+                    How to handle TTS synthesis failures
+                  </p>
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="interruption-strategy">Interruption Strategy</Label>
+                  <Select
+                    value={editedStreamingConfig.interruption_strategy}
+                    onValueChange={(value) =>
+                      setEditedStreamingConfig({
+                        ...editedStreamingConfig,
+                        interruption_strategy: value as 'immediate' | 'graceful' | 'drain',
+                      })
+                    }
+                  >
+                    <SelectTrigger id="interruption-strategy">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="immediate">Immediate</SelectItem>
+                      <SelectItem value="graceful">Graceful</SelectItem>
+                      <SelectItem value="drain">Drain</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <p className="text-xs text-muted-foreground">
+                    When user starts speaking mid-response
+                  </p>
+                </div>
+              </div>
+            </div>
+          )}
+
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={handleResetStreamingConfig}
+              disabled={isSavingStreaming}
+            >
+              Reset to Environment Defaults
+            </Button>
+            <Button
+              onClick={handleSaveStreamingConfig}
+              disabled={isSavingStreaming}
+            >
+              {isSavingStreaming ? 'Saving...' : 'Save Changes'}
             </Button>
           </DialogFooter>
         </DialogContent>

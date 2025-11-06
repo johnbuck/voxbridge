@@ -30,6 +30,7 @@ import httpx
 import json
 
 from src.types.error_events import ServiceErrorEvent, ServiceErrorType
+from src.config.streaming import StreamingConfig, get_streaming_config
 
 logger = logging.getLogger(__name__)
 
@@ -154,7 +155,8 @@ class TTSService:
         default_voice_id: Optional[str] = None,
         timeout_s: Optional[float] = None,
         chunk_size: Optional[int] = None,
-        error_callback: Optional[Callable[[ServiceErrorEvent], Awaitable[None]]] = None
+        error_callback: Optional[Callable[[ServiceErrorEvent], Awaitable[None]]] = None,
+        streaming_config: Optional[StreamingConfig] = None
     ):
         """
         Initialize TTSService.
@@ -165,6 +167,7 @@ class TTSService:
             timeout_s: Override default timeout
             chunk_size: Override default chunk size
             error_callback: Optional async callback for error events
+            streaming_config: Sentence-level streaming configuration (defaults to global config)
         """
         # Initialize Chatterbox URL and validate format
         base_url = chatterbox_url or CHATTERBOX_URL
@@ -183,6 +186,9 @@ class TTSService:
         self.chunk_size = chunk_size or TTS_STREAM_CHUNK_SIZE
         self.error_callback = error_callback
 
+        # Sentence-level streaming configuration
+        self.streaming_config = streaming_config or get_streaming_config()
+
         # HTTP client (lazy initialized)
         self._client: Optional[httpx.AsyncClient] = None
 
@@ -193,7 +199,10 @@ class TTSService:
         self._metrics_history: List[TTSMetrics] = []
         self._max_metrics_history = 100
 
-        logger.info(f"🔊 TTSService initialized (url={self.chatterbox_url}, voice={self.default_voice_id})")
+        logger.info(
+            f"🔊 TTSService initialized (url={self.chatterbox_url}, voice={self.default_voice_id}, "
+            f"streaming={'enabled' if self.streaming_config.enabled else 'disabled'})"
+        )
 
     async def synthesize_speech(
         self,

@@ -26,6 +26,9 @@ from src.services.llm_service import get_llm_service, LLMConfig, ProviderType
 from src.services.tts_service import get_tts_service
 from src.services.plugin_manager import get_plugin_manager
 
+# Configuration
+from src.config.streaming import get_streaming_config, update_streaming_config, reset_streaming_config
+
 # Route modules
 from src.routes.agent_routes import router as agent_router, set_websocket_manager
 from src.routes.session_routes import router as session_router
@@ -627,6 +630,117 @@ async def get_metrics():
         Performance metrics including latency, counts, error rate
     """
     return metrics_tracker.get_metrics()
+
+@app.get("/api/streaming-config")
+async def get_streaming_config_endpoint():
+    """
+    Get global streaming configuration
+
+    Returns:
+        Current streaming configuration (runtime overrides or environment defaults)
+
+    Example response:
+        {
+            "enabled": true,
+            "chunking_strategy": "sentence",
+            "min_chunk_length": 10,
+            "max_concurrent_tts": 3,
+            "error_strategy": "retry",
+            "interruption_strategy": "graceful"
+        }
+    """
+    config = get_streaming_config()
+    return {
+        "enabled": config.enabled,
+        "chunking_strategy": config.chunking_strategy,
+        "min_chunk_length": config.min_chunk_length,
+        "max_concurrent_tts": config.max_concurrent_tts,
+        "error_strategy": config.error_strategy,
+        "interruption_strategy": config.interruption_strategy,
+    }
+
+class StreamingConfigUpdate(BaseModel):
+    """Streaming configuration update request"""
+    enabled: bool | None = None
+    chunking_strategy: str | None = None
+    min_chunk_length: int | None = None
+    max_concurrent_tts: int | None = None
+    error_strategy: str | None = None
+    interruption_strategy: str | None = None
+
+@app.put("/api/streaming-config")
+async def update_streaming_config_endpoint(config_update: StreamingConfigUpdate):
+    """
+    Update global streaming configuration at runtime
+
+    Request body:
+        {
+            "enabled": true,
+            "chunking_strategy": "sentence",
+            "min_chunk_length": 15,
+            "max_concurrent_tts": 5,
+            "error_strategy": "skip",
+            "interruption_strategy": "immediate"
+        }
+
+    Returns:
+        Updated configuration
+
+    Note:
+        Changes persist until container restart. Environment variables
+        provide defaults that are restored on restart.
+    """
+    try:
+        updated_config = update_streaming_config(
+            enabled=config_update.enabled,
+            chunking_strategy=config_update.chunking_strategy,
+            min_chunk_length=config_update.min_chunk_length,
+            max_concurrent_tts=config_update.max_concurrent_tts,
+            error_strategy=config_update.error_strategy,
+            interruption_strategy=config_update.interruption_strategy,
+        )
+
+        logger.info(
+            f"✅ Updated streaming config: enabled={updated_config.enabled}, "
+            f"strategy={updated_config.chunking_strategy}, "
+            f"min_length={updated_config.min_chunk_length}, "
+            f"max_concurrent={updated_config.max_concurrent_tts}, "
+            f"error={updated_config.error_strategy}, "
+            f"interruption={updated_config.interruption_strategy}"
+        )
+
+        return {
+            "enabled": updated_config.enabled,
+            "chunking_strategy": updated_config.chunking_strategy,
+            "min_chunk_length": updated_config.min_chunk_length,
+            "max_concurrent_tts": updated_config.max_concurrent_tts,
+            "error_strategy": updated_config.error_strategy,
+            "interruption_strategy": updated_config.interruption_strategy,
+        }
+    except ValueError as e:
+        logger.error(f"❌ Invalid streaming config update: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.post("/api/streaming-config/reset")
+async def reset_streaming_config_endpoint():
+    """
+    Reset streaming configuration to environment variable defaults
+
+    Returns:
+        Default configuration from environment variables
+    """
+    config = reset_streaming_config()
+
+    logger.info("🔄 Reset streaming config to environment defaults")
+
+    return {
+        "enabled": config.enabled,
+        "chunking_strategy": config.chunking_strategy,
+        "min_chunk_length": config.min_chunk_length,
+        "max_concurrent_tts": config.max_concurrent_tts,
+        "error_strategy": config.error_strategy,
+        "interruption_strategy": config.interruption_strategy,
+    }
 
 @app.get("/api/plugins")
 async def get_plugins():

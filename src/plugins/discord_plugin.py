@@ -457,15 +457,16 @@ class DiscordPlugin(PluginBase):
             self.tts_service = get_tts_service()
 
             # Phase 5: Initialize TTS queue manager if streaming enabled
-            if self.agent.streaming_enabled:
+            if self.tts_service.streaming_config.enabled:
                 logger.info(
-                    f"🌊 Initializing sentence-level streaming "
-                    f"(concurrency={self.agent.streaming_max_concurrent_tts}, "
-                    f"min_length={self.agent.streaming_min_sentence_length})"
+                    f"🌊 Initializing response streaming "
+                    f"(strategy={self.tts_service.streaming_config.chunking_strategy}, "
+                    f"concurrency={self.tts_service.streaming_config.max_concurrent_tts}, "
+                    f"min_length={self.tts_service.streaming_config.min_chunk_length})"
                 )
 
                 self.tts_queue_manager = TTSQueueManager(
-                    max_concurrent=self.agent.streaming_max_concurrent_tts,
+                    max_concurrent=self.tts_service.streaming_config.max_concurrent_tts,
                     tts_service=self.tts_service,
                     on_complete=self._on_tts_sentence_complete,
                     on_error=self._on_tts_sentence_error
@@ -565,7 +566,7 @@ class DiscordPlugin(PluginBase):
                         logger.info(f"🎤 Registered audio receiver for guild {after.channel.guild.id} (auto-join)")
 
                         # Phase 5: Create audio playback queue if streaming enabled
-                        if self.agent.streaming_enabled and after.channel.guild.id not in self.audio_playback_queues:
+                        if self.tts_service.streaming_config.enabled and after.channel.guild.id not in self.audio_playback_queues:
                             playback_queue = AudioPlaybackQueue(
                                 voice_client=voice_client,
                                 on_complete=None,  # Optional callback
@@ -1000,7 +1001,7 @@ class DiscordPlugin(PluginBase):
             mapped_session_id = self.guild_session_mapping.get(guild_id) if guild_id else None
 
             # Phase 7: Handle user interruption if AI is currently speaking
-            if self.agent.streaming_enabled and guild_id:
+            if self.tts_service.streaming_config.enabled and guild_id:
                 await self._handle_interruption(guild_id, user_id, username)
 
             if mapped_session_id:
@@ -1407,7 +1408,7 @@ class DiscordPlugin(PluginBase):
         session_id = metadata.get('session_id')
         task_id = metadata.get('task_id')
         guild_id = metadata.get('guild_id')
-        strategy = self.agent.streaming_error_strategy
+        strategy = self.tts_service.streaming_config.error_strategy
 
         logger.error(
             f"❌ [STREAMING] TTS error for sentence "
@@ -1541,7 +1542,7 @@ class DiscordPlugin(PluginBase):
             # No active TTS/playback, no interruption needed
             return
 
-        strategy = self.agent.streaming_interruption_strategy
+        strategy = self.tts_service.streaming_config.interruption_strategy
 
         logger.info(
             f"🛑 [INTERRUPTION] User {username} started speaking while AI responding "
@@ -1673,14 +1674,15 @@ class DiscordPlugin(PluginBase):
 
             # Phase 5: Initialize sentence parser if streaming enabled
             sentence_parser = None
-            if self.agent.streaming_enabled and self.tts_queue_manager:
+            streaming_config = self.tts_service.streaming_config if self.tts_service else None
+            if streaming_config and streaming_config.enabled and self.tts_queue_manager:
                 sentence_parser = SentenceParser(
-                    min_sentence_length=self.agent.streaming_min_sentence_length
+                    min_sentence_length=streaming_config.min_chunk_length
                 )
                 self.sentence_parsers[session_id] = sentence_parser
                 logger.info(
-                    f"🌊 [STREAMING] Initialized sentence parser "
-                    f"(min_length={self.agent.streaming_min_sentence_length})"
+                    f"🌊 [STREAMING] Initialized chunk parser "
+                    f"(strategy={streaming_config.chunking_strategy}, min_length={streaming_config.min_chunk_length})"
                 )
 
                 # Phase 8: Record streaming session start
@@ -1975,7 +1977,7 @@ class DiscordPlugin(PluginBase):
             logger.info(f"🤖 LLM response generated for session {session_id[:8]}... (user={user_id})")
 
             # Phase 5: Skip TTS if streaming enabled (already handled by AudioPlaybackQueue)
-            if self.agent.streaming_enabled and sentence_parser:
+            if self.tts_service.streaming_config.enabled and sentence_parser:
                 logger.info(
                     f"🌊 [STREAMING] TTS handled by AudioPlaybackQueue, skipping legacy _play_tts() "
                     f"(session={session_id[:8]}...)"
@@ -2265,7 +2267,7 @@ class DiscordPlugin(PluginBase):
             logger.info(f"🎤 Registered audio receiver for guild {guild_id}")
 
             # Phase 5: Create audio playback queue if streaming enabled
-            if self.agent.streaming_enabled and guild_id not in self.audio_playback_queues:
+            if self.tts_service.streaming_config.enabled and guild_id not in self.audio_playback_queues:
                 playback_queue = AudioPlaybackQueue(
                     voice_client=voice_client,
                     on_complete=None,  # Optional callback

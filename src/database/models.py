@@ -83,13 +83,6 @@ class Agent(Base):
     # Voice Configuration
     max_utterance_time_ms = Column(Integer, nullable=True, default=120000)  # Max duration per speaking turn (ms)
 
-    # Sentence-Level Streaming Configuration (Latency Optimization)
-    streaming_enabled = Column(Boolean, nullable=False, default=True)  # Enable sentence-level streaming
-    streaming_min_sentence_length = Column(Integer, nullable=False, default=10)  # Min chars per sentence
-    streaming_max_concurrent_tts = Column(Integer, nullable=False, default=3)  # Max parallel TTS requests
-    streaming_error_strategy = Column(String(20), nullable=False, default='retry')  # skip, retry, fallback
-    streaming_interruption_strategy = Column(String(20), nullable=False, default='graceful')  # immediate, graceful, drain
-
     # Metadata
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(

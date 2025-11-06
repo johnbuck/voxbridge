@@ -341,14 +341,14 @@ Please provide implementation code and tests.
 
 ### Streaming Best Practices
 
-**Sentence-Level Streaming Architecture** (implemented October 2025):
+**Streaming Configuration with Chunking Strategies** (implemented October 2025):
 
 VoxBridge now uses a three-stage streaming pipeline for 68% latency reduction:
 
 1. **SentenceParser** (`src/services/sentence_parser.py`)
    - Incremental sentence boundary detection
    - Handles edge cases (abbreviations, numbers, initials, ellipsis)
-   - Minimum length buffering (prevents very short sentences)
+   - Minimum chunk length buffering (prevents very short chunks)
    - Usage: `parser.add_chunk(llm_chunk)` → returns complete sentences
 
 2. **TTSQueueManager** (`src/services/tts_queue_manager.py`)

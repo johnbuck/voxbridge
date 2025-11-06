@@ -1,12 +1,12 @@
-# Sentence-Level Streaming Architecture
+# Streaming Configuration with Chunking Strategies
 
 **Status**: ✅ Implemented (October 2025)
 **Latency Improvement**: ~68% reduction (from ~6.8s to ~2-3s)
-**Branch**: `feature/sentence-level-streaming`
+**Branch**: `feature/sentence-level-streaming` (legacy name, kept for compatibility)
 
 ## Overview
 
-Sentence-level streaming is a major optimization that processes and plays AI responses sentence-by-sentence instead of waiting for the complete response. This dramatically reduces perceived latency and creates a more natural, conversational experience.
+Streaming configuration is a major optimization that processes and plays AI responses chunk-by-chunk with configurable chunking strategies (sentence/paragraph/word/fixed) instead of waiting for the complete response. This dramatically reduces perceived latency and creates a more natural, conversational experience.
 
 ### Key Metrics
 
@@ -16,12 +16,12 @@ Sentence-level streaming is a major optimization that processes and plays AI res
 - TTS synthesis: ~1-2s
 - User waits until entire response is generated and synthesized
 
-**After (Sentence-Level Streaming):**
-- First sentence latency: ~2-3 seconds
+**After (Streaming with Chunking):**
+- First chunk latency: ~2-3 seconds
 - LLM chunk streaming: continuous
 - TTS synthesis: parallel (up to 3 concurrent)
 - Audio playback: sequential FIFO
-- Subsequent sentences: near-instant (already synthesized)
+- Subsequent chunks: near-instant (already synthesized)
 
 **Improvement**: 68% reduction in time-to-first-audio
 
@@ -37,14 +37,14 @@ Smart sentence boundary detection with edge case handling.
 - Handles numbers (1.5, 3.14, $1,000.00)
 - Handles initials (J.K. Rowling)
 - Handles ellipsis (...)
-- Minimum sentence length buffering (prevents very short sentences)
+- Minimum chunk length buffering (prevents very short chunks)
 - Incremental chunk processing (for LLM streaming)
 
 **Usage:**
 ```python
 from src.services.sentence_parser import SentenceParser
 
-parser = SentenceParser(min_sentence_length=10)
+parser = SentenceParser(min_chunk_length=10)
 
 # Process incremental chunks (from LLM streaming)
 sentences = parser.add_chunk("Hello world! ")
@@ -420,18 +420,21 @@ USE_STREAMING=true
 # Clause splitting (default: true)
 USE_CLAUSE_SPLITTING=true
 
-# Minimum sentence length (default: 10)
-MIN_SENTENCE_LENGTH=10
+# Chunking strategy (default: sentence)
+# Options: sentence, paragraph, word, fixed
+STREAMING_CHUNKING_STRATEGY=sentence
+
+# Minimum chunk length (default: 10, range: 5-200)
+STREAMING_MIN_CHUNK_LENGTH=10
 
 # TTS concurrency (default: 3)
-TTS_MAX_CONCURRENT=3
+STREAMING_MAX_CONCURRENT_TTS=3
 
 # Error handling
-ERROR_STRATEGY=retry  # skip, retry, fallback
-MAX_RETRIES=2
+STREAMING_ERROR_STRATEGY=retry  # skip, retry, fallback
 
 # Interruption handling
-INTERRUPTION_STRATEGY=graceful  # immediate, graceful, drain
+STREAMING_INTERRUPTION_STRATEGY=graceful  # immediate, graceful, drain
 ```
 
 ### Agent Configuration
@@ -536,7 +539,7 @@ await voice_client.play(audio_bytes)
 **After:**
 ```python
 # Initialize streaming components
-parser = SentenceParser(min_sentence_length=10)
+parser = SentenceParser(min_chunk_length=10)
 tts_manager = TTSQueueManager(max_concurrent=3, ...)
 playback_queue = AudioPlaybackQueue(voice_client=vc, ...)
 
