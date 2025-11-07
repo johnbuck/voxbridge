@@ -100,7 +100,7 @@ export function AgentCard({ agent, onEdit, onDelete, onSetDefault }: AgentCardPr
             </div>
           </div>
 
-          {/* TTS Settings */}
+          {/* TTS Settings - Chatterbox Aligned */}
           {agent.tts_voice && (
             <div className="space-y-1">
               <div className="text-xs text-muted-foreground flex items-center gap-1">
@@ -110,9 +110,11 @@ export function AgentCard({ agent, onEdit, onDelete, onSetDefault }: AgentCardPr
               <div className="text-sm font-mono bg-muted px-2 py-1 rounded truncate">
                 {agent.tts_voice}
               </div>
-              <div className="flex gap-4 text-xs text-muted-foreground mt-1">
-                <span>Rate: {agent.tts_rate}x</span>
-                <span>Pitch: {agent.tts_pitch}x</span>
+              <div className="flex gap-3 text-xs text-muted-foreground mt-1 flex-wrap">
+                <span>Emotion: {agent.tts_exaggeration.toFixed(2)}</span>
+                <span>Pace: {agent.tts_cfg_weight.toFixed(2)}</span>
+                <span>Sampling: {agent.tts_temperature.toFixed(2)}</span>
+                <span>Lang: {agent.tts_language}</span>
               </div>
             </div>
           )}

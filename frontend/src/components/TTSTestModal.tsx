@@ -40,21 +40,13 @@ export function TTSTestModal({ open, onOpenChange, agent }: TTSTestModalProps) {
     setIsSpeaking(true);
     try {
       // Build TTS options based on agent configuration
+      // Note: Agent's TTS settings (exaggeration, cfg_weight, temperature, language)
+      // are automatically applied on the backend when using the agent's voice
       const options: any = {};
 
       if (agent.tts_voice) {
         options.voiceId = agent.tts_voice;
       }
-
-      if (agent.tts_rate !== 1.0) {
-        options.speedFactor = agent.tts_rate;
-      }
-
-      // Note: pitch adjustment requires backend support
-      // Adding as a comment for future implementation
-      // if (agent.tts_pitch !== 1.0) {
-      //   options.pitch = agent.tts_pitch;
-      // }
 
       await api.speak(text, options);
     } catch (error) {
@@ -77,7 +69,7 @@ export function TTSTestModal({ open, onOpenChange, agent }: TTSTestModalProps) {
         </DialogHeader>
 
         <div className="space-y-4">
-          {/* Voice Settings Display */}
+          {/* Voice Settings Display - Chatterbox TTS */}
           <div className="space-y-2 p-3 rounded bg-muted">
             <div className="text-sm font-medium">Current Voice Settings</div>
             <div className="text-xs space-y-1">
@@ -88,12 +80,20 @@ export function TTSTestModal({ open, onOpenChange, agent }: TTSTestModalProps) {
                 </div>
               )}
               <div className="flex justify-between">
-                <span className="text-muted-foreground">Speech Rate:</span>
-                <span>{agent.tts_rate}x</span>
+                <span className="text-muted-foreground">Emotion Intensity:</span>
+                <span>{agent.tts_exaggeration.toFixed(2)}</span>
               </div>
               <div className="flex justify-between">
-                <span className="text-muted-foreground">Pitch:</span>
-                <span>{agent.tts_pitch}x</span>
+                <span className="text-muted-foreground">Speech Pace:</span>
+                <span>{agent.tts_cfg_weight.toFixed(2)}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">Voice Sampling:</span>
+                <span>{agent.tts_temperature.toFixed(2)}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">Language:</span>
+                <span className="uppercase">{agent.tts_language}</span>
               </div>
             </div>
           </div>

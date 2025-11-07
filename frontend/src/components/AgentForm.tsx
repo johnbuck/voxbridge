@@ -38,6 +38,9 @@ interface AgentFormProps {
 export function AgentForm({ open, onOpenChange, agent, onSubmit }: AgentFormProps) {
   const isEditMode = !!agent;
 
+  // Debug logging
+  console.log('[AgentForm] Rendering:', { open, isEditMode, agentId: agent?.id });
+
   // Form state
   const [name, setName] = useState('');
   const [systemPrompt, setSystemPrompt] = useState('');
@@ -47,8 +50,10 @@ export function AgentForm({ open, onOpenChange, agent, onSubmit }: AgentFormProp
   const [useN8n, setUseN8n] = useState(false);
   const [n8nWebhookUrl, setN8nWebhookUrl] = useState('');
   const [ttsVoice, setTtsVoice] = useState('');
-  const [ttsRate, setTtsRate] = useState(1.0);
-  const [ttsPitch, setTtsPitch] = useState(1.0);
+  const [ttsExaggeration, setTtsExaggeration] = useState(1.0);
+  const [ttsCfgWeight, setTtsCfgWeight] = useState(0.7);
+  const [ttsTemperature, setTtsTemperature] = useState(0.3);
+  const [ttsLanguage, setTtsLanguage] = useState('en');
 
   // Voice Configuration
   const [maxUtteranceTimeMs, setMaxUtteranceTimeMs] = useState<number>(120000); // 2 minutes default
@@ -61,6 +66,46 @@ export function AgentForm({ open, onOpenChange, agent, onSubmit }: AgentFormProp
 
   const [isSubmitting, setIsSubmitting] = useState(false);
 
+  // Available voices from Chatterbox
+  const [availableVoices, setAvailableVoices] = useState<string[]>([]);
+  const [voicesLoading, setVoicesLoading] = useState(false);
+
+  // Fetch available voices from Chatterbox via VoxBridge API on mount
+  useEffect(() => {
+    const fetchVoices = async () => {
+      setVoicesLoading(true);
+      try {
+        // Fetch from VoxBridge API (proxies to Chatterbox TTS)
+        const response = await fetch('/api/voices');
+
+        if (!response.ok) {
+          throw new Error(`Failed to fetch voices: ${response.status} ${response.statusText}`);
+        }
+
+        const data = await response.json();
+
+        if (data.voices && Array.isArray(data.voices)) {
+          const voiceNames = data.voices.map((v: any) => v.name).filter(Boolean);
+          setAvailableVoices(voiceNames);
+          console.log(`✅ Loaded ${voiceNames.length} voices:`, voiceNames);
+        } else {
+          console.warn('⚠️ Invalid voices response format:', data);
+          setAvailableVoices([]);
+        }
+      } catch (error) {
+        console.error('❌ Failed to fetch voices:', error);
+        setAvailableVoices([]); // Fallback to empty if fetch fails
+      } finally {
+        setVoicesLoading(false);
+      }
+    };
+
+    // Only fetch if dialog is open
+    if (open) {
+      fetchVoices();
+    }
+  }, [open]);
+
   // Populate form when editing
   useEffect(() => {
     if (agent) {
@@ -72,8 +117,10 @@ export function AgentForm({ open, onOpenChange, agent, onSubmit }: AgentFormProp
       setUseN8n(agent.use_n8n);
       setN8nWebhookUrl(agent.n8n_webhook_url || '');
       setTtsVoice(agent.tts_voice || '');
-      setTtsRate(agent.tts_rate);
-      setTtsPitch(agent.tts_pitch);
+      setTtsExaggeration(agent.tts_exaggeration);
+      setTtsCfgWeight(agent.tts_cfg_weight);
+      setTtsTemperature(agent.tts_temperature);
+      setTtsLanguage(agent.tts_language);
       setMaxUtteranceTimeMs(agent.max_utterance_time_ms ?? 120000);
 
       // Load Discord plugin config if present
@@ -98,15 +145,17 @@ export function AgentForm({ open, onOpenChange, agent, onSubmit }: AgentFormProp
       setUseN8n(false);
       setN8nWebhookUrl('');
       setTtsVoice('');
-      setTtsRate(1.0);
-      setTtsPitch(1.0);
+      setTtsExaggeration(1.0);
+      setTtsCfgWeight(0.7);
+      setTtsTemperature(0.3);
+      setTtsLanguage('en');
       setMaxUtteranceTimeMs(120000);
       setDiscordEnabled(false);
       setDiscordBotToken('');
       setDiscordAutoJoin(false);
       setDiscordCommandPrefix('!');
     }
-  }, [agent, open]);
+  }, [agent]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -134,8 +183,10 @@ export function AgentForm({ open, onOpenChange, agent, onSubmit }: AgentFormProp
         use_n8n: useN8n,
         n8n_webhook_url: n8nWebhookUrl || null,
         tts_voice: ttsVoice || null,
-        tts_rate: ttsRate,
-        tts_pitch: ttsPitch,
+        tts_exaggeration: ttsExaggeration,
+        tts_cfg_weight: ttsCfgWeight,
+        tts_temperature: ttsTemperature,
+        tts_language: ttsLanguage,
         max_utterance_time_ms: maxUtteranceTimeMs,
         plugins: Object.keys(plugins).length > 0 ? plugins : undefined,
       });
@@ -267,50 +318,112 @@ export function AgentForm({ open, onOpenChange, agent, onSubmit }: AgentFormProp
             </div>
           )}
 
-          {/* TTS Configuration */}
+          {/* TTS Configuration - Aligned with Chatterbox TTS API */}
           <div className="space-y-4 pt-4 border-t">
             <h4 className="text-sm font-medium">Text-to-Speech Configuration (Optional)</h4>
 
             <div className="space-y-2">
-              <Label htmlFor="ttsVoice">TTS Voice ID</Label>
-              <Input
-                id="ttsVoice"
-                value={ttsVoice}
-                onChange={(e) => setTtsVoice(e.target.value)}
-                placeholder="Leave empty to use default"
-              />
+              <Label htmlFor="ttsVoice">TTS Voice</Label>
+              <Select
+                value={ttsVoice || undefined}
+                onValueChange={(value) => setTtsVoice(value === '_default' ? '' : value)}
+                disabled={voicesLoading}
+              >
+                <SelectTrigger id="ttsVoice">
+                  <SelectValue placeholder={voicesLoading ? "Loading voices..." : "Default (no voice)"} />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="_default">Default (no voice)</SelectItem>
+                  {Array.isArray(availableVoices) && availableVoices.length > 0 ? (
+                    availableVoices.map((voice) => (
+                      <SelectItem key={voice} value={voice}>
+                        {voice.charAt(0).toUpperCase() + voice.slice(1)}
+                      </SelectItem>
+                    ))
+                  ) : null}
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground">
+                {voicesLoading
+                  ? "Loading available voices from Chatterbox TTS..."
+                  : availableVoices.length > 0
+                  ? `${availableVoices.length} voices available from Chatterbox TTS library`
+                  : "Select a voice or leave as default"}
+              </p>
             </div>
 
-            <div className="grid grid-cols-2 gap-4">
-              <div className="space-y-2">
-                <Label htmlFor="ttsRate">
-                  Speech Rate: {ttsRate.toFixed(2)}x
-                </Label>
-                <Slider
-                  id="ttsRate"
-                  value={[ttsRate]}
-                  onValueChange={(vals) => setTtsRate(vals[0])}
-                  min={0.5}
-                  max={2.0}
-                  step={0.1}
-                  className="w-full"
-                />
-              </div>
+            <div className="space-y-2">
+              <Label htmlFor="ttsExaggeration">
+                Emotion Intensity: {ttsExaggeration.toFixed(2)}
+              </Label>
+              <Slider
+                id="ttsExaggeration"
+                value={[ttsExaggeration]}
+                onValueChange={(vals) => setTtsExaggeration(vals[0])}
+                min={0.25}
+                max={2.0}
+                step={0.05}
+                className="w-full"
+              />
+              <p className="text-xs text-muted-foreground">
+                Controls emotional expressiveness (0.25 = subtle, 1.0 = normal, 2.0 = exaggerated)
+              </p>
+            </div>
 
-              <div className="space-y-2">
-                <Label htmlFor="ttsPitch">
-                  Pitch: {ttsPitch.toFixed(2)}x
-                </Label>
-                <Slider
-                  id="ttsPitch"
-                  value={[ttsPitch]}
-                  onValueChange={(vals) => setTtsPitch(vals[0])}
-                  min={0.5}
-                  max={2.0}
-                  step={0.1}
-                  className="w-full"
-                />
-              </div>
+            <div className="space-y-2">
+              <Label htmlFor="ttsCfgWeight">
+                Speech Pace: {ttsCfgWeight.toFixed(2)}
+              </Label>
+              <Slider
+                id="ttsCfgWeight"
+                value={[ttsCfgWeight]}
+                onValueChange={(vals) => setTtsCfgWeight(vals[0])}
+                min={0.0}
+                max={1.0}
+                step={0.05}
+                className="w-full"
+              />
+              <p className="text-xs text-muted-foreground">
+                Controls speech pace (0.0 = faster, 1.0 = slower)
+              </p>
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="ttsTemperature">
+                Voice Sampling: {ttsTemperature.toFixed(2)}
+              </Label>
+              <Slider
+                id="ttsTemperature"
+                value={[ttsTemperature]}
+                onValueChange={(vals) => setTtsTemperature(vals[0])}
+                min={0.05}
+                max={5.0}
+                step={0.05}
+                className="w-full"
+              />
+              <p className="text-xs text-muted-foreground">
+                Controls voice variation (0.05 = consistent, 0.3 = default, 5.0 = highly variable)
+              </p>
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="ttsLanguage">Language</Label>
+              <Select value={ttsLanguage} onValueChange={setTtsLanguage}>
+                <SelectTrigger id="ttsLanguage">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="en">English</SelectItem>
+                  <SelectItem value="es">Spanish</SelectItem>
+                  <SelectItem value="fr">French</SelectItem>
+                  <SelectItem value="de">German</SelectItem>
+                  <SelectItem value="it">Italian</SelectItem>
+                  <SelectItem value="pt">Portuguese</SelectItem>
+                  <SelectItem value="zh">Chinese</SelectItem>
+                  <SelectItem value="ja">Japanese</SelectItem>
+                  <SelectItem value="ko">Korean</SelectItem>
+                </SelectContent>
+              </Select>
             </div>
           </div>
 

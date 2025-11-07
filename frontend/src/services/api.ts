@@ -131,9 +131,12 @@ export interface Agent {
   use_n8n: boolean; // Phase 3: Use n8n webhook instead of direct LLM
   n8n_webhook_url: string | null; // Phase 3: Per-agent n8n webhook URL
   is_default: boolean; // Phase 5: Mark as default agent
+  // TTS Configuration - Aligned with Chatterbox TTS API
   tts_voice: string | null;
-  tts_rate: number;
-  tts_pitch: number;
+  tts_exaggeration: number; // Emotion intensity (0.25-2.0)
+  tts_cfg_weight: number; // Pace control (0.0-1.0)
+  tts_temperature: number; // Sampling randomness (0.05-5.0)
+  tts_language: string; // Language code (e.g., "en")
   max_utterance_time_ms?: number; // Voice configuration: max duration per speaking turn
   plugins?: {
     discord?: {
@@ -157,9 +160,12 @@ export interface AgentCreateRequest {
   use_n8n?: boolean; // Phase 3: Use n8n webhook instead of direct LLM
   n8n_webhook_url?: string | null; // Phase 3: Per-agent n8n webhook URL
   is_default?: boolean; // Phase 5: Mark as default agent
+  // TTS Configuration - Aligned with Chatterbox TTS API
   tts_voice?: string | null;
-  tts_rate?: number;
-  tts_pitch?: number;
+  tts_exaggeration?: number; // Emotion intensity (0.25-2.0, default 1.0)
+  tts_cfg_weight?: number; // Pace control (0.0-1.0, default 0.7)
+  tts_temperature?: number; // Sampling randomness (0.05-5.0, default 0.3)
+  tts_language?: string; // Language code (default "en")
   max_utterance_time_ms?: number; // Voice configuration: max duration per speaking turn
   plugins?: {
     discord?: {
@@ -181,9 +187,12 @@ export interface AgentUpdateRequest {
   use_n8n?: boolean; // Phase 3: Use n8n webhook instead of direct LLM
   n8n_webhook_url?: string | null; // Phase 3: Per-agent n8n webhook URL
   is_default?: boolean; // Phase 5: Mark as default agent
+  // TTS Configuration - Aligned with Chatterbox TTS API
   tts_voice?: string | null;
-  tts_rate?: number;
-  tts_pitch?: number;
+  tts_exaggeration?: number; // Emotion intensity (0.25-2.0)
+  tts_cfg_weight?: number; // Pace control (0.0-1.0)
+  tts_temperature?: number; // Sampling randomness (0.05-5.0)
+  tts_language?: string; // Language code
   max_utterance_time_ms?: number; // Voice configuration: max duration per speaking turn
   plugins?: {
     discord?: {
