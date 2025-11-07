@@ -58,6 +58,7 @@ export function useAudioPlayback(options: UseAudioPlaybackOptions = {}): UseAudi
 
   const playAudioChunks = useCallback(async (chunks: Uint8Array[]) => {
     try {
+      console.log(`🔍 DEBUG: playAudioChunks() called with ${chunks.length} chunks`);
       if (chunks.length === 0) {
         console.warn('⚠️ No audio chunks to play');
         return;
@@ -68,6 +69,7 @@ export function useAudioPlayback(options: UseAudioPlaybackOptions = {}): UseAudi
 
       // Concatenate all chunks into single blob
       const totalLength = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+      console.log(`🔍 DEBUG: Total audio size: ${totalLength} bytes (${(totalLength / 1024).toFixed(2)} KB)`);
       const combined = new Uint8Array(totalLength);
       let offset = 0;
       for (const chunk of chunks) {
@@ -78,14 +80,18 @@ export function useAudioPlayback(options: UseAudioPlaybackOptions = {}): UseAudi
       // Create WAV blob
       const audioBlob = new Blob([combined], { type: 'audio/wav' });
       const audioUrl = URL.createObjectURL(audioBlob);
+      console.log(`🔍 DEBUG: Created WAV blob: ${audioBlob.size} bytes, URL: ${audioUrl}`);
 
       // Create audio element
       const audio = new Audio(audioUrl);
       audio.volume = isMuted ? 0 : volume;
       audioRef.current = audio;
+      console.log(`🔍 DEBUG: Created Audio element, volume=${audio.volume}, muted=${isMuted}`);
 
       // Play audio
+      console.log('🔍 DEBUG: Calling audio.play()...');
       await audio.play();
+      console.log('🔍 DEBUG: audio.play() succeeded!');
 
       // Wait for completion
       audio.onended = () => {
@@ -117,12 +123,14 @@ export function useAudioPlayback(options: UseAudioPlaybackOptions = {}): UseAudi
   }, []);
 
   const completeAudio = useCallback(async () => {
+    console.log(`🔍 DEBUG: completeAudio() called, ${audioChunksRef.current.length} chunks buffered`);
     if (audioChunksRef.current.length === 0) {
       console.warn('⚠️ No audio chunks buffered');
       return;
     }
 
     await playAudioChunks(audioChunksRef.current);
+    console.log('🔍 DEBUG: playAudioChunks() completed, clearing buffer');
     audioChunksRef.current = [];
   }, [playAudioChunks]);
 

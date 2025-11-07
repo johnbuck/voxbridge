@@ -18,7 +18,9 @@ export type WebRTCAudioEventType =
   | 'ai_response_complete'
   | 'tts_start'
   | 'tts_complete'
+  | 'bot_speaking_state_changed'  // Multi-turn: Bot speaking state for input blocking
   | 'service_error'  // Phase 2: Service error events
+  | 'stop_listening'  // Silence detection event
   | 'error';
 
 /**
@@ -32,6 +34,13 @@ export interface WebRTCAudioMessage {
     session_id?: string;
     duration_s?: number;  // For tts_complete event
     message?: string;     // For error event
+    // Bot speaking state (multi-turn conversations)
+    is_speaking?: boolean;  // For bot_speaking_state_changed event
+    // Silence detection event fields
+    reason?: string;             // stop_listening reason: "silence_detected" | "max_utterance_timeout"
+    silence_duration_ms?: number;  // Duration of silence detected
+    elapsed_ms?: number;          // Total elapsed time for max_utterance_timeout
+    max_ms?: number;              // Max utterance limit for max_utterance_timeout
   };
 }
 
