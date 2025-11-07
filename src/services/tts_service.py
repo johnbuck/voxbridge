@@ -67,7 +67,6 @@ class TTSMetrics:
         time_to_first_byte_s: Time from request start to first audio byte
         total_duration_s: Total time from request to completion
         voice_id: Voice ID used for synthesis
-        speed: Speech speed (0.5-2.0)
         success: Whether synthesis completed successfully
         error: Error message if synthesis failed
         timestamp: When synthesis was initiated
@@ -78,7 +77,6 @@ class TTSMetrics:
     time_to_first_byte_s: float
     total_duration_s: float
     voice_id: str
-    speed: float
     success: bool
     error: Optional[str] = None
     timestamp: float = 0.0
@@ -97,7 +95,10 @@ class ActiveTTS:
         session_id: UUID of the session
         text: Text being synthesized
         voice_id: Voice ID being used
-        speed: Speech speed
+        exaggeration: Emotion intensity (Chatterbox parameter)
+        cfg_weight: Pace control (Chatterbox parameter)
+        temperature: Sampling randomness (Chatterbox parameter)
+        language_id: Language code
         status: Current synthesis status
         started_at: When synthesis started
         cancel_event: Event to signal cancellation
@@ -106,7 +107,10 @@ class ActiveTTS:
     session_id: str
     text: str
     voice_id: str
-    speed: float
+    exaggeration: Optional[float]
+    cfg_weight: Optional[float]
+    temperature: Optional[float]
+    language_id: str
     status: TTSStatus
     started_at: float
     cancel_event: asyncio.Event
@@ -209,7 +213,10 @@ class TTSService:
         session_id: str,
         text: str,
         voice_id: Optional[str] = None,
-        speed: float = 1.0,
+        exaggeration: Optional[float] = None,
+        cfg_weight: Optional[float] = None,
+        temperature: Optional[float] = None,
+        language_id: str = "en",
         stream: bool = True,
         callback: Optional[Callable[[bytes], None]] = None
     ) -> bytes:
@@ -224,7 +231,10 @@ class TTSService:
             session_id: UUID of the session requesting TTS
             text: Text to synthesize
             voice_id: Voice ID to use (defaults to service default)
-            speed: Speech speed (0.5-2.0, default: 1.0)
+            exaggeration: Emotion intensity (0.25-2.0, default from Chatterbox)
+            cfg_weight: Pace control (0.0-1.0, default from Chatterbox)
+            temperature: Sampling randomness (0.05-5.0, default from Chatterbox)
+            language_id: Language code (default: "en")
             stream: Enable streaming (default: True)
             callback: Optional callback for streaming audio chunks
 
@@ -236,12 +246,10 @@ class TTSService:
         """
         voice_id = voice_id or self.default_voice_id
 
-        # Validate speed
-        if not 0.5 <= speed <= 2.0:
-            logger.warning(f"⚠️ Invalid speed {speed}, clamping to 0.5-2.0")
-            speed = max(0.5, min(2.0, speed))
-
-        logger.info(f"🔊 TTS request: session={session_id}, text=\"{text[:50]}...\", voice={voice_id}, speed={speed}")
+        logger.info(
+            f"🔊 TTS request: session={session_id}, text=\"{text[:50]}...\", voice={voice_id}, "
+            f"exaggeration={exaggeration}, cfg_weight={cfg_weight}, temp={temperature}, lang={language_id}"
+        )
 
         # Cancel any existing TTS for this session
         await self.cancel_tts(session_id)
@@ -256,7 +264,6 @@ class TTSService:
                 time_to_first_byte_s=0.0,
                 total_duration_s=0.0,
                 voice_id=voice_id,
-                speed=speed,
                 success=False,
                 error="Service unavailable"
             )
@@ -267,7 +274,10 @@ class TTSService:
             session_id=session_id,
             text=text,
             voice_id=voice_id,
-            speed=speed,
+            exaggeration=exaggeration,
+            cfg_weight=cfg_weight,
+            temperature=temperature,
+            language_id=language_id,
             status=TTSStatus.SYNTHESIZING,
             started_at=time.time(),
             cancel_event=asyncio.Event()
@@ -280,7 +290,10 @@ class TTSService:
                 session_id=session_id,
                 text=text,
                 voice_id=voice_id,
-                speed=speed,
+                exaggeration=exaggeration,
+                cfg_weight=cfg_weight,
+                temperature=temperature,
+                language_id=language_id,
                 callback=callback,
                 cancel_event=active_tts.cancel_event
             )
@@ -427,7 +440,10 @@ class TTSService:
         session_id: str,
         text: str,
         voice_id: str,
-        speed: float,
+        exaggeration: Optional[float],
+        cfg_weight: Optional[float],
+        temperature: Optional[float],
+        language_id: str,
         callback: Optional[Callable],
         cancel_event: asyncio.Event
     ) -> bytes:
@@ -441,7 +457,10 @@ class TTSService:
             session_id: Session UUID
             text: Text to synthesize
             voice_id: Voice ID
-            speed: Speech speed
+            exaggeration: Voice exaggeration factor
+            cfg_weight: CFG weight for voice consistency
+            temperature: Sampling temperature
+            language_id: Language code (e.g. 'en')
             callback: Optional callback for streaming chunks
             cancel_event: Event to signal cancellation
 
@@ -452,24 +471,32 @@ class TTSService:
         audio_buffer = bytearray()
 
         try:
-            # Build TTS request (same format as webrtc_handler.py)
+            # Build TTS request with Chatterbox-supported parameters
             tts_data = {
                 'input': text,
                 'response_format': 'wav',
-                'speed': speed,
                 'voice': voice_id,
+                'language': language_id,
                 'streaming_strategy': TTS_STREAMING_STRATEGY,
                 'streaming_chunk_size': TTS_STREAMING_CHUNK_SIZE,
                 'streaming_buffer_size': TTS_STREAMING_BUFFER_SIZE,
                 'streaming_quality': TTS_STREAMING_QUALITY
             }
 
+            # Add Chatterbox-specific TTS parameters if provided
+            if exaggeration is not None:
+                tts_data['exaggeration'] = exaggeration
+            if cfg_weight is not None:
+                tts_data['cfg_weight'] = cfg_weight
+            if temperature is not None:
+                tts_data['temperature'] = temperature
+
             client = await self._ensure_client()
 
             # Stream audio from Chatterbox
             async with client.stream(
                 'POST',
-                f"{self.chatterbox_url}/v1/audio/speech/stream/upload",
+                f"{self.chatterbox_url}/audio/speech/stream/upload",
                 data=tts_data,
                 headers={'Content-Type': 'application/x-www-form-urlencoded'}
             ) as response:
@@ -516,9 +543,7 @@ class TTSService:
                 audio_bytes=total_bytes,
                 time_to_first_byte_s=time_to_first_byte,
                 total_duration_s=total_duration,
-                voice_id=voice_id,
-                speed=speed,
-                success=True
+                voice_id=voice_id,                success=True
             )
 
             return bytes(audio_buffer) if not callback else b''
@@ -534,9 +559,7 @@ class TTSService:
                 audio_bytes=0,
                 time_to_first_byte_s=0.0,
                 total_duration_s=time.time() - t_start,
-                voice_id=voice_id,
-                speed=speed,
-                success=False,
+                voice_id=voice_id,                success=False,
                 error=error_msg
             )
 
@@ -574,9 +597,7 @@ class TTSService:
                 audio_bytes=0,
                 time_to_first_byte_s=0.0,
                 total_duration_s=time.time() - t_start,
-                voice_id=voice_id,
-                speed=speed,
-                success=False,
+                voice_id=voice_id,                success=False,
                 error="Timeout"
             )
 
@@ -608,9 +629,7 @@ class TTSService:
                 audio_bytes=0,
                 time_to_first_byte_s=0.0,
                 total_duration_s=time.time() - t_start,
-                voice_id=voice_id,
-                speed=speed,
-                success=False,
+                voice_id=voice_id,                success=False,
                 error=str(e)
             )
 
@@ -635,7 +654,6 @@ class TTSService:
         time_to_first_byte_s: float,
         total_duration_s: float,
         voice_id: str,
-        speed: float,
         success: bool,
         error: Optional[str] = None
     ) -> None:
@@ -649,7 +667,6 @@ class TTSService:
             time_to_first_byte_s: Time to first byte
             total_duration_s: Total duration
             voice_id: Voice ID used
-            speed: Speech speed
             success: Whether synthesis succeeded
             error: Error message if failed
         """
@@ -660,7 +677,6 @@ class TTSService:
             time_to_first_byte_s=time_to_first_byte_s,
             total_duration_s=total_duration_s,
             voice_id=voice_id,
-            speed=speed,
             success=success,
             error=error
         )

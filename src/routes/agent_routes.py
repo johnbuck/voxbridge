@@ -44,8 +44,10 @@ class AgentCreateRequest(BaseModel):
     n8n_webhook_url: Optional[str] = Field(None, max_length=500, description="Per-agent n8n webhook URL")
     is_default: bool = Field(False, description="Mark as default agent")
     tts_voice: Optional[str] = Field(None, description="TTS voice ID")
-    tts_rate: float = Field(1.0, ge=0.5, le=2.0, description="TTS speech rate")
-    tts_pitch: float = Field(1.0, ge=0.5, le=2.0, description="TTS pitch adjustment")
+    tts_exaggeration: float = Field(1.0, ge=0.25, le=2.0, description="TTS emotion intensity (0.25-2.0)")
+    tts_cfg_weight: float = Field(0.7, ge=0.0, le=1.0, description="TTS speech pace (0.0-1.0)")
+    tts_temperature: float = Field(0.3, ge=0.05, le=5.0, description="TTS voice sampling (0.05-5.0)")
+    tts_language: str = Field("en", description="TTS language code (e.g., 'en', 'es', 'fr')")
     plugins: Optional[dict] = Field(None, description="Plugin configurations (e.g., discord plugin)")
 
 
@@ -61,8 +63,10 @@ class AgentUpdateRequest(BaseModel):
     n8n_webhook_url: Optional[str] = Field(None, max_length=500)
     is_default: Optional[bool] = None
     tts_voice: Optional[str] = None
-    tts_rate: Optional[float] = Field(None, ge=0.5, le=2.0)
-    tts_pitch: Optional[float] = Field(None, ge=0.5, le=2.0)
+    tts_exaggeration: Optional[float] = Field(None, ge=0.25, le=2.0)
+    tts_cfg_weight: Optional[float] = Field(None, ge=0.0, le=1.0)
+    tts_temperature: Optional[float] = Field(None, ge=0.05, le=5.0)
+    tts_language: Optional[str] = None
     plugins: Optional[dict] = Field(None, description="Plugin configurations (e.g., discord plugin)")
 
 
@@ -79,8 +83,10 @@ class AgentResponse(BaseModel):
     n8n_webhook_url: Optional[str]
     is_default: bool
     tts_voice: Optional[str]
-    tts_rate: float
-    tts_pitch: float
+    tts_exaggeration: float
+    tts_cfg_weight: float
+    tts_temperature: float
+    tts_language: str
     plugins: Optional[dict] = None
     created_at: str
     updated_at: str
@@ -124,8 +130,10 @@ async def create_agent(request: AgentCreateRequest):
             n8n_webhook_url=request.n8n_webhook_url,
             is_default=request.is_default,
             tts_voice=request.tts_voice,
-            tts_rate=request.tts_rate,
-            tts_pitch=request.tts_pitch,
+            tts_exaggeration=request.tts_exaggeration,
+            tts_cfg_weight=request.tts_cfg_weight,
+            tts_temperature=request.tts_temperature,
+            tts_language=request.tts_language,
             plugins=request.plugins,
         )
 
@@ -140,8 +148,10 @@ async def create_agent(request: AgentCreateRequest):
             n8n_webhook_url=agent.n8n_webhook_url,
             is_default=agent.is_default,
             tts_voice=agent.tts_voice,
-            tts_rate=agent.tts_rate,
-            tts_pitch=agent.tts_pitch,
+            tts_exaggeration=agent.tts_exaggeration,
+            tts_cfg_weight=agent.tts_cfg_weight,
+            tts_temperature=agent.tts_temperature,
+            tts_language=agent.tts_language,
             plugins=agent.plugins,
             created_at=agent.created_at.isoformat(),
             updated_at=agent.updated_at.isoformat(),
@@ -187,8 +197,10 @@ async def list_agents():
                 n8n_webhook_url=agent.n8n_webhook_url,
                 is_default=agent.is_default,
                 tts_voice=agent.tts_voice,
-                tts_rate=agent.tts_rate,
-                tts_pitch=agent.tts_pitch,
+                tts_exaggeration=agent.tts_exaggeration,
+                tts_cfg_weight=agent.tts_cfg_weight,
+                tts_temperature=agent.tts_temperature,
+                tts_language=agent.tts_language,
                 plugins=agent.plugins,
                 created_at=agent.created_at.isoformat(),
                 updated_at=agent.updated_at.isoformat(),
@@ -241,8 +253,10 @@ async def get_agent(agent_id: UUID):
             n8n_webhook_url=agent.n8n_webhook_url,
             is_default=agent.is_default,
             tts_voice=agent.tts_voice,
-            tts_rate=agent.tts_rate,
-            tts_pitch=agent.tts_pitch,
+            tts_exaggeration=agent.tts_exaggeration,
+            tts_cfg_weight=agent.tts_cfg_weight,
+            tts_temperature=agent.tts_temperature,
+            tts_language=agent.tts_language,
             plugins=agent.plugins,
             created_at=agent.created_at.isoformat(),
             updated_at=agent.updated_at.isoformat(),
@@ -289,8 +303,10 @@ async def update_agent(agent_id: UUID, request: AgentUpdateRequest):
             n8n_webhook_url=request.n8n_webhook_url,
             is_default=request.is_default,
             tts_voice=request.tts_voice,
-            tts_rate=request.tts_rate,
-            tts_pitch=request.tts_pitch,
+            tts_exaggeration=request.tts_exaggeration,
+            tts_cfg_weight=request.tts_cfg_weight,
+            tts_temperature=request.tts_temperature,
+            tts_language=request.tts_language,
             plugins=request.plugins,
         )
 
@@ -311,8 +327,10 @@ async def update_agent(agent_id: UUID, request: AgentUpdateRequest):
             n8n_webhook_url=agent.n8n_webhook_url,
             is_default=agent.is_default,
             tts_voice=agent.tts_voice,
-            tts_rate=agent.tts_rate,
-            tts_pitch=agent.tts_pitch,
+            tts_exaggeration=agent.tts_exaggeration,
+            tts_cfg_weight=agent.tts_cfg_weight,
+            tts_temperature=agent.tts_temperature,
+            tts_language=agent.tts_language,
             plugins=agent.plugins,
             created_at=agent.created_at.isoformat(),
             updated_at=agent.updated_at.isoformat(),
@@ -412,8 +430,10 @@ async def set_default_agent(agent_id: UUID):
             n8n_webhook_url=agent.n8n_webhook_url,
             is_default=agent.is_default,
             tts_voice=agent.tts_voice,
-            tts_rate=agent.tts_rate,
-            tts_pitch=agent.tts_pitch,
+            tts_exaggeration=agent.tts_exaggeration,
+            tts_cfg_weight=agent.tts_cfg_weight,
+            tts_temperature=agent.tts_temperature,
+            tts_language=agent.tts_language,
             plugins=agent.plugins,
             created_at=agent.created_at.isoformat(),
             updated_at=agent.updated_at.isoformat(),

@@ -32,8 +32,10 @@ class AgentService:
         n8n_webhook_url: Optional[str] = None,
         is_default: bool = False,
         tts_voice: Optional[str] = None,
-        tts_rate: float = 1.0,
-        tts_pitch: float = 1.0,
+        tts_exaggeration: float = 1.0,
+        tts_cfg_weight: float = 0.7,
+        tts_temperature: float = 0.3,
+        tts_language: str = "en",
         plugins: Optional[dict] = None,
     ) -> Agent:
         """
@@ -49,8 +51,10 @@ class AgentService:
             n8n_webhook_url: Per-agent n8n webhook URL (DEPRECATED - use plugins)
             is_default: Mark as default agent
             tts_voice: TTS voice ID (optional)
-            tts_rate: TTS speech rate (0.5-2.0)
-            tts_pitch: TTS pitch adjustment (0.5-2.0)
+            tts_exaggeration: TTS emotion intensity (0.25-2.0)
+            tts_cfg_weight: TTS speech pace (0.0-1.0)
+            tts_temperature: TTS voice sampling (0.05-5.0)
+            tts_language: TTS language code (e.g., 'en', 'es', 'fr')
             plugins: Plugin configurations (dict mapping plugin_type -> config)
 
         Returns:
@@ -68,10 +72,12 @@ class AgentService:
             raise ValueError("Temperature must be between 0.0 and 1.0")
         if llm_provider not in ["openrouter", "local"]:
             raise ValueError("LLM provider must be 'openrouter' or 'local'")
-        if not 0.5 <= tts_rate <= 2.0:
-            raise ValueError("TTS rate must be between 0.5 and 2.0")
-        if not 0.5 <= tts_pitch <= 2.0:
-            raise ValueError("TTS pitch must be between 0.5 and 2.0")
+        if not 0.25 <= tts_exaggeration <= 2.0:
+            raise ValueError("TTS exaggeration must be between 0.25 and 2.0")
+        if not 0.0 <= tts_cfg_weight <= 1.0:
+            raise ValueError("TTS cfg_weight must be between 0.0 and 1.0")
+        if not 0.05 <= tts_temperature <= 5.0:
+            raise ValueError("TTS temperature must be between 0.05 and 5.0")
 
         # Encrypt sensitive plugin fields
         encrypted_plugins = {}
@@ -107,8 +113,10 @@ class AgentService:
                 n8n_webhook_url=n8n_webhook_url,
                 is_default=is_default,
                 tts_voice=tts_voice,
-                tts_rate=tts_rate,
-                tts_pitch=tts_pitch,
+                tts_exaggeration=tts_exaggeration,
+                tts_cfg_weight=tts_cfg_weight,
+                tts_temperature=tts_temperature,
+                tts_language=tts_language,
                 plugins=encrypted_plugins,
             )
 
@@ -198,8 +206,10 @@ class AgentService:
         n8n_webhook_url: Optional[str] = None,
         is_default: Optional[bool] = None,
         tts_voice: Optional[str] = None,
-        tts_rate: Optional[float] = None,
-        tts_pitch: Optional[float] = None,
+        tts_exaggeration: Optional[float] = None,
+        tts_cfg_weight: Optional[float] = None,
+        tts_temperature: Optional[float] = None,
+        tts_language: Optional[str] = None,
         plugins: Optional[dict] = None,
     ) -> Optional[Agent]:
         """
@@ -215,8 +225,10 @@ class AgentService:
             llm_provider: New LLM provider (optional)
             llm_model: New LLM model (optional)
             tts_voice: New TTS voice (optional)
-            tts_rate: New TTS rate (optional)
-            tts_pitch: New TTS pitch (optional)
+            tts_exaggeration: New TTS exaggeration (optional)
+            tts_cfg_weight: New TTS cfg_weight (optional)
+            tts_temperature: New TTS temperature (optional)
+            tts_language: New TTS language (optional)
             plugins: New plugin configurations (optional)
 
         Returns:
@@ -276,15 +288,23 @@ class AgentService:
             if tts_voice is not None:
                 agent.tts_voice = tts_voice
 
-            if tts_rate is not None:
-                if not 0.5 <= tts_rate <= 2.0:
-                    raise ValueError("TTS rate must be between 0.5 and 2.0")
-                agent.tts_rate = tts_rate
+            if tts_exaggeration is not None:
+                if not 0.25 <= tts_exaggeration <= 2.0:
+                    raise ValueError("TTS exaggeration must be between 0.25 and 2.0")
+                agent.tts_exaggeration = tts_exaggeration
 
-            if tts_pitch is not None:
-                if not 0.5 <= tts_pitch <= 2.0:
-                    raise ValueError("TTS pitch must be between 0.5 and 2.0")
-                agent.tts_pitch = tts_pitch
+            if tts_cfg_weight is not None:
+                if not 0.0 <= tts_cfg_weight <= 1.0:
+                    raise ValueError("TTS cfg_weight must be between 0.0 and 1.0")
+                agent.tts_cfg_weight = tts_cfg_weight
+
+            if tts_temperature is not None:
+                if not 0.05 <= tts_temperature <= 5.0:
+                    raise ValueError("TTS temperature must be between 0.05 and 5.0")
+                agent.tts_temperature = tts_temperature
+
+            if tts_language is not None:
+                agent.tts_language = tts_language
 
             # NEW Phase 4 Batch 1: Handle plugin config updates
             plugins_changed = False

@@ -17,6 +17,7 @@ from typing import Optional, Dict
 
 import httpx
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 # VoxBridge 2.0 Service Layer
@@ -421,6 +422,15 @@ app = FastAPI(
     version="2.0.0"
 )
 
+# CORS middleware for cross-origin WebSocket and HTTP requests
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:4903", "http://localhost:4900"],  # Frontend and backend
+    allow_credentials=True,
+    allow_methods=["*"],  # Allow all HTTP methods
+    allow_headers=["*"],  # Allow all headers
+)
+
 # Include agent management routes (VoxBridge 2.0)
 app.include_router(agent_router)
 
@@ -630,6 +640,28 @@ async def get_metrics():
         Performance metrics including latency, counts, error rate
     """
     return metrics_tracker.get_metrics()
+
+@app.get("/api/voices")
+async def get_voices():
+    """
+    Get available TTS voices from Chatterbox
+
+    Returns:
+        List of available voice names from Chatterbox TTS API
+    """
+    try:
+        chatterbox_url = os.getenv('CHATTERBOX_URL', 'http://chatterbox-tts:4123')
+        async with httpx.AsyncClient() as client:
+            response = await client.get(f"{chatterbox_url}/voices", timeout=5.0)
+            response.raise_for_status()
+            data = response.json()
+            return data
+    except httpx.HTTPError as e:
+        logger.error(f"Failed to fetch voices from Chatterbox: {e}")
+        raise HTTPException(status_code=503, detail="Failed to fetch voices from Chatterbox TTS")
+    except Exception as e:
+        logger.error(f"Unexpected error fetching voices: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/streaming-config")
 async def get_streaming_config_endpoint():
