@@ -242,13 +242,15 @@ class STTService:
         del self.connections[session_id]
         logger.info(f"✅ STT disconnected for session {session_id}")
 
-    async def send_audio(self, session_id: str, audio_data: bytes) -> bool:
+    async def send_audio(self, session_id: str, audio_data: bytes, audio_format: str = 'opus') -> bool:
         """
-        Send audio frame to WhisperX for transcription.
+        Send audio frame to WhisperX for transcription with format indicator.
 
         Args:
             session_id: UUID of the session
-            audio_data: Raw audio bytes (Opus or PCM format)
+            audio_data: Raw audio bytes (Opus frames for Discord, PCM for WebRTC)
+            audio_format: Audio format - 'opus' (Discord) or 'pcm' (WebRTC)
+                         Defaults to 'opus' for backward compatibility
 
         Returns:
             True if audio sent successfully, False otherwise
@@ -264,6 +266,18 @@ class STTService:
             return False
 
         try:
+            # Send format indicator on first audio (if not already sent)
+            if not hasattr(connection, 'format_sent'):
+                logger.info(f"📡 Sending audio format to WhisperX: {audio_format}")
+                import json
+                await connection.websocket.send(json.dumps({
+                    'type': 'start',
+                    'userId': str(session_id),  # Convert UUID to string
+                    'audio_format': audio_format
+                }))
+                connection.format_sent = True
+                connection.audio_format = audio_format
+
             # Ensure audio_data is bytes (handle bytearray, memoryview, etc.)
             if not isinstance(audio_data, bytes):
                 audio_data = bytes(audio_data)
@@ -457,7 +471,7 @@ class STTService:
                 # Send initial metadata
                 start_message = json.dumps({
                     'type': 'start',
-                    'userId': session_id,
+                    'userId': str(session_id),  # Convert UUID to string
                     'language': WHISPER_LANGUAGE
                 })
                 await ws.send(start_message)

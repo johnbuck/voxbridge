@@ -185,10 +185,11 @@ except Exception as e:
 
 class TranscriptionSession:
     """Manages a single transcription session for a user"""
-    
-    def __init__(self, websocket, user_id):
+
+    def __init__(self, websocket, user_id, audio_format='opus'):
         self.websocket = websocket
         self.user_id = user_id
+        self.audio_format = audio_format  # 'opus' (Discord) or 'pcm' (WebRTC)
 
         # Dual buffer system to fix audio clipping
         self.session_buffer = bytearray()    # Keeps ALL audio for final transcription
@@ -196,29 +197,44 @@ class TranscriptionSession:
 
         self.language = WHISPERX_LANGUAGE  # Use global config (defaults to 'en')
         self.is_active = True
-        
-        # Opus decoder - Discord uses 48kHz stereo, 20ms frames (960 samples)
-        self.opus_decoder = opuslib.Decoder(48000, 2)
-        
-        logger.info(f"📝 New transcription session for user {user_id}")
-        logger.info(f"🎵 Opus decoder initialized (48kHz stereo)")
+
+        # Initialize Opus decoder only for 'opus' format (Discord)
+        # For 'pcm' format (WebRTC), audio is already decoded by PyAV
+        if audio_format == 'opus':
+            self.opus_decoder = opuslib.Decoder(48000, 2)
+            logger.info(f"📝 New transcription session for user {user_id} (format: opus)")
+            logger.info(f"🎵 Opus decoder initialized (48kHz stereo, 20ms frames)")
+        else:
+            self.opus_decoder = None
+            logger.info(f"📝 New transcription session for user {user_id} (format: pcm)")
+            logger.info(f"🎵 PCM audio path (no Opus decoding, 48kHz stereo)")
+
         logger.info(f"🔄 Dual buffer system: session_buffer (full) + processing_buffer (chunks)")
     
     async def add_audio(self, audio_chunk):
-        """Decode Opus audio chunk and add to both buffers"""
+        """
+        Add audio chunk to buffers with format-specific handling
+
+        For 'opus' format (Discord): Decode Opus frames to PCM
+        For 'pcm' format (WebRTC): Use audio directly (already PCM from PyAV)
+        """
         try:
-            # Decode Opus to PCM (960 samples per 20ms frame at 48kHz)
-            pcm_data = self.opus_decoder.decode(bytes(audio_chunk), frame_size=960)
-            
-            # Add to BOTH buffers
+            if self.audio_format == 'opus':
+                # Discord path: Decode Opus to PCM (960 samples per 20ms frame at 48kHz)
+                pcm_data = self.opus_decoder.decode(bytes(audio_chunk), frame_size=960)
+            else:
+                # WebRTC path: Already PCM from PyAV decode
+                pcm_data = audio_chunk
+
+            # Add to BOTH buffers (same logic for both formats)
             self.session_buffer.extend(pcm_data)    # Keeps ALL audio for final
             self.processing_buffer.extend(pcm_data) # For real-time chunks
-            
+
             # Process in chunks for real-time transcription
             # Every ~2 seconds of PCM audio (48kHz * 2 bytes * 2 channels * 2 sec = 384KB)
             if len(self.processing_buffer) >= 384000:
                 await self.process_audio_chunk()
-                
+
         except opuslib.OpusError as e:
             logger.error(f"❌ Opus decode error: {e}")
         except Exception as e:
@@ -448,12 +464,13 @@ async def handle_client(websocket, path):
                     msg_type = data.get('type')
                     
                     if msg_type == 'start':
-                        # Initialize new session
+                        # Initialize new session with format support
                         user_id = data.get('userId', 'unknown')
                         language = data.get('language', 'en')
-                        session = TranscriptionSession(websocket, user_id)
+                        audio_format = data.get('audio_format', 'opus')  # Default to 'opus' for backward compatibility
+                        session = TranscriptionSession(websocket, user_id, audio_format=audio_format)
                         session.language = language
-                        logger.info(f"🎤 Started session for user {user_id} (language: {language})")
+                        logger.info(f"🎤 Started session for user {user_id} (language: {language}, format: {audio_format})")
                     
                     elif msg_type == 'finalize':
                         # Finalize transcription
