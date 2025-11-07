@@ -5,6 +5,7 @@ Business logic for managing voice chat sessions and conversation history.
 VoxBridge 2.0 Phase 4: Web Voice Interface
 """
 
+import logging
 from typing import List, Optional
 from uuid import UUID
 from datetime import datetime
@@ -13,6 +14,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.database.models import Session, Conversation, Agent
 from src.database.session import get_db_session
+
+logger = logging.getLogger(__name__)
 
 
 class SessionService:
@@ -216,6 +219,9 @@ class SessionService:
             List of Conversation instances (chronological order)
         """
         async with get_db_session() as db:
+            # DIAGNOSTIC: Log query start
+            logger.info(f"📥 [DB_QUERY] Fetching messages for session {session_id}")
+
             query = select(Conversation).where(Conversation.session_id == session_id).order_by(Conversation.timestamp)
 
             if limit:
@@ -223,6 +229,21 @@ class SessionService:
 
             result = await db.execute(query)
             messages = result.scalars().all()
+
+            # DIAGNOSTIC: Check for duplicate assistant messages
+            assistant_messages = [m for m in messages if m.role == 'assistant']
+            if len(assistant_messages) > 1:
+                logger.warning(
+                    f"⚠️ [DB_QUERY] Found {len(assistant_messages)} assistant messages in session {session_id}!"
+                )
+                for i, msg in enumerate(assistant_messages):
+                    logger.warning(
+                        f"  - Assistant[{i}]: id={msg.id}, timestamp={msg.timestamp}, "
+                        f"length={len(msg.content)} chars"
+                    )
+
+            logger.info(f"✅ [DB_QUERY] Returning {len(messages)} messages")
+
             return list(messages)
 
     @staticmethod

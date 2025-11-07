@@ -29,7 +29,7 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 from uuid import UUID
 
-from sqlalchemy import select, update
+from sqlalchemy import select, update, and_
 from sqlalchemy.orm import selectinload
 
 from src.database.models import Agent, Session, Conversation
@@ -368,6 +368,33 @@ class ConversationService:
 
                 # Create conversation entry
                 async with get_db_session() as db:
+                    # DIAGNOSTIC: Check for duplicate messages (within last 10 seconds)
+                    ten_seconds_ago = datetime.utcnow() - timedelta(seconds=10)
+                    existing_check = await db.execute(
+                        select(Conversation)
+                        .where(
+                            and_(
+                                Conversation.session_id == UUID(session_id),
+                                Conversation.role == role,
+                                Conversation.content == content,
+                                Conversation.timestamp >= ten_seconds_ago
+                            )
+                        )
+                    )
+                    existing = existing_check.scalar_one_or_none()
+                    if existing:
+                        logger.warning(
+                            f"⚠️ [DB_DUPLICATE] Message already exists! "
+                            f"session={session_id[:8]}..., role={role}, "
+                            f"existing_id={existing.id}, existing_timestamp={existing.timestamp}"
+                        )
+
+                    # Create and insert new conversation
+                    logger.info(
+                        f"💾 [DB_INSERT] Inserting message: session={session_id[:8]}..., "
+                        f"role={role}, length={len(content)} chars"
+                    )
+
                     conversation = Conversation(
                         session_id=UUID(session_id),
                         role=role,
@@ -380,6 +407,11 @@ class ConversationService:
                     db.add(conversation)
                     await db.commit()
                     await db.refresh(conversation)
+
+                    logger.info(
+                        f"✅ [DB_INSERT] Saved with id={conversation.id}, "
+                        f"timestamp={conversation.timestamp}"
+                    )
 
                 # Add to cache (maintain max_context limit)
                 cached.messages.append(conversation)
