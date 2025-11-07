@@ -33,7 +33,7 @@ class OpenRouterProvider(LLMProvider):
     """
 
     API_BASE = "https://openrouter.ai/api/v1"
-    TIMEOUT_FIRST_TOKEN = 60.0  # seconds
+    TIMEOUT_FIRST_TOKEN = 30.0  # seconds (reduced from 60s for faster failure detection)
     TIMEOUT_BETWEEN_TOKENS = 30.0  # seconds
 
     def __init__(self, api_key: str, base_url: Optional[str] = None):
@@ -100,9 +100,11 @@ class OpenRouterProvider(LLMProvider):
             payload["max_tokens"] = request.max_tokens
 
         logger.info(f"🤖 LLM [openrouter]: Streaming request to model '{request.model}'")
+        logger.debug(f"🤖 LLM [openrouter]: Request payload size: {len(json.dumps(payload))} bytes, {len(request.messages)} messages")
 
         try:
             # Use retry decorator for transient errors
+            logger.debug(f"🤖 LLM [openrouter]: Sending POST to {url}")
             response = await self._make_request_with_retry(url, headers, payload)
 
             # Stream SSE response
@@ -176,7 +178,9 @@ class OpenRouterProvider(LLMProvider):
                 headers=headers,
                 json=payload,
             )
+            logger.debug(f"🤖 LLM [openrouter]: Sending HTTP request (attempt {attempt}/{3})")
             response = await self.client.send(request, stream=True)
+            logger.debug(f"🤖 LLM [openrouter]: Received HTTP response (status={response.status_code})")
             response.raise_for_status()
             return response
 

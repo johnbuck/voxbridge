@@ -2059,7 +2059,10 @@ class DiscordPlugin(PluginBase):
                 session_id=session_id,
                 text=text,
                 voice_id=self.agent.tts_voice or os.getenv('CHATTERBOX_VOICE_ID', 'default'),
-                speed=self.agent.tts_rate or 1.0,
+                exaggeration=self.agent.tts_exaggeration,
+                cfg_weight=self.agent.tts_cfg_weight,
+                temperature=self.agent.tts_temperature,
+                language_id=self.agent.tts_language,
                 stream=False,  # Discord needs complete audio file
                 callback=None
             )
