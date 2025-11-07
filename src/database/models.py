@@ -65,10 +65,12 @@ class Agent(Base):
         index=True
     )
 
-    # TTS Configuration
-    tts_voice = Column(String(100), nullable=True)  # Voice ID for Chatterbox
-    tts_rate = Column(Float, nullable=False, default=1.0)  # Speech rate (0.5-2.0)
-    tts_pitch = Column(Float, nullable=False, default=1.0)  # Pitch (0.5-2.0)
+    # TTS Configuration - Aligned with Chatterbox TTS API
+    tts_voice = Column(String(100), nullable=True)  # Voice ID/name for Chatterbox
+    tts_exaggeration = Column(Float, nullable=False, default=1.0)  # Emotion intensity (0.25-2.0)
+    tts_cfg_weight = Column(Float, nullable=False, default=0.7)  # Pace control (0.0-1.0)
+    tts_temperature = Column(Float, nullable=False, default=0.3)  # Sampling randomness (0.05-5.0)
+    tts_language = Column(String(10), nullable=False, default="en")  # Language code
 
     # VoxBridge 2.0 Phase 3: LLM Routing (DEPRECATED - use plugins instead)
     use_n8n = Column(Boolean, nullable=False, default=False)  # Use n8n webhook instead of direct LLM

@@ -32,8 +32,10 @@ Key traits:
         "llm_model": "anthropic/claude-3.5-sonnet",
         "temperature": 0.7,
         "tts_voice": "auren_voice",
-        "tts_rate": 1.0,
-        "tts_pitch": 1.0,
+        "tts_exaggeration": 1.0,  # Normal emotion intensity
+        "tts_cfg_weight": 0.7,  # Balanced speech pace
+        "tts_temperature": 0.3,  # Default voice sampling
+        "tts_language": "en",
         "is_active": True,
     },
     {
@@ -52,8 +54,10 @@ Key traits:
         "llm_model": "anthropic/claude-3.5-sonnet",
         "temperature": 0.5,  # Lower temperature for more consistent technical answers
         "tts_voice": "auren_voice",
-        "tts_rate": 0.95,  # Slightly slower for technical content
-        "tts_pitch": 1.0,
+        "tts_exaggeration": 0.8,  # Slightly subdued for professional tone
+        "tts_cfg_weight": 0.8,  # Slower pace for technical clarity
+        "tts_temperature": 0.25,  # More consistent voice for technical content
+        "tts_language": "en",
         "is_active": True,
     },
     {
@@ -72,8 +76,10 @@ Key traits:
         "llm_model": "anthropic/claude-3.5-sonnet",
         "temperature": 0.9,  # Higher temperature for more creative responses
         "tts_voice": "auren_voice",
-        "tts_rate": 1.05,  # Slightly faster for storytelling
-        "tts_pitch": 1.0,
+        "tts_exaggeration": 1.3,  # More expressive for storytelling
+        "tts_cfg_weight": 0.6,  # Faster pace for engaging narration
+        "tts_temperature": 0.4,  # Slightly more varied voice
+        "tts_language": "en",
         "is_active": True,
     },
 ]
