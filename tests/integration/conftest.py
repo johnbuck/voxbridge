@@ -266,3 +266,309 @@ class LatencyAssertions:
 def latency_assertions():
     """Provides latency assertion helpers"""
     return LatencyAssertions()
+
+
+# ============================================================
+# Phase 5 Service Mock Fixtures
+# ============================================================
+
+@pytest.fixture
+def mock_conversation_service(mocker):
+    """Mock ConversationService with Phase 5 API"""
+    from src.services.conversation_service import ConversationService, CachedContext, Message
+    from src.database.models import Session, Agent
+    from unittest.mock import Mock, AsyncMock
+    from uuid import uuid4
+    from datetime import datetime, timedelta
+
+    service = mocker.Mock(spec=ConversationService)
+
+    # Create mock Session
+    mock_session = Mock(spec=Session)
+    mock_session.id = uuid4()
+    mock_session.user_id = "test_user"
+    mock_session.agent_id = uuid4()
+    mock_session.active = True
+    mock_session.title = "Test Session"
+    mock_session.channel_type = "webrtc"
+    mock_session.created_at = datetime.now()
+    mock_session.updated_at = datetime.now()
+
+    # Create mock Agent
+    mock_agent = Mock(spec=Agent)
+    mock_agent.id = mock_session.agent_id
+    mock_agent.name = "TestAgent"
+    mock_agent.system_prompt = "You are a test assistant"
+    mock_agent.llm_provider = "openrouter"
+    mock_agent.llm_model = "anthropic/claude-3-haiku"
+    mock_agent.temperature = 0.7
+    mock_agent.tts_voice = "default"
+    mock_agent.tts_exaggeration = 1.0
+    mock_agent.tts_cfg_weight = 1.0
+    mock_agent.tts_temperature = 0.7
+    mock_agent.tts_language = "en"
+
+    # Mock CachedContext (Phase 5 return type)
+    cached_context = Mock(spec=CachedContext)
+    cached_context.session = mock_session
+    cached_context.agent = mock_agent
+    cached_context.messages = []
+    cached_context.last_activity = datetime.now()
+    cached_context.expires_at = datetime.now() + timedelta(minutes=15)
+    cached_context.lock = asyncio.Lock()
+
+    # Phase 5 API: get_or_create_session returns CachedContext
+    service.get_or_create_session = AsyncMock(return_value=cached_context)
+    service._ensure_session_cached = AsyncMock(return_value=cached_context)
+    service.get_conversation_context = AsyncMock(return_value=[])
+    service.add_message = AsyncMock()
+    service.end_session = AsyncMock()
+    service.start = AsyncMock()
+    service.stop = AsyncMock()
+
+    return service
+
+
+@pytest.fixture
+def mock_stt_service(mocker):
+    """Mock STTService with Phase 5 API"""
+    from src.services.stt_service import STTService
+    from unittest.mock import AsyncMock
+
+    service = mocker.Mock(spec=STTService)
+
+    # Phase 5 API: send_audio takes audio_format parameter
+    service.connect = AsyncMock(return_value=True)
+    service.disconnect = AsyncMock()
+    service.register_callback = AsyncMock()
+    service.send_audio = AsyncMock(return_value=True)  # Accepts audio_format parameter
+    service.get_connection_status = AsyncMock(return_value="connected")
+
+    return service
+
+
+@pytest.fixture
+def mock_llm_service(mocker):
+    """Mock LLMService with Phase 5 API"""
+    from src.services.llm_service import LLMService
+    from unittest.mock import AsyncMock
+
+    service = mocker.Mock(spec=LLMService)
+
+    # Phase 5 API: generate_response takes callback, returns complete text
+    async def mock_generate_response(session_id, messages, config, stream=True, callback=None):
+        response_text = "Hello! How can I help you?"
+        if callback and stream:
+            # Simulate streaming chunks
+            for chunk in ["Hello! ", "How can ", "I help you?"]:
+                await callback(chunk)
+                await asyncio.sleep(0.01)
+        return response_text
+
+    service.generate_response = AsyncMock(side_effect=mock_generate_response)
+    service.health_check = AsyncMock(return_value=True)
+
+    return service
+
+
+@pytest.fixture
+def mock_tts_service(mocker):
+    """Mock TTSService with Phase 5 API"""
+    from src.services.tts_service import TTSService
+    from unittest.mock import AsyncMock
+
+    service = mocker.Mock(spec=TTSService)
+
+    # Phase 5 API: synthesize_speech with streaming callback
+    async def mock_synthesize(session_id, text, voice_id=None, exaggeration=None,
+                             cfg_weight=None, temperature=None, language_id="en",
+                             stream=True, callback=None):
+        fake_audio = b'fake_audio_data' * 100  # 1.5KB fake audio
+
+        if callback and stream:
+            # Simulate streaming chunks
+            chunk_size = 512
+            for i in range(0, len(fake_audio), chunk_size):
+                await callback(fake_audio[i:i+chunk_size])
+                await asyncio.sleep(0.01)
+
+        return fake_audio
+
+    service.synthesize_speech = AsyncMock(side_effect=mock_synthesize)
+    service.test_tts_health = AsyncMock(return_value=True)
+    service.cancel_tts = AsyncMock()
+
+    return service
+
+
+@pytest.fixture
+def mock_services(mock_conversation_service, mock_stt_service, mock_llm_service, mock_tts_service):
+    """Bundle all Phase 5 service mocks"""
+    return {
+        'conversation': mock_conversation_service,
+        'stt': mock_stt_service,
+        'llm': mock_llm_service,
+        'tts': mock_tts_service
+    }
+
+
+# ============================================================
+# WebRTC-Specific Fixtures (VoxBridge 2.0 Phase 5.5)
+# ============================================================
+
+@pytest.fixture
+async def webrtc_session():
+    """
+    Create WebRTC session in test database
+
+    Returns:
+        Session object with agent assigned
+    """
+    from src.database.session import get_db_session
+    from src.database.models import Session, Agent
+    from uuid import uuid4
+
+    async with get_db_session() as db_session:
+        # Find or create test agent
+        agent = await db_session.execute(
+            "SELECT * FROM agents WHERE name = 'WebRTC Test Agent' LIMIT 1"
+        )
+        agent = agent.first()
+
+        if not agent:
+            # Create test agent if doesn't exist
+            from src.database.models import Agent
+            agent = Agent(
+                id=uuid4(),
+                name="WebRTC Test Agent",
+                system_prompt="You are a test assistant for WebRTC integration tests",
+                llm_provider="openrouter",
+                llm_model="anthropic/claude-3-haiku",
+                tts_voice="default",
+                temperature=0.7
+            )
+            db_session.add(agent)
+            await db_session.commit()
+            await db_session.refresh(agent)
+
+        # Create WebRTC session
+        session = Session(
+            id=uuid4(),
+            user_id="browser_user_test",
+            agent_id=agent.id,
+            title="WebRTC Integration Test Session",
+            active=True
+        )
+        db_session.add(session)
+        await db_session.commit()
+        await db_session.refresh(session)
+
+        yield session
+
+        # Cleanup
+        await db_session.delete(session)
+        await db_session.commit()
+
+
+@pytest.fixture
+def webrtc_ws_url(webrtc_session):
+    """
+    Generate WebSocket URL for WebRTC testing
+
+    Args:
+        webrtc_session: Session fixture
+
+    Returns:
+        WebSocket URL string
+    """
+    session_id = str(webrtc_session.id)
+    user_id = webrtc_session.user_id
+    return f"/ws/voice?session_id={session_id}&user_id={user_id}"
+
+
+@pytest.fixture
+async def mock_whisperx_with_format():
+    """
+    Mock WhisperX server with format tracking enabled
+
+    Returns:
+        Tuple of (server instance, port)
+    """
+    from tests.mocks.mock_whisperx_server import MockWhisperXServer
+
+    server = MockWhisperXServer(
+        port=14901,
+        auto_respond=True,
+        latency_ms=50  # Fast for integration tests
+    )
+
+    await server.start()
+
+    try:
+        yield (server, server.port)
+    finally:
+        await server.stop()
+
+
+# ============================================================
+# WebM Audio Fixtures
+# ============================================================
+
+@pytest.fixture
+def sample_webm_audio():
+    """Single-frame valid WebM (20ms)"""
+    from tests.fixtures.audio_samples import get_sample_webm_audio
+    return get_sample_webm_audio()
+
+
+@pytest.fixture
+def multi_frame_webm_audio():
+    """Multi-frame WebM (500ms)"""
+    from tests.fixtures.audio_samples import get_multi_frame_webm_audio
+    return get_multi_frame_webm_audio()
+
+
+@pytest.fixture
+def incomplete_webm_audio():
+    """Incomplete WebM for buffering tests (512 bytes)"""
+    from tests.fixtures.audio_samples import get_incomplete_webm_audio
+    return get_incomplete_webm_audio()
+
+
+@pytest.fixture
+def corrupted_webm_audio():
+    """Corrupted WebM for error handling tests"""
+    from tests.fixtures.audio_samples import get_corrupted_webm_audio
+    return get_corrupted_webm_audio()
+
+
+# ============================================================
+# PCM Audio Fixtures (Phase 5.5 - Dual Format Support)
+# ============================================================
+
+@pytest.fixture
+def sample_pcm_audio():
+    """Single PCM frame (20ms, 48kHz stereo, ~3,840 bytes)"""
+    from tests.fixtures.audio_samples import generate_pcm_audio
+    return generate_pcm_audio(duration_ms=20)
+
+
+@pytest.fixture
+def multi_frame_pcm_audio():
+    """Multiple PCM frames (500ms, 25 frames, ~96,000 bytes)"""
+    from tests.fixtures.audio_samples import generate_pcm_frames
+    return generate_pcm_frames(num_frames=25)
+
+
+@pytest.fixture
+def expected_pcm_frame_size():
+    """Expected PCM frame size for validation (3,840 bytes for 48kHz stereo)"""
+    from tests.fixtures.audio_samples import get_pcm_frame_size
+    return get_pcm_frame_size()
+
+
+@pytest.fixture
+def sample_opus_audio():
+    """Single Opus frame (20ms, ~121 bytes compressed)"""
+    from tests.fixtures.audio_samples import get_sample_opus_audio
+    return get_sample_opus_audio()

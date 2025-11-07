@@ -19,9 +19,9 @@ import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
-from src.discord_bot import app, speaker_manager, bot
+from src.api.server import app
 from tests.mocks.mock_discord import MockVoiceClient, MockVoiceChannel, MockUser, MockBot
-from tests.utils.audio_injection import AudioInjector, AudioSamples
+# Note: audio_injection utilities are legacy - use fixtures from tests.fixtures.audio_samples instead
 
 
 # ============================================================
@@ -93,23 +93,23 @@ def mock_user():
 @pytest.fixture
 def audio_injector():
     """
-    Provide AudioInjector instance for tests
+    Legacy audio injector fixture
 
-    Use this to generate realistic audio packets
+    NOTE: Deprecated - use fixtures from tests.fixtures.audio_samples instead
     """
-    return AudioInjector()
+    # Return None - tests should use new audio fixtures
+    return None
 
 
 @pytest.fixture
 def audio_samples():
     """
-    Provide pre-defined audio samples for common scenarios
+    Legacy audio samples fixture
 
-    Usage:
-        def test_something(audio_samples):
-            packets = audio_samples.short_question()
+    NOTE: Deprecated - use fixtures from tests.fixtures.audio_samples instead
     """
-    return AudioSamples()
+    # Return None - tests should use new audio fixtures
+    return None
 
 
 @pytest.fixture
