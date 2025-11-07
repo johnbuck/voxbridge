@@ -41,6 +41,25 @@ import { ChannelSelectorModal } from '@/components/ChannelSelectorModal';
 // Use for creating new web sessions (can be changed when auth is added)
 const WEB_USER_ID = 'web_user_default';
 
+// ============================================================
+// LOGGING UTILITIES FOR UI/UX DEBUGGING
+// ============================================================
+const DEBUG_LOGGING = false; // Set to true to enable verbose logging
+
+const logTimestamp = () => new Date().toISOString();
+
+const logUIEvent = (emoji: string, category: string, message: string, data?: any, isDebug = false) => {
+  // Skip debug logs unless explicitly enabled
+  if (isDebug && !DEBUG_LOGGING) return;
+
+  const timestamp = logTimestamp();
+  if (data) {
+    console.log(`[${timestamp}] ${emoji} ${category}: ${message}`, data);
+  } else {
+    console.log(`[${timestamp}] ${emoji} ${category}: ${message}`);
+  }
+};
+
 export function VoxbridgePage() {
   // Analytics state (Discord conversation monitoring) - kept for future Discord transcript integration
   const [activeSpeaker, setActiveSpeaker] = useState<string | null>(null);
@@ -72,6 +91,7 @@ export function VoxbridgePage() {
   const [isStreaming, setIsStreaming] = useState(false);
   const [isSpeakerMuted, setIsSpeakerMuted] = useState(false);
   const [voicePartialTranscript, setVoicePartialTranscript] = useState<string>('');
+  const [isBotSpeaking, setIsBotSpeaking] = useState(false);  // Bot speaking state (blocks input during TTS)
 
   const queryClient = useQueryClient();
   const toast = useToastHelpers();
@@ -127,11 +147,43 @@ export function VoxbridgePage() {
   });
 
   // Fetch messages for active session
-  const { data: messages = [], isLoading: isLoadingMessages } = useQuery({
+  const { data: messages = [], isLoading: isLoadingMessages } = useQuery<Message[]>({
     queryKey: ['messages', activeSessionId],
-    queryFn: () => activeSessionId ? api.getSessionMessages(activeSessionId) : Promise.resolve([]),
+    queryFn: async () => {
+      if (!activeSessionId) return [];
+
+      // DIAGNOSTIC: Log fetch start
+      const fetchStart = Date.now();
+      console.log(`[QUERY] Starting message fetch at ${fetchStart} for session ${activeSessionId}`);
+
+      const result = await api.getSessionMessages(activeSessionId);
+
+      // DIAGNOSTIC: Log fetch complete
+      const fetchEnd = Date.now();
+      const fetchDuration = fetchEnd - fetchStart;
+      console.log(`[QUERY] Fetch complete in ${fetchDuration}ms, received ${result.length} messages`);
+
+      // Log database fetch results (debug only)
+      logUIEvent('📥', 'QUERY', `Fetched ${result.length} messages from database (session: ${activeSessionId})`, undefined, true);
+      result.forEach((m, i) => {
+        if (m.role === 'assistant') {
+          logUIEvent('  ', '  ', `- DB message[${i}]: id=${m.id}, role=${m.role}, length=${m.content.length} chars`, undefined, true);
+        }
+      });
+
+      // DIAGNOSTIC: Check for duplicates
+      const assistantMessages = result.filter(m => m.role === 'assistant');
+      if (assistantMessages.length > 1) {
+        console.warn(`[QUERY] ⚠️ Received ${assistantMessages.length} assistant messages from database!`);
+        assistantMessages.forEach((m, i) => {
+          console.warn(`  - Assistant[${i}]: id=${m.id}, length=${m.content.length} chars, timestamp=${m.timestamp}`);
+        });
+      }
+
+      return result;
+    },
     enabled: !!activeSessionId,
-    refetchInterval: 2000, // Poll every 2 seconds for real-time updates
+    refetchInterval: 30000, // Poll every 30 seconds to catch any drift (WebSocket provides real-time updates)
   });
 
   // Get active session details
@@ -151,8 +203,19 @@ export function VoxbridgePage() {
   // Handle WebRTC audio messages (web voice chat with database persistence)
   const handleWebRTCAudioMessage = useCallback(
     async (message: WebRTCAudioMessage) => {
+      // Log all WebRTC events for debugging (debug only)
+      logUIEvent('📡', 'WS EVENT (WebRTC)', message.event, {
+        event: message.event,
+        sessionId: message.data?.session_id,
+        textLength: message.data?.text?.length,
+      }, true);
+
       switch (message.event) {
         case 'partial_transcript':
+          if (!listeningStartTimeRef.current) {
+            logUIEvent('🎤', 'LISTENING (WebRTC)', `Started (partial: "${message.data.text?.substring(0, 30)}...")`, undefined, true);
+          }
+
           // Update voice chat partial transcript
           setVoicePartialTranscript(message.data.text || '');
           setIsListening(true);
@@ -162,109 +225,88 @@ export function VoxbridgePage() {
           break;
 
         case 'final_transcript':
+          logUIEvent('🎤', 'LISTENING (WebRTC)', `Stopped (final: "${message.data.text?.substring(0, 50)}...")`, undefined, true);
+
           // Clear voice chat partial transcript
           setVoicePartialTranscript('');
           setIsListening(false);
           listeningStartTimeRef.current = null;
           setListeningDuration(0);
 
-          // Save user message to database (if we have an active session)
+          // Backend already saved user message - frontend only updates UI
+          // (Removed duplicate save - backend is single source of truth)
+
+          // Refresh message list to show backend-saved message
           if (activeSessionId) {
-            try {
-              await api.addMessage(activeSessionId, {
-                role: 'user',
-                content: message.data.text || '',
-              });
-              queryClient.invalidateQueries({ queryKey: ['messages', activeSessionId] });
-            } catch (error) {
-              console.error('[WebRTC] Failed to save user message:', error);
-              toast.error('Failed to save message', error instanceof Error ? error.message : 'Unknown error');
-            }
+            logUIEvent('🔄', 'QUERY (WebRTC)', `Invalidating messages query (session: ${activeSessionId})`, undefined, true);
+            queryClient.invalidateQueries({ queryKey: ['messages', activeSessionId] });
           }
 
           // Start AI generation indicator for voice chat
+          logUIEvent('💭', 'THINKING (WebRTC)', `Started (session: ${activeSessionId})`, undefined, true);
           setIsVoiceAIGenerating(true);
           aiStartTimeRef.current = Date.now();
           break;
 
         case 'ai_response_chunk':
           // Stream AI response chunks for voice chat
+          // Use StreamingMessageDisplay component for real-time display
+          // No optimistic updates needed - backend saves to database
           setStreamingChunks((prev) => [...prev, message.data.text || '']);
           setIsStreaming(true);
-
-          // Real-time update in messages list (if we have an active session)
-          if (activeSessionId) {
-            queryClient.setQueryData(['messages', activeSessionId], (oldData: Message[] | undefined) => {
-              if (!oldData) return oldData;
-
-              const lastMessage = oldData[oldData.length - 1];
-              if (lastMessage && lastMessage.role === 'assistant') {
-                // Append to existing assistant message
-                return [
-                  ...oldData.slice(0, -1),
-                  {
-                    ...lastMessage,
-                    content: lastMessage.content + (message.data.text || ''),
-                  },
-                ];
-              } else {
-                // Create new assistant message
-                return [
-                  ...oldData,
-                  {
-                    id: Date.now(), // Temporary ID
-                    session_id: activeSessionId,
-                    role: 'assistant',
-                    content: message.data.text || '',
-                    timestamp: new Date().toISOString(),
-                    audio_duration_ms: null,
-                    tts_duration_ms: null,
-                    llm_latency_ms: null,
-                    total_latency_ms: null,
-                  },
-                ];
-              }
-            });
-          }
           break;
 
         case 'ai_response_complete':
-          // Complete AI response for voice chat
-          setIsStreaming(false);
-          setStreamingChunks([]);
+          const aiDuration = aiStartTimeRef.current ? Date.now() - aiStartTimeRef.current : 0;
+          logUIEvent('💭', 'THINKING (WebRTC)', `Complete (duration: ${aiDuration}ms)`, undefined, true);
+
+          // Stop AI generating animation
           setIsVoiceAIGenerating(false);
           aiStartTimeRef.current = null;
           setAiGeneratingDuration(0);
 
-          // Save final AI message to database (if we have an active session)
+          // Stop streaming animation but KEEP chunks visible
+          // (Chunks will be cleared by useEffect when database has assistant message)
+          setIsStreaming(false);
+          // DON'T clear streamingChunks here
+
+          // Trigger database fetch
           if (activeSessionId) {
-            try {
-              await api.addMessage(activeSessionId, {
-                role: 'assistant',
-                content: message.data.text || '',
-              });
-              queryClient.invalidateQueries({ queryKey: ['messages', activeSessionId] });
-            } catch (error) {
-              console.error('[WebRTC] Failed to save AI message:', error);
-              toast.error('Failed to save AI response', error instanceof Error ? error.message : 'Unknown error');
-            }
+            logUIEvent('🔄', 'QUERY (WebRTC)', `Invalidating messages query (session: ${activeSessionId})`, undefined, true);
+            queryClient.invalidateQueries({ queryKey: ['messages', activeSessionId] });
           }
 
-          // Play buffered TTS audio if not muted
-          if (!isSpeakerMuted) {
-            await audioPlayback.completeAudio();
-          } else {
-            console.log('🔇 Speaker muted, discarding TTS audio');
-            audioPlayback.stop();
-          }
+          // AI response text is complete, now waiting for TTS audio
+          console.log('✅ AI response complete - waiting for TTS audio...');
           break;
 
         case 'tts_start':
           console.log('🔊 TTS generation started');
           break;
 
+        case 'bot_speaking_state_changed':
+          console.log(`🤖 Bot speaking state changed: ${message.data.is_speaking ? 'SPEAKING' : 'LISTENING'}`);
+          setIsBotSpeaking(message.data.is_speaking ?? false);
+          break;
+
         case 'tts_complete':
           console.log(`✅ TTS complete (${message.data.duration_s?.toFixed(2)}s)`);
+          console.log(`🔍 DEBUG: isSpeakerMuted=${isSpeakerMuted}, audioPlayback=${!!audioPlayback}`);
+          console.log(`🔍 DEBUG: audioPlayback.completeAudio=${!!audioPlayback?.completeAudio}`);
+
+          // Play buffered TTS audio if not muted
+          if (!isSpeakerMuted) {
+            console.log('🔍 DEBUG: Calling audioPlayback.completeAudio()...');
+            try {
+              await audioPlayback.completeAudio();
+              console.log('🔍 DEBUG: completeAudio() returned successfully');
+            } catch (error) {
+              console.error('🔍 DEBUG: completeAudio() threw error:', error);
+            }
+          } else {
+            console.log('🔇 Speaker muted, discarding TTS audio');
+            audioPlayback.stop();
+          }
           break;
 
         case 'error':
@@ -276,7 +318,7 @@ export function VoxbridgePage() {
           console.warn('[VoiceChat] Unknown message event:', message.event);
       }
     },
-    [activeSessionId, audioPlayback, isSpeakerMuted, queryClient, toast]
+    [activeSessionId, audioPlayback, isSpeakerMuted, queryClient, toast, setIsBotSpeaking]
   );
 
   // Handle binary audio chunks from TTS (web voice chat)
@@ -320,6 +362,14 @@ export function VoxbridgePage() {
 
   // Handle WebSocket messages (Discord conversation monitoring - for metrics updates)
   const handleMessage = useCallback((message: any) => {
+    // Log all WebSocket events for debugging (debug only)
+    logUIEvent('📡', 'WS EVENT', message.event, {
+      event: message.event,
+      sessionId: message.data?.session_id,
+      textLength: message.data?.text?.length,
+      userId: message.data?.userId,
+    }, true);
+
     // VoxBridge 2.0: Handle service error events
     if (message.event === 'service_error') {
       handleServiceError(message.data as ServiceErrorEvent);
@@ -362,11 +412,14 @@ export function VoxbridgePage() {
 
       // Start listening animation indicator (unified experience)
       if (!isListening && message.data.text) {
+        logUIEvent('🎤', 'LISTENING', `Started (partial: "${message.data.text?.substring(0, 30)}...")`, undefined, true);
         setIsListening(true);
         listeningStartTimeRef.current = Date.now();
       }
       setVoicePartialTranscript(message.data.text);
     } else if (message.event === 'final_transcript') {
+      logUIEvent('🎤', 'LISTENING', `Stopped (final: "${message.data.text?.substring(0, 50)}...")`, undefined, true);
+
       // Clear analytics state
       setActiveSpeaker(null);
       setPartialTranscript('');
@@ -377,56 +430,25 @@ export function VoxbridgePage() {
       setListeningDuration(0);
       setVoicePartialTranscript('');
 
+      logUIEvent('💭', 'THINKING', `Started (session: ${activeSessionId})`, undefined, true);
       setIsVoiceAIGenerating(true);
       aiStartTimeRef.current = Date.now();
 
-      // Save Discord message to database (if we have an active session)
-      if (activeSessionId && message.data.text) {
-        api.addMessage(activeSessionId, {
-          role: 'user',
-          content: message.data.text,
-        }).then(() => {
-          queryClient.invalidateQueries({ queryKey: ['messages', activeSessionId] });
-        }).catch((error) => {
-          console.error('[Discord] Failed to save user message:', error);
-        });
+      // Backend already saved Discord user message - frontend only updates UI
+      // (Removed duplicate save - backend is single source of truth)
+
+      // Refresh message list to show backend-saved message
+      if (activeSessionId) {
+        logUIEvent('🔄', 'QUERY', `Invalidating messages query (session: ${activeSessionId})`, undefined, true);
+        queryClient.invalidateQueries({ queryKey: ['messages', activeSessionId] });
       }
     } else if (message.event === 'ai_response_chunk') {
-      // Handle Discord AI response chunks (unified experience)
-      if (activeSessionId) {
-        queryClient.setQueryData(['messages', activeSessionId], (oldData: Message[] | undefined) => {
-          if (!oldData) return oldData;
-
-          const lastMessage = oldData[oldData.length - 1];
-          if (lastMessage && lastMessage.role === 'assistant') {
-            // Append to existing assistant message
-            return [
-              ...oldData.slice(0, -1),
-              {
-                ...lastMessage,
-                content: lastMessage.content + (message.data.text || ''),
-              },
-            ];
-          } else {
-            // Create new assistant message
-            return [
-              ...oldData,
-              {
-                id: Date.now(),
-                session_id: activeSessionId,
-                role: 'assistant',
-                content: message.data.text || '',
-                timestamp: new Date().toISOString(),
-                audio_duration_ms: null,
-                tts_duration_ms: null,
-                llm_latency_ms: null,
-                total_latency_ms: null,
-              },
-            ];
-          }
-        });
-      }
+      // Discord AI response chunks - no action needed
+      // Backend saves chunks to database, frontend just waits for ai_response_complete
     } else if (message.event === 'ai_response_complete') {
+      const aiDuration = aiStartTimeRef.current ? Date.now() - aiStartTimeRef.current : 0;
+      logUIEvent('💭', 'THINKING', `Complete (duration: ${aiDuration}ms)`, undefined, true);
+
       // Stop AI generating animation (unified experience)
       setIsVoiceAIGenerating(false);
       aiStartTimeRef.current = null;
@@ -439,16 +461,11 @@ export function VoxbridgePage() {
         toast.error("AI Response Error", message.data.error);
       }
 
-      // Save final Discord AI message to database (if we have an active session and got a response)
-      if (activeSessionId && message.data.text) {
-        api.addMessage(activeSessionId, {
-          role: 'assistant',
-          content: message.data.text,
-        }).then(() => {
-          queryClient.invalidateQueries({ queryKey: ['messages', activeSessionId] });
-        }).catch((error) => {
-          console.error('[Discord] Failed to save AI message:', error);
-        });
+      // Refresh message list to show backend-saved message
+      // No optimistic updates to remove - just fetch from database
+      if (activeSessionId) {
+        logUIEvent('🔄', 'QUERY', `Invalidating messages query (session: ${activeSessionId})`, undefined, true);
+        queryClient.invalidateQueries({ queryKey: ['messages', activeSessionId] });
       }
 
       // Refetch metrics after AI response completes
@@ -463,6 +480,14 @@ export function VoxbridgePage() {
   const { isConnected: wsConnected } = useWebSocket('/ws/events', {
     onMessage: handleMessage
   });
+
+  // Component lifecycle logging
+  useEffect(() => {
+    logUIEvent('🚀', 'COMPONENT', 'VoxbridgePage mounted');
+    return () => {
+      logUIEvent('💥', 'COMPONENT', 'VoxbridgePage unmounting');
+    };
+  }, []);
 
   // Auto-select first session on load
   useEffect(() => {
@@ -583,6 +608,22 @@ export function VoxbridgePage() {
       return () => clearInterval(interval);
     }
   }, [isVoiceAIGenerating]);
+
+  // Clear streaming chunks when database has assistant message
+  useEffect(() => {
+    if (!isStreaming && streamingChunks.length > 0 && activeSessionId) {
+      // Check if database has an assistant message
+      const latestAssistantMsg = messages
+        .filter(m => m.role === 'assistant')
+        .slice(-1)[0];
+
+      if (latestAssistantMsg) {
+        // Database has caught up - clear streaming display
+        console.log(`[STREAMING] Database ready, clearing ${streamingChunks.length} chunks`);
+        setStreamingChunks([]);
+      }
+    }
+  }, [messages, isStreaming, streamingChunks.length, activeSessionId]);
 
   // Conversation Management Handlers
 
@@ -1062,6 +1103,13 @@ export function VoxbridgePage() {
                           <Volume2 className="h-5 w-5" />
                         )}
                       </Button>
+                      {/* Bot Speaking Indicator */}
+                      {isBotSpeaking && (
+                        <Badge variant="secondary" className="animate-pulse">
+                          <Volume2 className="h-3 w-3 mr-1" />
+                          AI Speaking...
+                        </Badge>
+                      )}
                     </div>
                   )}
                 </div>
@@ -1231,13 +1279,23 @@ export function VoxbridgePage() {
                         />
                       )}
 
-                      {/* Streaming Message Display */}
-                      {isStreaming && streamingChunks.length > 0 && (
+                      {/* Streaming Message Display - shows during streaming and while waiting for database */}
+                      {streamingChunks.length > 0 && (
                         <StreamingMessageDisplay
                           chunks={streamingChunks}
                           isStreaming={isStreaming}
                           agentName={activeAgent?.name || 'AI Assistant'}
                         />
+                      )}
+
+                      {/* Ready for Next Question Indicator (Multi-Turn Mode) */}
+                      {activeSessionId && connectionState === 'connected' && !isListening && !isVoiceAIGenerating && !isBotSpeaking && !isStreaming && (
+                        <div className="flex items-center justify-center py-4">
+                          <Badge variant="outline" className="text-sm bg-green-500/10 text-green-400 border-green-500/30">
+                            <CircleCheckBig className="h-4 w-4 mr-2" />
+                            Ready for next question
+                          </Badge>
+                        </div>
                       )}
 
                       {/* Messages from Database */}
