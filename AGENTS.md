@@ -207,8 +207,10 @@ CREATE TABLE agents (
     llm_model VARCHAR(100) NOT NULL,     -- e.g., 'anthropic/claude-3.5-sonnet'
     temperature FLOAT DEFAULT 0.7,
     tts_voice VARCHAR(100),
-    tts_rate FLOAT DEFAULT 1.0,
-    tts_pitch FLOAT DEFAULT 1.0,
+    tts_exaggeration FLOAT DEFAULT 1.0,
+    tts_cfg_weight FLOAT DEFAULT 0.7,
+    tts_temperature FLOAT DEFAULT 0.3,
+    tts_language VARCHAR(10) DEFAULT 'en',
     created_at TIMESTAMP DEFAULT NOW(),
     updated_at TIMESTAMP DEFAULT NOW(),
     is_active BOOLEAN DEFAULT TRUE

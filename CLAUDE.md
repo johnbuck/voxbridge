@@ -480,7 +480,7 @@ docker compose up -d
 ### Agent Management (VoxBridge 2.0)
 - **GET /api/agents** - List all AI agents
 - **GET /api/agents/{id}** - Get specific agent by UUID
-- **POST /api/agents** - Create new agent (`{name, system_prompt, temperature?, llm_provider?, llm_model?, tts_voice?, tts_rate?, tts_pitch?, use_n8n?, plugins?}`)
+- **POST /api/agents** - Create new agent (`{name, system_prompt, temperature?, llm_provider?, llm_model?, tts_voice?, tts_exaggeration?, tts_cfg_weight?, tts_temperature?, tts_language?, use_n8n?, plugins?}`)
 - **PUT /api/agents/{id}** - Update agent (partial update, all fields optional)
 - **DELETE /api/agents/{id}** - Delete agent (cascades to sessions/conversations)
 

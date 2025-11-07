@@ -135,9 +135,12 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
+      args:
+        - VITE_API_URL=http://localhost:4900
+        - VITE_WS_URL=ws://localhost:4900
     container_name: voxbridge-frontend
     ports:
-      - "${FRONTEND_PORT:-4901}:80"
+      - "${FRONTEND_PORT:-4903}:80"
     depends_on:
       - voxbridge-discord
     restart: unless-stopped
