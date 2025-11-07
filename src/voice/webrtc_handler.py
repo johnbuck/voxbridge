@@ -1,19 +1,23 @@
 #!/usr/bin/env python3
 """
 ============================================================
-WebRTC Voice Handler (VoxBridge 2.0 Phase 5.5)
+WebRTC Voice Handler (VoxBridge 2.0 Phase 5.5 + Audio Fix)
 Handles browser audio streaming via WebSocket:
-- Receive Opus/WebM audio chunks from browser
-- Decode to PCM for WhisperX
+- Receive WebM/OGG audio chunks from browser
+- Fully decode container to PCM audio with PyAV
+- Send PCM audio to WhisperX (format='pcm' path)
 - Stream transcriptions back to browser
 - Route final transcript to LLM
 - Stream AI response chunks to browser
 
 Uses new service layer:
 - ConversationService: Session management + context caching
-- STTService: WhisperX abstraction
+- STTService: WhisperX abstraction with format routing
 - LLMService: LLM provider routing
 - TTSService: Chatterbox abstraction
+
+Audio Strategy: WebM decode → PCM audio → WhisperX (PCM path)
+Note: Discord uses Opus path, WebRTC uses PCM path (dual-format)
 ============================================================
 """
 
@@ -21,34 +25,38 @@ import asyncio
 import logging
 import os
 import time
+import numpy as np
 from io import BytesIO
 from typing import Optional, Dict
 from uuid import UUID
 
 from fastapi import WebSocket, WebSocketDisconnect
-import opuslib
+import av
 
 from src.services.conversation_service import ConversationService
 from src.services.stt_service import STTService
 from src.services.llm_service import LLMService, LLMConfig, ProviderType
 from src.services.tts_service import TTSService
 from src.types.error_events import ServiceErrorEvent
-from src.api.server import get_metrics_tracker
+from src.api.server import get_metrics_tracker, ws_manager
 
 logger = logging.getLogger(__name__)
 
 
 class WebRTCVoiceHandler:
     """
-    Handles WebRTC voice streaming from browser (VoxBridge 2.0)
+    Handles WebRTC voice streaming from browser (VoxBridge 2.0 + Audio Fix)
 
     Architecture:
-    1. Browser → WebSocket: Binary Opus chunks (100ms each)
-    2. Opus → PCM: Decode with opuslib (16kHz mono)
-    3. PCM → STTService: Stream for transcription
-    4. STTService → Browser: Partial/final transcripts
-    5. LLMService → Browser: Stream AI response chunks
-    6. TTSService → Browser: Stream audio chunks
+    1. Browser → WebSocket: WebM/OGG Opus chunks (100ms each)
+    2. Buffer → Accumulate chunks until container is parseable
+    3. PyAV Decode → Fully decode to PCM audio (48kHz stereo int16)
+    4. PCM Audio → STTService: Send to WhisperX (format='pcm' path)
+    5. STTService → Browser: Partial/final transcripts
+    6. LLMService → Browser: Stream AI response chunks
+    7. TTSService → Browser: Stream audio chunks
+
+    Note: Uses PCM path (not Opus) to avoid frame size mismatch with WhisperX
     """
 
     def __init__(self, websocket: WebSocket, user_id: str, session_id: UUID):
@@ -74,18 +82,28 @@ class WebRTCVoiceHandler:
         # Get global metrics tracker (shared with Discord plugin)
         self.metrics = get_metrics_tracker()
 
-        # Audio processing
-        self.audio_buffer = BytesIO()
-        self.opus_decoder = opuslib.Decoder(16000, 1)  # 16kHz mono
+        # Audio processing (WebM demuxing to extract raw Opus packets)
+        self.webm_buffer = bytearray()  # Accumulate WebM chunks until parseable
+        self.chunks_received = 0
+        self.webm_header: Optional[bytes] = None  # Saved WebM header for continuation chunks
+        self.header_frame_count: int = 0  # Number of frames in header
 
         # VAD settings (reuse from Discord configuration)
         self.silence_threshold_ms = int(os.getenv('SILENCE_THRESHOLD_MS', '600'))
+        self.max_utterance_time_ms = int(os.getenv('MAX_UTTERANCE_TIME_MS', '45000'))  # 45s default
         self.last_audio_time: Optional[float] = None
+        self.utterance_start_time: Optional[float] = None  # Track utterance start for max timeout
         self.silence_task: Optional[asyncio.Task] = None
+
+        # WebM continuous stream decoding (maintains Opus codec state)
+        self.frames_sent_to_whisperx: int = 0  # Track frames already sent (to skip on next decode)
 
         # Transcription state
         self.current_transcript = ""
         self.is_finalizing = False
+
+        # Bot speaking state (blocks input during TTS playback)
+        self.is_bot_speaking = False
 
         # Timing metrics
         self.t_start = time.time()
@@ -95,6 +113,7 @@ class WebRTCVoiceHandler:
 
         logger.info(f"🎙️ WebRTC handler initialized for user={user_id}, session={session_id}")
         logger.info(f"   Silence threshold: {self.silence_threshold_ms}ms")
+        logger.info(f"   Max utterance time: {self.max_utterance_time_ms}ms")
 
     async def _handle_service_error(self, error_event: ServiceErrorEvent) -> None:
         """
@@ -111,14 +130,18 @@ class WebRTCVoiceHandler:
             f"(severity={error_event.severity})"
         )
 
-        # Broadcast error to frontend via WebSocket
+        # Broadcast error to frontend via WebSocket (only if still connected)
+        if not self.is_active:
+            logger.debug(f"⏭️ Skipping service error broadcast (connection closed)")
+            return
+
         try:
             await self.websocket.send_json({
                 "type": "service_error",
                 "data": error_event.dict()
             })
         except Exception as e:
-            logger.error(f"❌ Failed to broadcast error event to WebSocket: {e}")
+            logger.debug(f"⏭️ Could not broadcast service error (connection likely closed): {e}")
 
     async def start(self):
         """
@@ -133,34 +156,43 @@ class WebRTCVoiceHandler:
         6. Handle disconnection
         """
         try:
+            logger.info(f"[START] Step 1: Starting conversation service...")
             # Start conversation service background tasks
             await self.conversation_service.start()
-            logger.info(f"✅ ConversationService started")
+            logger.info(f"[START] ✅ Step 1 complete: ConversationService started")
 
+            logger.info(f"[START] Step 2: Validating session...")
             # Validate session exists and user owns it
             # Session should already exist - created by API endpoint before WebSocket connection
             cached = await self.conversation_service._ensure_session_cached(self.session_id)
             session = cached.session
 
             if session.user_id != self.user_id:
+                logger.error(f"[START] ❌ Step 2 failed: Session {self.session_id} does not belong to user {self.user_id}")
                 await self._send_error("Session does not belong to user")
                 return
 
-            logger.info(f"✅ Session validated: {session.title} (agent: {session.agent_id})")
+            logger.info(f"[START] ✅ Step 2 complete: Session validated: {session.title} (agent: {session.agent_id})")
 
+            logger.info(f"[START] Step 3: Connecting to STTService...")
             # Connect to STTService
             await self._connect_stt()
+            logger.info(f"[START] ✅ Step 3 complete: STTService connected")
 
+            logger.info(f"[START] Step 4: Starting audio streaming loop...")
             # Start audio streaming loop
             await self._audio_loop()
+            logger.info(f"[START] ✅ Step 4 complete: Audio loop finished")
 
         except WebSocketDisconnect:
-            logger.info(f"🔌 WebSocket disconnected for user {self.user_id}")
+            logger.info(f"[START] 🔌 WebSocket disconnected for user {self.user_id}")
         except Exception as e:
-            logger.error(f"❌ Error in WebRTC handler: {e}", exc_info=True)
+            logger.error(f"[START] ❌ Error in WebRTC handler at unknown step: {e}", exc_info=True)
             await self._send_error(f"Server error: {str(e)}")
         finally:
+            logger.info(f"[START] Step 5: Cleanup...")
             await self._cleanup()
+            logger.info(f"[START] ✅ Step 5 complete: Cleanup finished")
 
     async def _connect_stt(self):
         """Connect to STTService and set up callbacks"""
@@ -177,6 +209,10 @@ class WebRTCVoiceHandler:
                     is_final: Whether this is a final transcript
                     metadata: Additional metadata (confidence, duration, etc.)
                 """
+                # DIAGNOSTIC: Log transcript type and content
+                transcript_type = "FINAL" if is_final else "PARTIAL"
+                logger.info(f"📝 [TRANSCRIPT] Received {transcript_type}: length={len(text)} chars, text=\"{text[:100]}{'...' if len(text) > 100 else ''}\"")
+
                 if self.t_first_transcript is None:
                     self.t_first_transcript = time.time()
                     latency_s = self.t_first_transcript - self.t_start
@@ -184,11 +220,23 @@ class WebRTCVoiceHandler:
 
                 if not is_final:
                     # Partial transcript
+                    logger.info(f"📝 [TRANSCRIPT] Storing PARTIAL in self.current_transcript: \"{text}\"")
                     self.current_transcript = text
                     await self._send_partial_transcript(text)
                 else:
-                    # Final transcript - wait for finalize() call from silence detection
-                    logger.info(f"✅ Final transcript from STTService: \"{text}\"")
+                    # Final transcript - store it (silence monitor will trigger finalization)
+                    prev_transcript = self.current_transcript
+                    logger.info(f"✅ [TRANSCRIPT] Storing FINAL in self.current_transcript: \"{text}\"")
+                    self.current_transcript = text
+
+                    # DIAGNOSTIC: Check if final differs from previous partial
+                    if prev_transcript and prev_transcript != text:
+                        logger.warning(f"⚠️ [TRANSCRIPT] FINAL differs from previous PARTIAL!")
+                        logger.warning(f"   - Previous PARTIAL: \"{prev_transcript}\"")
+                        logger.warning(f"   - Current FINAL:    \"{text}\"")
+
+                    # Note: Silence monitor calls _finalize_transcription() when silence detected
+                    # Do NOT call finalization here to avoid race conditions!
 
             # Connect to STTService
             whisper_url = os.getenv('WHISPER_SERVER_URL', 'ws://whisperx:4901')
@@ -214,50 +262,87 @@ class WebRTCVoiceHandler:
 
     async def _audio_loop(self):
         """
-        Main audio processing loop
+        Main audio processing loop with WebM decoding
 
         Receives binary audio chunks from browser and processes them:
-        1. Receive Opus/WebM binary data
-        2. Decode to PCM
-        3. Stream to STTService
-        4. Monitor for silence
+        1. Receive WebM/OGG binary chunks from MediaRecorder (100ms each)
+        2. Buffer chunks until container is parseable by PyAV
+        3. Fully decode container to PCM audio (48kHz stereo int16)
+        4. Send PCM audio to WhisperX (format='pcm' path, no Opus decode)
+        5. Monitor for silence
+
+        Strategy: Buffered decoding - accumulate WebM chunks, decode periodically,
+                  extract PCM audio, send to WhisperX (bypasses Opus frame issues)
         """
-        logger.info(f"🎙️ Starting audio stream loop")
+        logger.info(f"[AUDIO_LOOP] 🎙️ Starting audio stream loop (WebM/OGG → PCM decoding)")
+        logger.info(f"[AUDIO_LOOP] Silence threshold: {self.silence_threshold_ms}ms, Max utterance: {self.max_utterance_time_ms}ms")
 
         # Start silence monitoring
+        logger.info(f"[AUDIO_LOOP] Creating silence monitor task...")
         self.silence_task = asyncio.create_task(self._monitor_silence())
+        logger.info(f"[AUDIO_LOOP] ✅ Silence monitor task created: {self.silence_task}")
 
         try:
             while self.is_active:
-                # Receive binary audio chunk from browser
-                audio_data = await self.websocket.receive_bytes()
+                # Receive WebM/OGG chunk from browser MediaRecorder
+                webm_chunk = await self.websocket.receive_bytes()
+                self.chunks_received += 1
+
+                # Block audio input while bot is speaking (prevent crosstalk)
+                if self.is_bot_speaking:
+                    logger.debug(f"🤖 [AUDIO_LOOP] Bot is speaking - discarding user audio chunk #{self.chunks_received}")
+                    continue  # Skip this chunk, wait for next one
 
                 if self.t_first_audio is None:
                     self.t_first_audio = time.time()
-                    logger.info(f"🎤 Received first audio chunk ({len(audio_data)} bytes)")
+                    self.utterance_start_time = time.time()  # Track start for max utterance timeout
+                    logger.info(f"🎤 Received first audio chunk ({len(webm_chunk)} bytes)")
+                    # Log WebM structure on first chunk
+                    has_ebml = webm_chunk[:4] == b'\x1a\x45\xdf\xa3'
+                    has_segment = b'\x18\x53\x80\x67' in webm_chunk[:100]
+                    has_cluster = b'\x1f\x43\xb6\x75' in webm_chunk
+                    logger.info(f"📦 WebM structure: EBML={has_ebml}, Segment={has_segment}, Cluster={has_cluster}")
+                else:
+                    logger.info(f"🎤 Received audio chunk #{self.chunks_received} ({len(webm_chunk)} bytes)")
 
-                # Update silence detection
-                self.last_audio_time = time.time()
+                # Accumulate all chunks to maintain Opus codec state across the entire stream
+                # Opus is stateful - each frame depends on previous frames' decoder state
+                self.webm_buffer.extend(webm_chunk)
 
-                # Decode Opus to PCM
-                try:
-                    # Browser sends Opus frames (20ms each)
-                    # opuslib expects frame_size parameter matching encoding
-                    # For 16kHz: 20ms = 320 samples
-                    pcm_data = self.opus_decoder.decode(audio_data, frame_size=320)
+                # Decode entire accumulated buffer to maintain codec state
+                # Skip frames we've already sent to avoid duplicates
+                pcm_data = self._extract_new_pcm_audio()
 
-                    # Stream PCM to STTService
+                # Update silence detection timer ONLY if audio is NOT silent
+                # Check audio amplitude to determine if user is speaking
+                if pcm_data:
+                    import struct
+                    # Parse PCM samples to detect silence
+                    if len(pcm_data) >= 200:
+                        samples = struct.unpack(f'<{min(100, len(pcm_data)//2)}h', pcm_data[:200])
+                        max_amp = max(abs(s) for s in samples)
+                        is_silent = max_amp < 100
+
+                        # Only update timer if NOT silent - this allows silence detection to work
+                        if not is_silent:
+                            self.last_audio_time = time.time()
+                            logger.debug(f"🔊 Non-silent audio detected (max_amp={max_amp}), updating timer")
+                        else:
+                            logger.debug(f"🤫 Silent audio detected (max_amp={max_amp}), NOT updating timer")
+                    else:
+                        # Short PCM data - treat as non-silent to avoid false positives
+                        self.last_audio_time = time.time()
+
+                # Send new PCM data to WhisperX (if extraction successful)
+                if pcm_data:
                     success = await self.stt_service.send_audio(
                         session_id=self.session_id,
-                        audio_data=pcm_data
+                        audio_data=pcm_data,
+                        audio_format='pcm'  # WebRTC uses PCM format
                     )
 
                     if not success:
-                        logger.warning(f"⚠️ Failed to send audio to STTService")
-
-                except opuslib.OpusError as e:
-                    logger.warning(f"⚠️ Opus decode error: {e}")
-                    # Continue processing - may be partial frame
+                        logger.warning(f"⚠️ Failed to send PCM audio to STTService")
 
         except WebSocketDisconnect:
             logger.info(f"🔌 Browser disconnected")
@@ -268,32 +353,394 @@ class WebRTCVoiceHandler:
             if self.silence_task:
                 self.silence_task.cancel()
 
+    def _extract_new_pcm_audio(self) -> bytes:
+        """
+        Decode entire accumulated WebM buffer and extract only NEW frames
+
+        This maintains Opus codec state across the entire stream by decoding
+        from the beginning each time. We skip frames already sent to avoid
+        duplicates.
+
+        Returns:
+            PCM audio bytes for new frames only, or empty bytes if decode fails
+        """
+        if not self.webm_buffer:
+            return b''
+
+        try:
+            # Decode entire accumulated buffer (maintains codec state)
+            buffer = BytesIO(bytes(self.webm_buffer))
+            container = av.open(buffer, 'r')
+            audio_stream = container.streams.audio[0]
+
+            # Decode all frames from the beginning
+            all_pcm_chunks = []
+            for frame_idx, frame in enumerate(container.decode(audio_stream)):
+                # FIX: Convert planar audio to interleaved format for WhisperX
+                pcm_array = frame.to_ndarray()
+
+                # Log format detection on first frame
+                if frame_idx == 0:
+                    is_planar = frame.format.is_planar
+                    logger.info(f"🎵 Audio format: {frame.format.name}, planar={is_planar}, shape={pcm_array.shape}, dtype={pcm_array.dtype}")
+
+                # Convert float32 to int16 if needed (WhisperX expects int16)
+                if pcm_array.dtype == np.float32:
+                    pcm_array = (pcm_array * 32767).astype(np.int16)
+
+                # Transpose if planar: (channels, samples) → (samples, channels)
+                if frame.format.is_planar:
+                    pcm_array = pcm_array.T
+
+                pcm_bytes = pcm_array.tobytes()
+                all_pcm_chunks.append(pcm_bytes)
+
+            container.close()
+
+            # Skip frames we've already sent, extract only NEW frames
+            new_pcm_chunks = all_pcm_chunks[self.frames_sent_to_whisperx:]
+
+            if new_pcm_chunks:
+                # Update counter for next iteration
+                self.frames_sent_to_whisperx = len(all_pcm_chunks)
+
+                pcm_data = b''.join(new_pcm_chunks)
+
+                # PCM content validation logging
+                import struct
+                if len(pcm_data) >= 200:
+                    # Parse first 100 samples as int16
+                    samples = struct.unpack(f'<{min(100, len(pcm_data)//2)}h', pcm_data[:200])
+                    max_amp = max(abs(s) for s in samples)
+                    avg_amp = sum(abs(s) for s in samples) / len(samples)
+                    logger.info(f"🔊 PCM quality: max_amp={max_amp}/32767 ({max_amp/32767*100:.1f}%), "
+                               f"avg_amp={avg_amp:.0f}, silent={max_amp < 100}")
+
+                logger.info(f"✅ Decoded {len(new_pcm_chunks)} new frames from {len(self.webm_buffer)} bytes "
+                           f"(total {len(all_pcm_chunks)} frames, skipped {len(all_pcm_chunks) - len(new_pcm_chunks)})")
+
+                # Buffer management: Trim if too large to prevent memory leak
+                MAX_BUFFER_SIZE = 500000  # 500KB (~2.6 seconds at 48kHz stereo)
+                if len(self.webm_buffer) > MAX_BUFFER_SIZE:
+                    # Keep only recent data to maintain codec state
+                    old_size = len(self.webm_buffer)
+                    self.webm_buffer = self.webm_buffer[-MAX_BUFFER_SIZE:]
+                    self.frames_sent_to_whisperx = 0  # Reset frame counter after trim
+                    logger.info(f"🧹 Trimmed buffer: {old_size} → {len(self.webm_buffer)} bytes, reset frame counter")
+
+                return pcm_data
+
+            return b''
+
+        except (av.error.InvalidDataError, av.error.ValueError):
+            # Incomplete container data - keep buffering
+            logger.debug(f"⏳ Incomplete WebM data, buffering... ({len(self.webm_buffer)} bytes)")
+            return b''
+
+        except Exception as e:
+            logger.warning(f"⚠️ WebM decode error: {type(e).__name__}: {e}")
+            return b''
+
+    def _decode_webm_chunk(self, chunk: bytes) -> bytes:
+        """
+        Try to decode a single WebM chunk independently
+
+        MediaRecorder with timeslice should produce independently playable chunks,
+        but first chunk contains header while subsequent chunks may not.
+        Save header from first successful decode and try to reuse for later chunks.
+
+        Args:
+            chunk: Single WebM chunk from MediaRecorder
+
+        Returns:
+            PCM audio bytes if successful, empty bytes otherwise
+        """
+        try:
+            buffer = BytesIO(chunk)
+            container = av.open(buffer, 'r')
+            audio_stream = container.streams.audio[0]
+
+            # Save header from first successful decode
+            if self.webm_header is None:
+                self.webm_header = chunk[:min(len(chunk), 4096)]  # Save first 4KB as header
+
+            pcm_chunks = []
+            for frame in container.decode(audio_stream):
+                # FIX: Convert planar audio to interleaved format for WhisperX
+                pcm_array = frame.to_ndarray()
+
+                # Convert float32 to int16 if needed (WhisperX expects int16)
+                if pcm_array.dtype == np.float32:
+                    pcm_array = (pcm_array * 32767).astype(np.int16)
+
+                if frame.format.is_planar:
+                    pcm_array = pcm_array.T  # Transpose (channels, samples) → (samples, channels)
+                pcm_bytes = pcm_array.tobytes()
+                pcm_chunks.append(pcm_bytes)
+
+            container.close()
+
+            if pcm_chunks:
+                # Count frames in header (first chunk only)
+                if self.header_frame_count == 0:
+                    self.header_frame_count = len(pcm_chunks)
+                    logger.info(f"📦 Header contains {self.header_frame_count} frames")
+
+                pcm_data = b''.join(pcm_chunks)
+                logger.info(f"✅ Decoded chunk: {len(chunk)} bytes → {len(pcm_data)} PCM bytes")
+                return pcm_data
+
+            return b''
+
+        except (av.error.InvalidDataError, av.error.ValueError) as e:
+            # Chunk not independently decodable - try with saved header
+            if self.webm_header is not None:
+                try:
+                    # Prepend saved header to continuation chunk
+                    chunk_with_header = self.webm_header + chunk
+                    buffer = BytesIO(chunk_with_header)
+                    container = av.open(buffer, 'r')
+                    audio_stream = container.streams.audio[0]
+
+                    pcm_chunks = []
+                    frame_index = 0
+                    for frame in container.decode(audio_stream):
+                        # Skip header frames to avoid duplication
+                        if frame_index >= self.header_frame_count:
+                            # FIX: Convert planar audio to interleaved format for WhisperX
+                            pcm_array = frame.to_ndarray()
+
+                            # Convert float32 to int16 if needed (WhisperX expects int16)
+                            if pcm_array.dtype == np.float32:
+                                pcm_array = (pcm_array * 32767).astype(np.int16)
+
+                            if frame.format.is_planar:
+                                pcm_array = pcm_array.T  # Transpose (channels, samples) → (samples, channels)
+                            pcm_bytes = pcm_array.tobytes()
+                            pcm_chunks.append(pcm_bytes)
+                        frame_index += 1
+
+                    container.close()
+
+                    if pcm_chunks:
+                        pcm_data = b''.join(pcm_chunks)
+                        logger.info(f"✅ Decoded chunk with header (skipped {self.header_frame_count} frames): {len(chunk)} bytes → {len(pcm_data)} PCM bytes")
+                        return pcm_data
+                except Exception as header_err:
+                    logger.debug(f"⏩ Header prepend failed: {type(header_err).__name__}")
+
+            # Will try buffered decode
+            logger.debug(f"⏩ Chunk decode failed ({type(e).__name__}), will buffer")
+            return b''
+        except Exception as e:
+            logger.warning(f"⚠️ Chunk decode error: {type(e).__name__}: {e}")
+            return b''
+
+    def _extract_pcm_audio(self) -> bytes:
+        """
+        Fully decode WebM/OGG to PCM audio (48kHz stereo, 16-bit)
+
+        Uses PyAV to decode containers to raw PCM, bypassing Opus frame issues.
+        This produces the exact PCM format WhisperX expects (no Opus decoding needed).
+
+        Returns:
+            Raw PCM bytes (48kHz stereo int16) ready for WhisperX, or empty bytes if incomplete
+        """
+        if not self.webm_buffer:
+            return b''
+
+        try:
+            # Wrap buffer in BytesIO for PyAV
+            buffer = BytesIO(bytes(self.webm_buffer))
+
+            # Open container (auto-detects WebM or OGG format)
+            container = av.open(buffer, 'r')
+            audio_stream = container.streams.audio[0]
+
+            logger.info(f"✅ WebM container opened: codec={audio_stream.codec_context.name}, "
+                       f"rate={audio_stream.codec_context.sample_rate}Hz, "
+                       f"channels={audio_stream.codec_context.channels}")
+
+            # Format validation warnings
+            if audio_stream.codec_context.sample_rate != 48000:
+                logger.warning(f"⚠️ Unexpected sample rate: {audio_stream.codec_context.sample_rate}Hz (expected 48000Hz)")
+            if audio_stream.codec_context.channels != 2:
+                logger.warning(f"⚠️ Unexpected channels: {audio_stream.codec_context.channels} (expected 2 for stereo)")
+
+            pcm_chunks = []
+
+            # DECODE packets to PCM frames (not just demux)
+            for frame in container.decode(audio_stream):
+                # Convert AudioFrame to raw PCM bytes (48kHz stereo int16)
+                # FIX: Convert planar audio to interleaved format for WhisperX
+                pcm_array = frame.to_ndarray()
+
+                # Convert float32 to int16 if needed (WhisperX expects int16)
+                if pcm_array.dtype == np.float32:
+                    pcm_array = (pcm_array * 32767).astype(np.int16)
+
+                if frame.format.is_planar:
+                    pcm_array = pcm_array.T  # Transpose (channels, samples) → (samples, channels)
+                pcm_bytes = pcm_array.tobytes()
+                pcm_chunks.append(pcm_bytes)
+
+            container.close()
+
+            # Combine all PCM chunks
+            pcm_data = b''.join(pcm_chunks)
+
+            logger.info(f"🎵 Decoded {len(pcm_chunks)} PCM frames from {len(self.webm_buffer)} bytes "
+                       f"({len(pcm_data)} PCM bytes)")
+
+            # Clear buffer after successful decode (this is fallback buffered decode)
+            self.webm_buffer.clear()
+
+            return pcm_data
+
+        except av.error.InvalidDataError:
+            # Incomplete container data - keep buffering
+            logger.debug(f"⏳ Incomplete WebM data, buffering... ({len(self.webm_buffer)} bytes)")
+            return b''
+
+        except Exception as e:
+            # Other PyAV error - log and reset buffer
+            logger.warning(f"⚠️ WebM decode error: {type(e).__name__}: {e}")
+            self.webm_buffer.clear()  # Reset to avoid perpetual errors
+            return b''
+
+    async def _send_stop_listening(self, reason: str, **metadata):
+        """
+        Send stop_listening event to frontend to halt MediaRecorder
+
+        Args:
+            reason: Why listening stopped ("silence_detected", "max_utterance_timeout", "manual_stop")
+            **metadata: Additional metadata (silence_duration_ms, etc.)
+        """
+        if not self.is_active:
+            logger.debug(f"⏭️ Skipping stop_listening event (connection closed)")
+            return
+
+        try:
+            event_data = {
+                "session_id": str(self.session_id),
+                "reason": reason,
+                **metadata
+            }
+
+            await self.websocket.send_json({
+                "event": "stop_listening",
+                "data": event_data
+            })
+
+            logger.info(f"📡 Sent stop_listening event (reason: {reason}, metadata: {metadata})")
+
+        except Exception as e:
+            logger.debug(f"⏭️ Could not send stop_listening event (connection likely closed): {e}")
+
     async def _monitor_silence(self):
         """
-        Monitor for silence and trigger finalization
+        Monitor for silence and trigger finalization (MULTI-TURN MODE)
 
         Continuously checks if audio has stopped for silence_threshold_ms.
+        Also enforces max_utterance_time_ms as absolute timeout.
         When silence detected, finalizes transcription and calls LLM.
+
+        After finalization, continues monitoring for new audio (auto-restart detection).
+        This enables multi-turn conversations without reconnecting WebSocket.
         """
+        logger.info(f"[SILENCE_MONITOR] 🎬 Started in MULTI-TURN mode (checking every 100ms)")
+        iteration = 0
+        finalized = False
+        last_finalization_time = None
+
         try:
             while self.is_active:
                 await asyncio.sleep(0.1)  # Check every 100ms
+                iteration += 1
 
-                if self.last_audio_time:
+                # Heartbeat log every 50 iterations (5 seconds)
+                if iteration % 50 == 0:
+                    logger.debug(f"[SILENCE_MONITOR] ❤️ Heartbeat #{iteration} (last_audio={self.last_audio_time}, "
+                               f"utterance_start={self.utterance_start_time}, finalized={finalized}, is_finalizing={self.is_finalizing})")
+
+                # Auto-restart detection: Check if new audio arrived after finalization
+                if finalized and self.last_audio_time:
+                    elapsed_ms = (time.time() - self.last_audio_time) * 1000
+
+                    # If audio is recent (less than silence threshold), user started speaking again
+                    if elapsed_ms < self.silence_threshold_ms:
+                        logger.info(f"🔄 [SILENCE_MONITOR] New audio after finalization - starting new conversation turn!")
+
+                        # Reset state for new turn
+                        finalized = False
+                        last_finalization_time = time.time()
+                        self.current_transcript = ""
+                        self.is_finalizing = False
+                        self.utterance_start_time = self.last_audio_time  # New utterance start
+                        iteration = 0
+
+                        logger.debug(f"🔄 [SILENCE_MONITOR] State reset complete - ready for new utterance")
+
+                # Check max utterance timeout (absolute limit) - only if not finalized
+                if not finalized and self.utterance_start_time:
+                    elapsed_ms = (time.time() - self.utterance_start_time) * 1000
+
+                    if elapsed_ms >= self.max_utterance_time_ms:
+                        if not self.is_finalizing:
+                            logger.warning(f"[SILENCE_MONITOR] ⏱️ Max utterance time ({self.max_utterance_time_ms}ms) exceeded - forcing finalization")
+
+                            # DIAGNOSTIC: Log transcript that will be finalized
+                            logger.info(f"📝 [SILENCE_MONITOR] Will finalize with current_transcript: \"{self.current_transcript[:100]}{'...' if len(self.current_transcript) > 100 else ''}\" (length={len(self.current_transcript)} chars)")
+
+                            # MULTI-TURN MODE: Don't send stop_listening - keep MediaRecorder running!
+                            # Frontend will show "Ready for next question" automatically
+                            # await self._send_stop_listening(
+                            #     reason="max_utterance_timeout",
+                            #     elapsed_ms=int(elapsed_ms),
+                            #     max_ms=self.max_utterance_time_ms
+                            # )
+
+                            await self._finalize_transcription()
+                            finalized = True
+                            last_finalization_time = time.time()
+                            # ✅ Continue monitoring for next turn - don't break!
+
+                # Check silence threshold - only if not finalized
+                if not finalized and self.last_audio_time:
                     silence_duration_ms = (time.time() - self.last_audio_time) * 1000
 
                     if silence_duration_ms >= self.silence_threshold_ms:
                         if not self.is_finalizing:
-                            logger.info(f"🤫 Silence detected ({int(silence_duration_ms)}ms) - finalizing")
+                            logger.info(f"[SILENCE_MONITOR] 🤫 Silence detected ({int(silence_duration_ms)}ms) - finalizing")
+
+                            # DIAGNOSTIC: Log transcript that will be finalized
+                            logger.info(f"📝 [SILENCE_MONITOR] Will finalize with current_transcript: \"{self.current_transcript[:100]}{'...' if len(self.current_transcript) > 100 else ''}\" (length={len(self.current_transcript)} chars)")
+
+                            # MULTI-TURN MODE: Don't send stop_listening - keep MediaRecorder running!
+                            # Frontend will show "Ready for next question" automatically
+                            # await self._send_stop_listening(
+                            #     reason="silence_detected",
+                            #     silence_duration_ms=int(silence_duration_ms)
+                            # )
+
                             await self._finalize_transcription()
-                        break
+                            finalized = True
+                            last_finalization_time = time.time()
+                            # ✅ Continue monitoring for next turn - don't break!
 
         except asyncio.CancelledError:
-            logger.debug("🛑 Silence monitor cancelled")
+            logger.info(f"[SILENCE_MONITOR] 🛑 Cancelled after {iteration} iterations")
+        except Exception as e:
+            logger.error(f"[SILENCE_MONITOR] ❌ Unexpected error: {e}", exc_info=True)
 
     async def _finalize_transcription(self):
         """
         Finalize transcription and route to LLM
+
+        IMPORTANT: Single-trigger pattern (silence monitor only)
+        - STT callback stores transcript in self.current_transcript
+        - Silence monitor calls this method when silence detected
+        - Do NOT call from STT callback to avoid race conditions
 
         Steps:
         1. Get final transcript (stored in self.current_transcript)
@@ -313,10 +760,17 @@ class WebRTCVoiceHandler:
             # Use current transcript from STT callback
             transcript = self.current_transcript.strip()
 
+            # DIAGNOSTIC: Log the transcript being finalized
+            logger.info(f"📝 [FINALIZE] Starting finalization with transcript: \"{transcript}\" (length={len(transcript)} chars)")
+
             if not transcript:
                 logger.info("📝 Empty transcript - skipping LLM processing")
                 self.is_finalizing = False
                 return
+
+            # DIAGNOSTIC: Warn if transcript seems suspiciously short
+            if len(transcript) < 10:
+                logger.warning(f"⚠️ [FINALIZE] Transcript is very short ({len(transcript)} chars) - possible truncation?")
 
             logger.info(f"📝 Final transcript: \"{transcript}\"")
 
@@ -324,6 +778,7 @@ class WebRTCVoiceHandler:
             await self._send_final_transcript(transcript)
 
             # Save user message to conversation
+            logger.info(f"💾 [DB_SAVE] Saving user message to database: session={self.session_id}, role=user, length={len(transcript)} chars")
             await self.conversation_service.add_message(
                 session_id=self.session_id,
                 role="user",
@@ -333,7 +788,7 @@ class WebRTCVoiceHandler:
                     'user_id': self.user_id
                 }
             )
-            logger.info(f"💾 Saved user message to database")
+            logger.info(f"✅ [DB_SAVE] Saved user message to database")
 
             # Get agent configuration
             agent = await self.conversation_service.get_agent_config(self.session_id)
@@ -385,36 +840,91 @@ class WebRTCVoiceHandler:
 
             logger.info(f"📤 Sending to LLM ({agent.llm_provider}/{agent.llm_model}): \"{transcript}\"")
 
-            # Stream response via LLMService
+            # Create LLM service with agent-specific database config (includes decrypted API key)
+            from src.services.llm_service import get_llm_service_for_agent
+            llm_service = await get_llm_service_for_agent(agent)
+
+            # Retry logic for empty LLM responses
+            max_retries = 2
+            retry_count = 0
             full_response = ""
-            first_chunk_received = False
 
-            async def on_chunk(chunk: str):
-                nonlocal full_response, first_chunk_received
+            while retry_count <= max_retries:
+                # Stream response via LLMService
+                full_response = ""
+                first_chunk_received = False
 
-                # Track first chunk latency
-                if not first_chunk_received:
-                    t_first_chunk = time.time()
-                    latency_s = t_first_chunk - t_llm_start
-                    logger.info(f"⏱️ LATENCY [LLM first chunk]: {latency_s:.3f}s")
-                    first_chunk_received = True
+                async def on_chunk(chunk: str):
+                    nonlocal full_response, first_chunk_received
 
-                # Accumulate response
-                full_response += chunk
+                    # Track first chunk latency
+                    if not first_chunk_received:
+                        t_first_chunk = time.time()
+                        latency_s = t_first_chunk - t_llm_start
+                        logger.info(f"⏱️ LATENCY [LLM first chunk]: {latency_s:.3f}s")
+                        # DIAGNOSTIC: Log first chunk content
+                        logger.info(f"📤 [AI_CHUNK] First chunk received: \"{chunk[:50]}{'...' if len(chunk) > 50 else ''}\" (length={len(chunk)} chars)")
+                        first_chunk_received = True
 
-                # Stream chunk to browser
-                await self._send_ai_response_chunk(chunk)
+                    # Accumulate response
+                    prev_length = len(full_response)
+                    full_response += chunk
+                    # DIAGNOSTIC: Log accumulation (debug level to avoid spam)
+                    logger.debug(f"📤 [AI_CHUNK] Accumulated response: {prev_length} → {len(full_response)} chars")
 
-            # Generate response
-            await self.llm_service.generate_response(
-                session_id=self.session_id,
-                messages=llm_messages,
-                config=llm_config,
-                stream=True,
-                callback=on_chunk
-            )
+                    # Stream chunk to browser
+                    await self._send_ai_response_chunk(chunk)
+
+                # Generate response
+                await llm_service.generate_response(
+                    session_id=self.session_id,
+                    messages=llm_messages,
+                    config=llm_config,
+                    stream=True,
+                    callback=on_chunk
+                )
+
+                # Check if response is empty
+                if not full_response or not full_response.strip():
+                    retry_count += 1
+                    if retry_count <= max_retries:
+                        logger.warning(f"⚠️ LLM returned empty response (attempt {retry_count}/{max_retries + 1}), retrying...")
+
+                        # Broadcast retry notification to frontend
+                        await ws_manager.broadcast({
+                            "event": "llm_retry",
+                            "data": {
+                                "session_id": str(self.session_id),
+                                "attempt": retry_count,
+                                "maxAttempts": max_retries + 1,
+                                "message": f"Retrying... (attempt {retry_count}/{max_retries + 1})"
+                            }
+                        })
+
+                        # Reset for retry
+                        full_response = ""
+                        t_llm_start = time.time()  # Reset timer for retry
+                        continue
+                    else:
+                        logger.error(f"❌ LLM returned empty response after {max_retries + 1} attempts")
+                        full_response = "I apologize, but I'm having trouble generating a response right now. Could you please try again?"
+
+                        # Broadcast fallback notification to frontend
+                        await ws_manager.broadcast({
+                            "event": "llm_fallback",
+                            "data": {
+                                "session_id": str(self.session_id),
+                                "message": "AI response failed after multiple attempts. Using fallback message.",
+                                "fallbackMessage": full_response
+                            }
+                        })
+
+                # Success - break out of retry loop
+                break
 
             # Send completion event
+            # DIAGNOSTIC: Log complete response before saving
+            logger.info(f"💾 [AI_COMPLETE] AI response complete: \"{full_response[:100]}{'...' if len(full_response) > 100 else ''}\" (length={len(full_response)} chars)")
             await self._send_ai_response_complete(full_response)
 
             # Record latency
@@ -424,6 +934,7 @@ class WebRTCVoiceHandler:
             logger.info(f"⏱️ LATENCY [total LLM generation]: {latency_s:.3f}s")
 
             # Save AI message to conversation
+            logger.info(f"💾 [DB_SAVE] Saving AI response to database: session={self.session_id}, role=assistant, length={len(full_response)} chars")
             await self.conversation_service.add_message(
                 session_id=self.session_id,
                 role="assistant",
@@ -434,7 +945,18 @@ class WebRTCVoiceHandler:
                     'latency_s': latency_s
                 }
             )
-            logger.info(f"💾 Saved AI message to database")
+            logger.info(f"✅ [DB_SAVE] Saved AI message to database (ID will be assigned by DB)")
+
+            # Broadcast metrics update to global event stream (for metrics UI)
+            await ws_manager.broadcast({
+                "event": "metrics_update",
+                "data": {
+                    "session_id": str(self.session_id),
+                    "llm_latency_s": latency_s,
+                    "llm_provider": agent.llm_provider,
+                    "llm_model": agent.llm_model
+                }
+            })
 
             # Generate and stream TTS audio to browser
             await self._generate_tts(full_response, agent)
@@ -446,55 +968,87 @@ class WebRTCVoiceHandler:
     # WebSocket message senders
     async def _send_partial_transcript(self, text: str):
         """Send partial transcript event to browser"""
+        if not self.is_active:
+            logger.debug(f"⏭️ Skipping partial transcript send (connection closed)")
+            return
+
         try:
-            await self.websocket.send_json({
+            message = {
                 "event": "partial_transcript",
                 "data": {
                     "text": text,
                     "session_id": str(self.session_id)
                 }
-            })
+            }
+            # Send to active voice WebSocket
+            await self.websocket.send_json(message)
+            # Broadcast to global event stream (for conversation history UI)
+            await ws_manager.broadcast(message)
         except Exception as e:
-            logger.error(f"❌ Error sending partial transcript: {e}")
+            logger.debug(f"⏭️ Could not send partial transcript (connection likely closed): {e}")
 
     async def _send_final_transcript(self, text: str):
         """Send final transcript event to browser"""
+        if not self.is_active:
+            logger.debug(f"⏭️ Skipping final transcript send (connection closed)")
+            return
+
         try:
-            await self.websocket.send_json({
+            message = {
                 "event": "final_transcript",
                 "data": {
                     "text": text,
                     "session_id": str(self.session_id)
                 }
-            })
+            }
+            # Send to active voice WebSocket
+            await self.websocket.send_json(message)
+            # Broadcast to global event stream (for conversation history UI)
+            await ws_manager.broadcast(message)
         except Exception as e:
-            logger.error(f"❌ Error sending final transcript: {e}")
+            logger.debug(f"⏭️ Could not send final transcript (connection likely closed): {e}")
 
     async def _send_ai_response_chunk(self, text: str):
         """Send AI response chunk event to browser"""
+        if not self.is_active:
+            logger.debug(f"⏭️ Skipping AI response chunk send (connection closed)")
+            return
+
         try:
-            await self.websocket.send_json({
+            message = {
                 "event": "ai_response_chunk",
                 "data": {
                     "text": text,
                     "session_id": str(self.session_id)
                 }
-            })
+            }
+            # Send to active voice WebSocket
+            await self.websocket.send_json(message)
+            # Broadcast to global event stream (for conversation history UI)
+            await ws_manager.broadcast(message)
         except Exception as e:
-            logger.error(f"❌ Error sending AI response chunk: {e}")
+            logger.debug(f"⏭️ Could not send AI response chunk (connection likely closed): {e}")
 
     async def _send_ai_response_complete(self, text: str):
         """Send AI response complete event to browser"""
+        if not self.is_active:
+            logger.debug(f"⏭️ Skipping AI response complete send (connection closed)")
+            return
+
         try:
-            await self.websocket.send_json({
+            message = {
                 "event": "ai_response_complete",
                 "data": {
                     "text": text,
                     "session_id": str(self.session_id)
                 }
-            })
+            }
+            # Send to active voice WebSocket
+            await self.websocket.send_json(message)
+            # Broadcast to global event stream (for conversation history UI)
+            await ws_manager.broadcast(message)
         except Exception as e:
-            logger.error(f"❌ Error sending AI response complete: {e}")
+            logger.debug(f"⏭️ Could not send AI response complete (connection likely closed): {e}")
 
     async def _generate_tts(self, text: str, agent):
         """
@@ -521,11 +1075,26 @@ class WebRTCVoiceHandler:
                 await self._send_error("TTS service unavailable")
                 return
 
-            # Send TTS start event
-            await self.websocket.send_json({
-                "event": "tts_start",
-                "data": {"session_id": self.session_id}
-            })
+            # Block audio input while bot is speaking
+            self.is_bot_speaking = True
+            logger.info("🤖 Bot speaking state: ENABLED (blocking user audio input)")
+
+            # Send TTS start event (only if still connected)
+            if self.is_active:
+                await self.websocket.send_json({
+                    "event": "tts_start",
+                    "data": {"session_id": self.session_id}
+                })
+
+            # Send bot_speaking state change event (only if still connected)
+            if self.is_active:
+                await self.websocket.send_json({
+                    "event": "bot_speaking_state_changed",
+                    "data": {
+                        "session_id": self.session_id,
+                        "is_speaking": True
+                    }
+                })
 
             # Stream audio callback
             first_byte = True
@@ -548,42 +1117,66 @@ class WebRTCVoiceHandler:
 
                     first_byte = False
 
-                # Stream chunk to browser as binary WebSocket frame
-                await self.websocket.send_bytes(chunk)
-                total_bytes += len(chunk)
+                # Stream chunk to browser as binary WebSocket frame (only if still connected)
+                if self.is_active:
+                    await self.websocket.send_bytes(chunk)
+                    total_bytes += len(chunk)
 
             # Synthesize with streaming via TTSService
             voice_id = agent.tts_voice or os.getenv('CHATTERBOX_VOICE_ID', 'default')
-            speed = agent.tts_rate or 1.0
 
             audio_bytes = await self.tts_service.synthesize_speech(
                 session_id=self.session_id,
                 text=text,
                 voice_id=voice_id,
-                speed=speed,
+                exaggeration=agent.tts_exaggeration,
+                cfg_weight=agent.tts_cfg_weight,
+                temperature=agent.tts_temperature,
+                language_id=agent.tts_language,
                 stream=True,
                 callback=on_audio_chunk
             )
 
-            # Send completion event
+            # Send completion event (only if still connected)
             t_complete = time.time()
             total_latency_s = t_complete - t_tts_start
             logger.info(f"✅ TTS complete ({len(audio_bytes):,} bytes, {total_latency_s:.2f}s)")
 
-            await self.websocket.send_json({
-                "event": "tts_complete",
-                "data": {
-                    "session_id": self.session_id,
-                    "duration_s": total_latency_s
-                }
-            })
+            if self.is_active:
+                await self.websocket.send_json({
+                    "event": "tts_complete",
+                    "data": {
+                        "session_id": self.session_id,
+                        "duration_s": total_latency_s
+                    }
+                })
+
+            # Re-enable audio input after bot finishes speaking
+            self.is_bot_speaking = False
+            logger.info("🤖 Bot speaking state: DISABLED (user audio input re-enabled)")
+
+            # Send bot_speaking state change event (only if still connected)
+            if self.is_active:
+                await self.websocket.send_json({
+                    "event": "bot_speaking_state_changed",
+                    "data": {
+                        "session_id": self.session_id,
+                        "is_speaking": False
+                    }
+                })
 
         except Exception as e:
             logger.error(f"❌ TTS error: {e}", exc_info=True)
+            # Ensure is_bot_speaking is reset even on error
+            self.is_bot_speaking = False
             await self._send_error(f"TTS failed: {str(e)}")
 
     async def _send_error(self, message: str):
-        """Send error event to browser"""
+        """Send error event to browser (only if WebSocket is still active)"""
+        if not self.is_active:
+            logger.debug(f"⏭️ Skipping error message send (connection closed): {message}")
+            return
+
         try:
             await self.websocket.send_json({
                 "event": "error",
@@ -593,7 +1186,7 @@ class WebRTCVoiceHandler:
                 }
             })
         except Exception as e:
-            logger.error(f"❌ Error sending error message: {e}")
+            logger.debug(f"⏭️ Could not send error message (connection likely closed): {e}")
 
     async def _cleanup(self):
         """Clean up resources and disconnect services"""
