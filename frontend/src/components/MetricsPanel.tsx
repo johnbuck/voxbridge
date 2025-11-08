@@ -13,6 +13,7 @@ import { BarChart3, Zap, Mic, Brain, Volume2, Play, Timer } from 'lucide-react';
 
 interface MetricsDataPoint {
   timestamp: string;
+  uniqueKey: string; // Timestamp with milliseconds for uniqueness
   timeToFirstAudio: number;
   totalResponseTime: number;
   aiGeneration: number;
@@ -87,16 +88,15 @@ export function MetricsPanel() {
         second: '2-digit'
       });
 
-      setMetricsHistory((prev) => {
-        // Don't add duplicate data points (same timestamp)
-        if (prev.length > 0 && prev[prev.length - 1].timestamp === timestamp) {
-          return prev;
-        }
+      // Create unique key with milliseconds to prevent deduplication issues
+      const uniqueKey = `${timestamp}.${now.getMilliseconds().toString().padStart(3, '0')}`;
 
+      setMetricsHistory((prev) => {
         const newData = [
           ...prev,
           {
             timestamp,
+            uniqueKey, // Used internally for React keys
             timeToFirstAudio: metrics.timeToFirstAudio.avg,
             totalResponseTime: metrics.totalPipelineLatency.avg,
             aiGeneration: metrics.aiGenerationLatency.avg,
@@ -106,6 +106,7 @@ export function MetricsPanel() {
 
         console.log('[MetricsPanel] Added data point:', {
           timestamp,
+          uniqueKey,
           dataPoints: newData.length,
           timeToFirstAudio: metrics.timeToFirstAudio.avg,
           totalResponseTime: metrics.totalPipelineLatency.avg
@@ -135,7 +136,7 @@ export function MetricsPanel() {
           {metricsHistory.length > 0 ? (
             <div style={{ width: '100%', height: '250px' }}>
               <ResponsiveContainer>
-                <LineChart data={metricsHistory}>
+                <LineChart data={metricsHistory} margin={{ top: 5, right: 30, left: 0, bottom: 5 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border)" opacity={0.2} />
                   <XAxis
                     dataKey="timestamp"
@@ -160,6 +161,7 @@ export function MetricsPanel() {
                     strokeWidth={3}
                     dot={false}
                     name="Time to First Audio"
+                    isAnimationActive={false}
                   />
                   <Line
                     type="monotone"
@@ -168,6 +170,7 @@ export function MetricsPanel() {
                     strokeWidth={2}
                     dot={false}
                     name="Total Response Time"
+                    isAnimationActive={false}
                   />
                   <Line
                     type="monotone"
@@ -176,6 +179,7 @@ export function MetricsPanel() {
                     strokeWidth={2}
                     dot={false}
                     name="AI Generation"
+                    isAnimationActive={false}
                   />
                   <Line
                     type="monotone"
@@ -184,6 +188,7 @@ export function MetricsPanel() {
                     strokeWidth={2}
                     dot={false}
                     name="TTS Generation"
+                    isAnimationActive={false}
                   />
                 </LineChart>
               </ResponsiveContainer>
