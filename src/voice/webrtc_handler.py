@@ -822,9 +822,8 @@ class WebRTCVoiceHandler:
                         if not self.is_finalizing:
                             logger.info(f"[SILENCE_MONITOR] 🤫 Silence detected ({int(silence_duration_ms)}ms) - finalizing")
 
-                            # ⏱️ METRIC 4: Silence Detection Latency
-                            latency_s = silence_duration_ms / 1000
-                            self.metrics.record_silence_detection_latency(latency_s)
+                            # ⏱️ METRIC 4: Silence Detection Latency (in milliseconds)
+                            self.metrics.record_silence_detection_latency(silence_duration_ms)
                             logger.info(f"⏱️ LATENCY [WebRTC - Silence Detection]: {silence_duration_ms:.2f}ms")
 
                             # DIAGNOSTIC: Log current partial transcript
