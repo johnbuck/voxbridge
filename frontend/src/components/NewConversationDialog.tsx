@@ -45,10 +45,12 @@ export function NewConversationDialog({
   const [title, setTitle] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  // Auto-select first agent when dialog opens
+  // Auto-select default agent (or first agent) when dialog opens
   useEffect(() => {
     if (open && agents.length > 0 && !selectedAgentId) {
-      setSelectedAgentId(agents[0].id);
+      // Select default agent if available, otherwise select first agent
+      const defaultAgent = agents.find(a => a.is_default) || agents[0];
+      setSelectedAgentId(defaultAgent.id);
     }
   }, [open, agents, selectedAgentId]);
 
