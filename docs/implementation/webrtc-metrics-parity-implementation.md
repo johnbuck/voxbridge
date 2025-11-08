@@ -68,9 +68,14 @@ self.t_audio_complete = None        # TTS audio streaming complete
 - **Calculation**: `t_ai_complete - t_ai_start`
 - **Log**: `⏱️ LATENCY [WebRTC - AI Generation]: X.XXms`
 
-**Metric 6: Response Parsing Latency**
-- **Status**: ❌ Skipped (not applicable for WebRTC - direct streaming, no parsing needed)
-- **Note**: Only relevant for Discord's n8n webhook path
+**Metric 6: Response Parsing Latency** (Lines 1247-1254)
+- **Location**: After TTS synthesis starts
+- **Calculation**: `(t_tts_start - t_ai_complete) * 1000`
+- **Log**: `⏱️ LATENCY [WebRTC - Response Parsing]: X.XXms`
+- **Purpose**: Measures time to process LLM response text before TTS synthesis
+  - **Discord (n8n)**: Measures JSON webhook response parsing time
+  - **WebRTC**: Measures LLM response text processing before TTS (AI complete → TTS start)
+- **Note**: Different semantic meaning but same architectural position in pipeline
 
 **Metric 7: First LLM Chunk Latency** (Lines 1025-1027)
 - **Location**: On first LLM streaming chunk received
@@ -167,7 +172,7 @@ logger.info("📊 Broadcast full metrics snapshot to frontend")
 | Phase | Metrics Tracked | Coverage |
 |-------|----------------|----------|
 | Phase 1: Speech → Transcription | 4/4 | 100% ✅ |
-| Phase 2: AI Processing | 2/3 | 67% (parsing N/A) |
+| Phase 2: AI Processing | 3/3 | 100% ✅ |
 | Phase 3: TTS Generation | 3/3 | 100% ✅ |
 | Phase 4: Audio Playback | 1/2 | 50% (streaming duration ✅, FFmpeg N/A) |
 | End-to-End | 2/2 | 100% ✅ |
@@ -275,10 +280,11 @@ if (message.event === 'metrics_updated') {
    - **Solution**: Add `opuslib` to `requirements-test.txt`
    - **Workaround**: Install manually in Docker container before tests
 
-2. **Response Parsing Metric**: Not applicable for WebRTC (direct streaming)
-   - **Impact**: 1 metric skipped (n8n webhook-specific)
-   - **Discord Coverage**: 100% (21/21)
-   - **WebRTC Coverage**: 95% (20/21, excluding N/A metric)
+2. **Response Parsing Metric**: ✅ Implemented with context-appropriate semantics
+   - **Discord (n8n)**: Measures JSON webhook response parsing time
+   - **WebRTC**: Measures LLM response text processing time (AI complete → TTS start)
+   - **Impact**: Both implementations measure the same pipeline stage (response processing before TTS)
+   - **Coverage**: 100% for both Discord and WebRTC
 
 3. **Audio Playback Metric Difference**: Discord vs WebRTC measure different aspects of audio delivery
    - **Discord**: Measures server-side playback duration (via `voice_client.is_playing()` loop)

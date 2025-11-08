@@ -1244,6 +1244,15 @@ class WebRTCVoiceHandler:
                 self.metrics.record_tts_queue_latency(tts_queue_latency)
                 logger.info(f"⏱️ LATENCY [TTS queue wait]: {tts_queue_latency:.3f}s")
 
+            # ⏱️ Response Parsing Latency (AI complete → TTS start)
+            # For WebRTC: Measures time to process LLM response text before TTS synthesis
+            # For Discord (n8n): Measures time to parse JSON webhook response
+            if self.t_ai_complete:
+                response_parsing_latency_s = t_tts_start - self.t_ai_complete
+                response_parsing_latency_ms = response_parsing_latency_s * 1000
+                self.metrics.record_response_parsing_latency(response_parsing_latency_ms)
+                logger.info(f"⏱️ LATENCY [WebRTC - Response Parsing]: {response_parsing_latency_ms:.2f}ms")
+
             logger.info(f"🔊 Starting TTS synthesis for text: \"{text[:50]}...\"")
 
             # Check TTS health first
