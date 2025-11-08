@@ -1288,10 +1288,12 @@ class WebRTCVoiceHandler:
                     logger.info(f"⏱️ ⭐ LATENCY [TTS first byte]: {latency_s:.3f}s")
                     self.metrics.record_tts_first_byte_latency(latency_s)
 
-                    # Record time to first audio (connection start → first audio byte)
-                    time_to_first_audio = t_first_byte - self.t_start
-                    self.metrics.record_time_to_first_audio(time_to_first_audio)
-                    logger.info(f"⏱️ ⭐⭐⭐ LATENCY [time to first audio]: {time_to_first_audio:.3f}s")
+                    # Record time to first audio (user finished speaking → first audio byte)
+                    # Measure from transcription complete (user stopped speaking), not connection start
+                    if self.t_transcription_complete:
+                        time_to_first_audio = t_first_byte - self.t_transcription_complete
+                        self.metrics.record_time_to_first_audio(time_to_first_audio)
+                        logger.info(f"⏱️ ⭐⭐⭐ LATENCY [time to first audio]: {time_to_first_audio:.3f}s (transcription complete → audio plays)")
 
                     first_byte = False
 
