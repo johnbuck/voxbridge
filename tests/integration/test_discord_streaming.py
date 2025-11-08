@@ -25,8 +25,10 @@ def mock_agent():
     agent.llm_provider = "openrouter"
     agent.llm_model = "anthropic/claude-3-5-sonnet"
     agent.tts_voice = "test_voice"
-    agent.tts_rate = 1.0
-    agent.tts_pitch = 1.0
+    agent.tts_exaggeration = 1.0
+    agent.tts_cfg_weight = 0.7
+    agent.tts_temperature = 0.3
+    agent.tts_language = "en"
     agent.temperature = 0.7
     agent.streaming_enabled = True
     agent.use_n8n = False
@@ -145,7 +147,8 @@ class TestFullStreamingFlow:
                     sentence=sentence,
                     session_id=session_id,
                     voice_id=plugin.agent.tts_voice,
-                    speed=plugin.agent.tts_rate,
+                    exaggeration=plugin.agent.tts_exaggeration,
+                    cfg_weight=plugin.agent.tts_cfg_weight,
                     metadata={'sentence': sentence, 'guild_id': 999}
                 )
 

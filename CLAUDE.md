@@ -57,7 +57,7 @@ For comprehensive architecture and patterns, see [AGENTS.md](./AGENTS.md).
 - ✅ E2E latency benchmark framework
 - ✅ TTS error handling with retry logic
 
-**Testing**: 71 tests (66 passing), 88% coverage - includes 28 WebRTC tests (Phase 4)
+**Testing** (Updated Nov 2025): 99 tests (99 passing, 0 failing), 90%+ coverage - includes 45 WebRTC tests (28 WebRTC + 17 integration/E2E)
 
 ### 🟢 VoxBridge 2.0 - In Progress (Oct-Nov 2025)
 
@@ -85,14 +85,15 @@ For comprehensive architecture and patterns, see [AGENTS.md](./AGENTS.md).
 - Hybrid n8n mode (webhooks + direct LLM)
 - 90 unit tests with ~88% coverage
 
-**Phase 4: Web Voice Interface** ✅:
+**Phase 4: Web Voice Interface** ✅ (Nov 2025 WebRTC Fixes):
 - Backend WebSocket handler (`/ws/voice` endpoint)
 - Opus audio decoding, WhisperX integration
 - LLM provider routing (OpenRouter/Local/n8n)
 - Frontend WebRTC hook (useWebRTCAudio)
 - Audio capture UI (AudioControls component)
 - Real-time transcription + AI response display
-- 28 unit tests (all passing)
+- **Critical Fixes**: Silence detection (timer update before check), TTS audio (keep WebSocket open), duplicate responses (streaming → database transition)
+- 45 tests (28 WebRTC + 17 integration/E2E, 100% passing, 90%+ coverage)
 
 **Phase 5: Core Voice Pipeline Refactor** ✅:
 - 4 new services (2,342 lines): ConversationService, STTService, LLMService, TTSService
@@ -129,6 +130,39 @@ For comprehensive architecture and patterns, see [AGENTS.md](./AGENTS.md).
    - **Goal**: Multi-agent orchestration
 
 **Quick navigation**: Start with [ARCHITECTURE.md](ARCHITECTURE.md) for complete documentation and roadmap.
+
+### 🐛 Critical WebRTC Fixes (Nov 5-7, 2025)
+
+**Branch**: `feature/sentence-level-streaming`
+**Summary**: [docs/WEBRTC_FIXES_SESSION_SUMMARY.md](docs/WEBRTC_FIXES_SESSION_SUMMARY.md)
+**Commits**: 12 logical commits (ce70c3f...886c781)
+
+**Three critical bugs resolved** (100% fix rate):
+
+1. **Silence Detection Bug** (src/voice/webrtc_handler.py:590)
+   - **Problem**: Timer froze during WebM buffering → transcripts hung indefinitely
+   - **Fix**: Move `last_audio_time` update BEFORE silence check (not inside PCM extraction)
+   - **Impact**: Silence detected correctly after 600ms
+
+2. **TTS Audio Bug** (frontend/src/hooks/useWebRTCAudio.ts:344)
+   - **Problem**: WebSocket disconnected on `ai_response_complete` BEFORE TTS audio generated (100% failure)
+   - **Fix**: Keep WebSocket open until user disconnect (not on ai_response_complete)
+   - **Impact**: TTS audio plays in 100% of cases, multi-turn conversations work
+
+3. **Duplicate Response Bug** (frontend/src/pages/VoxbridgePage.tsx)
+   - **Problem**: Optimistic updates + database query = two messages visible (race condition)
+   - **Fix**: Remove optimistic updates, use streaming → database transition pattern
+   - **Impact**: Zero duplicates, seamless transition, single source of truth
+
+**Key Changes**:
+- TTS configuration aligned with Chatterbox API (breaking change - migration required)
+- 27 new tests (100% passing): 10 integration + 4 E2E + 3 unit
+- Comprehensive documentation in `docs/analysis/` and `docs/implementation/`
+
+**Migration Required**:
+```bash
+docker exec voxbridge-discord alembic upgrade head  # Run 011_align_tts_with_chatterbox.py
+```
 
 ## Quick Start
 

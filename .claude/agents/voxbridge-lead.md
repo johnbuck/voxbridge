@@ -245,9 +245,10 @@ AskUserQuestion(
 Design PostgreSQL schema for VoxBridge 2.0 agent management system.
 
 **Requirements**:
-- Store AI agent definitions (name, system_prompt, temperature, llm_provider, llm_model, llm_api_key, tts_voice, tts_rate, tts_pitch)
+- Store AI agent definitions (name, system_prompt, temperature, llm_provider, llm_model, llm_api_key, tts_voice, tts_exaggeration, tts_cfg_weight, tts_temperature, tts_language)
 - Store user sessions (session_id, user_id, agent_id, started_at, ended_at, active)
 - Store conversation history (session_id, role, content, timestamp)
+- **Note**: `tts_rate` and `tts_pitch` were deprecated Nov 2025 (not supported by Chatterbox API)
 
 **Deliverables**:
 1. DDL for all tables (CREATE TABLE statements)
@@ -271,11 +272,12 @@ Please provide schema SQL file.
 Build AgentForm component for creating/editing AI agents in VoxBridge 2.0.
 
 **Requirements**:
-- Form fields: name, system_prompt (textarea), temperature (slider), llm_provider (select), llm_model (input), llm_api_key (password), tts_voice (select), tts_rate (slider), tts_pitch (slider)
+- Form fields: name, system_prompt (textarea), temperature (slider), llm_provider (select), llm_model (input), llm_api_key (password), tts_voice (select), tts_exaggeration (slider 0.25-2.0), tts_cfg_weight (slider 0.0-1.0), tts_temperature (slider 0.05-5.0), tts_language (input)
 - Use shadcn/ui components (already installed)
 - Dark mode styling (Chatterbox theme)
 - Form validation (Zod schema)
 - Submit to `POST /api/agents` or `PUT /api/agents/{id}`
+- **Note**: `tts_rate` and `tts_pitch` deprecated Nov 2025 (use Chatterbox fields instead)
 
 **Deliverables**:
 1. `frontend/src/components/AgentForm.tsx`
@@ -375,7 +377,10 @@ async def on_llm_chunk(chunk: str):
             sentence=sentence,
             session_id=session_id,
             voice_id=agent.tts_voice,
-            speed=agent.tts_rate
+            exaggeration=agent.tts_exaggeration,
+            cfg_weight=agent.tts_cfg_weight,
+            temperature=agent.tts_temperature,
+            language=agent.tts_language
         )
 
 # TTS completion callback

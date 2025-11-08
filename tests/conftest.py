@@ -340,9 +340,11 @@ def mock_agent():
         temperature=0.7,
         llm_provider="openrouter",
         llm_model="gpt-4",
-        tts_voice="default",
-        tts_rate=1.0,
-        tts_pitch=1.0
+        tts_voice="en_US-amy-medium",
+        tts_exaggeration=1.0,
+        tts_cfg_weight=0.7,
+        tts_temperature=0.3,
+        tts_language="en"
     )
 
 

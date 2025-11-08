@@ -42,11 +42,12 @@
 - ✅ DATABASE_URL environment variable
 
 #### Database Schema ✅
-- ✅ **agents** table (10 columns, UUID primary key)
+- ✅ **agents** table (13 columns, UUID primary key) - **Updated Nov 2025 for Chatterbox alignment**
   - name, system_prompt, temperature
   - llm_provider, llm_model, llm_api_key_encrypted
-  - tts_voice, tts_rate, tts_pitch
+  - tts_voice, tts_exaggeration, tts_cfg_weight, tts_temperature, tts_language
   - created_at, updated_at
+  - **Removed (Nov 2025)**: tts_rate, tts_pitch (not supported by Chatterbox)
 - ✅ **sessions** table (7 columns, UUID primary key)
   - user_id, user_name, agent_id (FK)
   - started_at, ended_at, active, context
@@ -267,32 +268,53 @@ src/database/
 
 ## ✅ Phase 4: Web Voice Interface
 
-**Status**: ✅ COMPLETE
-**Duration**: 2 days (Oct 27, 2025)
+**Status**: ✅ COMPLETE (Oct 27, 2025) + **CRITICAL FIXES** (Nov 5-7, 2025)
+**Duration**: 2 days (Oct 27, 2025) + 2 days fixes (Nov 5-7, 2025)
 **Dependencies**: Phases 1-3 ✅
-**Lead**: voxbridge-2.0-orchestrator
+**Lead**: voxbridge-2.0-orchestrator, voxbridge-lead (Nov fixes)
 
 ### Deliverables ✅
 
 #### Backend WebSocket Handler ✅
-- ✅ `src/voice/webrtc_handler.py` (456 lines) - WebSocket audio handler
+- ✅ `src/voice/webrtc_handler.py` (590 lines) - WebSocket audio handler (refactored Phase 5, fixed Nov 2025)
   - Opus audio decoding (opuslib)
   - WhisperX streaming integration
   - LLM provider routing (OpenRouter/Local/n8n)
   - Database persistence (conversations table)
+  - **Nov 2025 Fix**: Silence detection timer update before check (prevents infinite hang)
 
 #### Frontend Components ✅
 - ✅ `frontend/src/hooks/useWebRTCAudio.ts` (344 lines) - Microphone capture, Opus encoding
+  - **Nov 2025 Fix**: Keep WebSocket open until user disconnect (fixes TTS audio 100% failure)
 - ✅ `frontend/src/components/AudioControls.tsx` (100 lines) - Mic button, connection status
 - ✅ `frontend/src/types/webrtc.ts` (80 lines) - TypeScript interfaces
+- ✅ `frontend/src/pages/VoxbridgePage.tsx` - Multi-turn conversation UI
+  - **Nov 2025 Fix**: Removed optimistic updates (fixes duplicate response bug)
 
-#### Testing ✅
-- ✅ 28 unit tests (all passing)
+#### Testing ✅ (Updated Nov 2025)
+- ✅ 45 total tests (28 WebRTC + 17 integration/E2E, 100% passing, 90%+ coverage)
+- ✅ 10 integration tests (mock WhisperX)
+- ✅ 4 E2E tests (real WhisperX)
+- ✅ 3 unit tests (PCM audio decoding)
 - ✅ Real-time transcription verified
 - ✅ Streaming AI responses verified
+- ✅ Multi-turn conversations verified
+
+#### Critical Bugs Fixed (Nov 5-7, 2025)
+1. **Silence Detection Bug** - Timer froze during WebM buffering → transcripts hung indefinitely
+   - **Fix**: Move `last_audio_time` update BEFORE silence check
+2. **TTS Audio Bug** - WebSocket disconnected on `ai_response_complete` BEFORE TTS audio (100% failure)
+   - **Fix**: Keep WebSocket open until user disconnect
+3. **Duplicate Response Bug** - Optimistic updates + database query = race condition
+   - **Fix**: Remove optimistic updates, use streaming → database transition
+
+**See Also**: [docs/WEBRTC_FIXES_SESSION_SUMMARY.md](../WEBRTC_FIXES_SESSION_SUMMARY.md) for detailed analysis
 
 ### Commits
 - `604d40d` - feat(phase4): add conversation management UI
+- `e2446b9` - fix: WebRTC silence detection and TTS audio streaming (Nov 2025)
+- `5ff8588` - fix: keep WebSocket open for TTS audio and multi-turn conversations (Nov 2025)
+- `c000822` - fix: remove optimistic updates to prevent duplicate AI responses (Nov 2025)
 
 ---
 

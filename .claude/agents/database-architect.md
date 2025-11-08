@@ -62,10 +62,13 @@ CREATE TABLE agents (
     llm_model VARCHAR(100) NOT NULL,
     llm_api_key_encrypted TEXT,
     tts_voice VARCHAR(100),
-    tts_rate FLOAT DEFAULT 1.0,
-    tts_pitch FLOAT DEFAULT 1.0,
+    tts_exaggeration FLOAT DEFAULT 1.0,     -- Emotion intensity (0.25-2.0)
+    tts_cfg_weight FLOAT DEFAULT 0.7,       -- Speech pace (0.0-1.0)
+    tts_temperature FLOAT DEFAULT 0.3,      -- Voice sampling (0.05-5.0)
+    tts_language VARCHAR(10) DEFAULT 'en',  -- Language code
     created_at TIMESTAMP DEFAULT NOW(),
     updated_at TIMESTAMP DEFAULT NOW()
+    -- Note: tts_rate and tts_pitch deprecated Nov 2025 (not supported by Chatterbox)
 );
 ```
 

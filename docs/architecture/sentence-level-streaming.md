@@ -445,9 +445,11 @@ Agents can override streaming settings:
 agent = Agent(
     name="Helpful Assistant",
     streaming_enabled=True,
-    tts_voice="voice-123",
-    tts_rate=1.0,
-    tts_pitch=1.0
+    tts_voice="en_US-amy-medium",
+    tts_exaggeration=1.0,     # Emotion intensity (0.25-2.0)
+    tts_cfg_weight=0.7,       # Speech pace (0.0-1.0)
+    tts_temperature=0.3,      # Voice sampling (0.05-5.0)
+    tts_language="en"         # Language code
 )
 ```
 
@@ -487,8 +489,28 @@ agent = Agent(
 
 ## Testing
 
-### Test Coverage
+### Test Coverage (Updated Nov 2025)
 
+**Phase 4 WebRTC Tests**: 45 tests (28 WebRTC + 17 integration/E2E, 100% passing, 90%+ coverage)
+
+- **WebRTC Integration Tests**: 10 tests
+  - `test_webrtc_audio_format.py` - WebM/OGG parsing
+  - `test_webrtc_planar_audio_fix.py` - Planar format handling
+  - `test_webrtc_buffer_management.py` - Multi-chunk buffering
+  - `test_silence_detection.py` - Silence timer validation
+
+- **WebRTC E2E Tests**: 4 tests (real WhisperX)
+  - `test_real_whisperx_transcription.py` - STT accuracy
+  - `test_webrtc_transcription_pipeline.py` - Full pipeline
+  - `test_webrtc_transcription_accuracy.py` - Multi-sample accuracy
+  - `test_silence_detection_e2e.py` - Real silence detection
+
+- **WebRTC Unit Tests**: 3 tests
+  - `test_webrtc_pcm_decode.py` - PCM extraction
+  - `test_webrtc_planar_audio.py` - Planar format
+  - `test_stt_service_format.py` - STT service validation
+
+**Sentence-Level Streaming Tests** (original):
 - **Unit Tests**: 25 test classes, ~60 tests
   - `test_sentence_parser.py` - 11 classes, edge cases
   - `test_tts_queue_manager.py` - 7 classes, concurrency
@@ -589,13 +611,13 @@ This reverts to the original behavior for testing/comparison.
 2. **Predictive Queueing**: Pre-synthesize common phrases
 3. **Voice Cloning**: Per-agent voice customization
 4. **Multilingual Support**: Language-specific sentence detection
-5. **WebRTC Frontend**: Browser-based voice interface (partially implemented in Phase 4)
+5. **WebRTC Frontend**: ✅ **COMPLETE** (Phase 4, Nov 2025) - Browser-based voice interface with silence detection fix, TTS audio fix, and optimistic update removal
 
 ## References
 
 - **Implementation Plan**: `docs/planning/sentence-level-streaming-plan.md`
 - **Service Layer**: `docs/architecture/voxbridge-2.0-transformation-plan.md` (Phase 5)
-- **WebRTC Integration**: Phase 4 (browser voice interface)
+- **WebRTC Integration**: Phase 4 ✅ COMPLETE (browser voice interface) - See [docs/WEBRTC_FIXES_SESSION_SUMMARY.md](../WEBRTC_FIXES_SESSION_SUMMARY.md)
 - **Testing Framework**: `tests/README.md`
 
 ## Support

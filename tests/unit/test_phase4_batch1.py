@@ -53,8 +53,10 @@ def mock_agent(agent_id):
     agent.llm_provider = "openrouter"
     agent.llm_model = "anthropic/claude-3.5-sonnet"
     agent.tts_voice = "female_1"
-    agent.tts_rate = 1.0
-    agent.tts_pitch = 1.0
+    agent.tts_exaggeration = 1.0
+    agent.tts_cfg_weight = 0.7
+    agent.tts_temperature = 0.3
+    agent.tts_language = "en"
     agent.plugins = {
         'discord': {
             'enabled': True,
@@ -75,8 +77,10 @@ def mock_agent_without_plugins(agent_id):
     agent.llm_provider = "openrouter"
     agent.llm_model = "anthropic/claude-3.5-sonnet"
     agent.tts_voice = "female_1"
-    agent.tts_rate = 1.0
-    agent.tts_pitch = 1.0
+    agent.tts_exaggeration = 1.0
+    agent.tts_cfg_weight = 0.7
+    agent.tts_temperature = 0.3
+    agent.tts_language = "en"
     agent.plugins = {}
     return agent
 
@@ -92,8 +96,10 @@ def mock_agent_with_disabled_plugins(agent_id):
     agent.llm_provider = "openrouter"
     agent.llm_model = "anthropic/claude-3.5-sonnet"
     agent.tts_voice = "female_1"
-    agent.tts_rate = 1.0
-    agent.tts_pitch = 1.0
+    agent.tts_exaggeration = 1.0
+    agent.tts_cfg_weight = 0.7
+    agent.tts_temperature = 0.3
+    agent.tts_language = "en"
     agent.plugins = {
         'discord': {
             'enabled': False,

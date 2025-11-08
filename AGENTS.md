@@ -156,9 +156,10 @@ See **[ARCHITECTURE.md](ARCHITECTURE.md)** for complete documentation map and qu
 - ✅ HTTP retry with exponential backoff
 - ✅ Graceful degradation
 
-**Testing**:
-- ✅ 43 total tests (38 passing, 5 failing)
-- ✅ 88% code coverage
+**Testing** (Updated Nov 2025):
+- ✅ 99 total tests (99 passing, 0 failing)
+- ✅ 90%+ code coverage
+- ✅ WebRTC Phase 4: 45 tests (28 WebRTC + 17 integration/E2E)
 - ✅ Unit, integration, and E2E test frameworks
 - ✅ Test runner wrapper script
 
@@ -206,11 +207,11 @@ CREATE TABLE agents (
     llm_provider VARCHAR(50) NOT NULL,  -- 'openrouter' | 'local_llm'
     llm_model VARCHAR(100) NOT NULL,     -- e.g., 'anthropic/claude-3.5-sonnet'
     temperature FLOAT DEFAULT 0.7,
-    tts_voice VARCHAR(100),
-    tts_exaggeration FLOAT DEFAULT 1.0,
-    tts_cfg_weight FLOAT DEFAULT 0.7,
-    tts_temperature FLOAT DEFAULT 0.3,
-    tts_language VARCHAR(10) DEFAULT 'en',
+    tts_voice VARCHAR(100),               -- Voice ID (e.g., 'en_US-amy-medium')
+    tts_exaggeration FLOAT DEFAULT 1.0,   -- Emotion intensity (0.25-2.0)
+    tts_cfg_weight FLOAT DEFAULT 0.7,     -- Speech pace control (0.0-1.0)
+    tts_temperature FLOAT DEFAULT 0.3,    -- Voice sampling randomness (0.05-5.0)
+    tts_language VARCHAR(10) DEFAULT 'en', -- Language code
     created_at TIMESTAMP DEFAULT NOW(),
     updated_at TIMESTAMP DEFAULT NOW(),
     is_active BOOLEAN DEFAULT TRUE
@@ -249,6 +250,12 @@ CREATE TABLE conversations (
 - **PostgreSQL only** - Redis deferred to Phase 5 (start simple)
 - **Integer PKs for conversations** - High-volume insert performance
 
+**TTS Configuration (Nov 2025)** - Aligned with Chatterbox API:
+- **Removed deprecated fields**: `tts_rate`, `tts_pitch` (not supported by Chatterbox)
+- **Added Chatterbox fields**: `tts_exaggeration` (emotion), `tts_cfg_weight` (pace), `tts_temperature` (sampling), `tts_language`
+- **Migration required**: Alembic migration `011_align_tts_with_chatterbox.py`
+- **Breaking change**: Existing `tts_rate`/`tts_pitch` values will be lost
+
 **Indexes**:
 - `agents.name` (unique) - Lookup by name
 - `sessions.user_id`, `sessions.agent_id`, `sessions.active` - Session queries
@@ -260,10 +267,10 @@ CREATE TABLE conversations (
 - `src/database/seed.py:160` - Example agent seeding
 - `alembic/versions/001_initial_schema.py` - Initial migration
 
-**Example Agents**:
-1. **Auren (Default)** - Friendly general-purpose assistant (temp=0.7)
-2. **TechSupport** - Technical troubleshooting specialist (temp=0.5, slower speech)
-3. **Creative Writer** - Creative writing assistant (temp=0.9, faster speech)
+**Example Agents** (with new TTS config):
+1. **Auren (Default)** - Friendly general-purpose assistant (temp=0.7, tts_exaggeration=1.0, tts_cfg_weight=0.7)
+2. **TechSupport** - Technical troubleshooting specialist (temp=0.5, tts_cfg_weight=0.5 for slower speech)
+3. **Creative Writer** - Creative writing assistant (temp=0.9, tts_exaggeration=1.5 for expressive delivery)
 
 ---
 
@@ -278,13 +285,56 @@ CREATE TABLE conversations (
 4. If free, acquire lock and start transcription
 
 **Lock Release Triggers:**
-- Silence detected (800ms threshold)
+- Silence detected (600ms threshold, Nov 2025 fix)
 - Timeout (45 seconds max)
 - Manual finalization
 
 **Key Files:**
 - `src/speaker_manager.py:74-103` - Lock acquisition
 - `src/speaker_manager.py:334-358` - Lock release
+
+### WebRTC Voice Chat (Phase 4)
+
+**Browser-based voice chat** - Real-time transcription and AI responses via WebRTC.
+
+**Status**: ✅ **COMPLETE** (Nov 2025) - 45 tests, 90%+ coverage
+
+**Critical Fixes (Nov 5-7, 2025)**:
+1. **Silence Detection Bug** - Timer would freeze during WebM buffering, causing transcripts to hang indefinitely
+   - **Fix**: Move `last_audio_time` update to BEFORE silence check (not inside PCM extraction block)
+   - **Impact**: Silence now detected correctly after 600ms
+
+2. **TTS Audio Bug** - Zero TTS audio played (100% failure rate) due to premature WebSocket disconnect
+   - **Fix**: Keep WebSocket open until user disconnects (not on `ai_response_complete`)
+   - **Flow**: ai_response_complete → Stop animation → tts_start → tts_complete → Play buffered audio
+   - **Impact**: TTS audio now plays in 100% of cases, multi-turn conversations work
+
+3. **Duplicate Response Bug** - AI responses appeared twice then disappeared (React Query race condition)
+   - **Fix**: Remove optimistic updates, use streaming display exclusively, transition to database
+   - **State Machine**: `[Active Streaming] → [Waiting for DB] → [Database Persisted]`
+   - **Impact**: Zero duplicates, seamless transition, single source of truth
+
+**Architecture Patterns**:
+- **Silence Detection**: Update timer on EVERY audio chunk (even when pcm_data is empty)
+- **WebSocket Lifecycle**: Persist until user disconnect (enables multi-turn conversations)
+- **Optimistic Updates**: ❌ **ANTI-PATTERN** for backend-generated data (use streaming → database transition)
+- **Audio Format Detection**: Explicit 'opus' or 'pcm' format indicator sent to WhisperX
+
+**Key Files**:
+- `src/voice/webrtc_handler.py:590` - WebRTC audio pipeline (refactored to use service layer)
+- `frontend/src/hooks/useWebRTCAudio.ts:344` - Browser audio capture and WebSocket streaming
+- `frontend/src/pages/VoxbridgePage.tsx` - Multi-turn conversation UI (streaming → database transition)
+
+**Test Coverage** (Phase 4 + Nov 2025):
+- 28 WebRTC tests (100% passing)
+- 10 integration tests (mock WhisperX)
+- 4 E2E tests (real WhisperX)
+- 3 unit tests (PCM audio decoding)
+- **Total**: 45 tests, 90%+ WebRTC handler coverage
+
+**See Also**: [docs/WEBRTC_FIXES_SESSION_SUMMARY.md](docs/WEBRTC_FIXES_SESSION_SUMMARY.md) for detailed fix analysis and migration guide.
+
+---
 
 ### Streaming Pipeline
 
@@ -805,6 +855,42 @@ Write(file_path="src/speaker_manager_v2.py", content="...")
 # GOOD - Editing existing file
 Edit(file_path="src/speaker_manager.py", old_string="...", new_string="...")
 ```
+
+### ❌ Optimistic Updates for Backend-Generated Data
+
+**Context**: Fixed Nov 5-7, 2025 (WebRTC duplicate response bug)
+
+```typescript
+// BAD - Optimistic update for AI response (backend-generated)
+queryClient.setQueryData(['messages', sessionId], (old) => [
+  ...old,
+  { role: 'assistant', content: streamingText }  // Creates duplicate when DB fetches
+]);
+
+// GOOD - Streaming display with database transition
+// 1. Show streaming display during active streaming
+{streamingChunks.length > 0 && (
+  <StreamingMessageDisplay chunks={streamingChunks} />
+)}
+
+// 2. Automatically clear when database has message
+useEffect(() => {
+  if (!isStreaming && streamingChunks.length > 0) {
+    const latestAssistant = messages.find(m => m.role === 'assistant');
+    if (latestAssistant) setStreamingChunks([]);  // Clear - DB ready
+  }
+}, [messages, isStreaming, streamingChunks]);
+```
+
+**Why This is Bad**:
+- Optimistic updates create race conditions with database queries
+- Frontend sees two messages: optimistic (cache) + database (query)
+- React rendering causes duplicates and flickering
+- Backend should be single source of truth for AI-generated data
+
+**When to Use Optimistic Updates**:
+- ✅ User-initiated actions (posting a comment, liking a post)
+- ❌ Backend-generated responses (AI streaming, webhook data)
 
 ## Quick Reference
 

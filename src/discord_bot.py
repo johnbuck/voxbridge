@@ -740,7 +740,10 @@ async def synthesize_and_play_discord(session_id: str, user_id: str, username: s
             session_id=session_id,
             text=text,
             voice_id=agent.tts_voice or os.getenv('CHATTERBOX_VOICE_ID', 'default'),
-            speed=agent.tts_rate or 1.0,
+            exaggeration=agent.tts_exaggeration or 1.0,
+            cfg_weight=agent.tts_cfg_weight or 0.7,
+            temperature=agent.tts_temperature or 0.3,
+            language=agent.tts_language or 'en',
             stream=False,  # Discord needs complete audio file
             callback=None
         )

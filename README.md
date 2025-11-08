@@ -89,6 +89,66 @@ VoxBridge 2.0 transforms the Discord bot into a modular AI voice platform:
 - Responsive UI with connection status indicators
 - TTS test modal for agent-specific voice testing
 
+## ⚠️ Breaking Changes & Migration
+
+### TTS Configuration Update (November 2025)
+
+**VoxBridge TTS configuration has been aligned with the Chatterbox API.** This is a breaking change requiring database migration.
+
+**Deprecated TTS Fields** (removed):
+- `tts_rate` - Not supported by Chatterbox
+- `tts_pitch` - Not supported by Chatterbox
+
+**New Chatterbox TTS Fields** (added):
+- `tts_exaggeration` (Float, 0.25-2.0, default 1.0) - Emotion intensity
+- `tts_cfg_weight` (Float, 0.0-1.0, default 0.7) - Speech pace control
+- `tts_temperature` (Float, 0.05-5.0, default 0.3) - Voice sampling randomness
+- `tts_language` (String, default "en") - Language code
+
+**Migration Steps**:
+
+1. **Stop services**:
+   ```bash
+   docker compose down
+   ```
+
+2. **Pull latest code**:
+   ```bash
+   git pull origin feature/sentence-level-streaming
+   ```
+
+3. **Run Alembic migration**:
+   ```bash
+   docker compose up -d voxbridge-discord
+   docker exec voxbridge-discord alembic upgrade head
+   ```
+
+4. **Restart all services**:
+   ```bash
+   docker compose up -d --build
+   ```
+
+5. **Verify migration**:
+   - Check agent table schema: Should have `tts_exaggeration`, `tts_cfg_weight`, `tts_temperature`, `tts_language`
+   - No `tts_rate` or `tts_pitch` columns should exist
+   - Test TTS with an agent to confirm voice synthesis works
+
+**Data Loss Warning**: Existing `tts_rate` and `tts_pitch` values will be permanently lost. This is acceptable as these fields were not functional with Chatterbox.
+
+**Migration File**: `alembic/versions/20251105_1930_011_align_tts_with_chatterbox.py`
+
+### WebRTC Fixes (November 5-7, 2025)
+
+Three critical bugs resolved for browser-based voice chat:
+
+1. **Silence Detection** - Timer now updates before silence check (prevents infinite hang)
+2. **TTS Audio** - WebSocket kept open until user disconnect (fixes 100% audio failure)
+3. **Duplicate Responses** - Removed optimistic updates (fixes React Query race condition)
+
+**Test Coverage**: 27 new tests (100% passing), 90%+ WebRTC handler coverage
+
+See [docs/WEBRTC_FIXES_SESSION_SUMMARY.md](docs/WEBRTC_FIXES_SESSION_SUMMARY.md) for detailed analysis.
+
 ## Quick Start
 
 ### WhisperX Benefits

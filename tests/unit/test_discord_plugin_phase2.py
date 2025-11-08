@@ -62,8 +62,10 @@ def mock_agent(agent_id):
     agent.llm_provider = "openrouter"
     agent.llm_model = "anthropic/claude-3.5-sonnet"
     agent.tts_voice = "female_1"
-    agent.tts_rate = 1.0
-    agent.tts_pitch = 1.0
+    agent.tts_exaggeration = 1.0
+    agent.tts_cfg_weight = 0.7
+    agent.tts_temperature = 0.3
+    agent.tts_language = "en"
     return agent
 
 
@@ -1201,7 +1203,8 @@ class TestPlayTTS:
         # Verify agent voice used
         call_kwargs = mock_tts_service.synthesize_speech.call_args[1]
         assert call_kwargs['voice_id'] == mock_agent.tts_voice
-        assert call_kwargs['speed'] == mock_agent.tts_rate
+        assert call_kwargs['exaggeration'] == mock_agent.tts_exaggeration
+        assert call_kwargs['cfg_weight'] == mock_agent.tts_cfg_weight
 
     @pytest.mark.asyncio
     async def test_tracks_tts_latency(
