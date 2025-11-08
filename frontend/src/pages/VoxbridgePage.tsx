@@ -36,28 +36,13 @@ import { Copy, CircleCheckBig, Activity, XCircle, AlertCircle, Volume2, VolumeX,
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import { ChannelSelectorModal } from '@/components/ChannelSelectorModal';
+import { createLogger } from '@/utils/logger';
+
+// Initialize logger for VoxbridgePage
+const logger = createLogger('VoxbridgePage');
 
 // Use for creating new web sessions (can be changed when auth is added)
 const WEB_USER_ID = 'web_user_default';
-
-// ============================================================
-// LOGGING UTILITIES FOR UI/UX DEBUGGING
-// ============================================================
-const DEBUG_LOGGING = true; // Set to true to enable verbose logging
-
-const logTimestamp = () => new Date().toISOString();
-
-const logUIEvent = (emoji: string, category: string, message: string, data?: any, isDebug = false) => {
-  // Skip debug logs unless explicitly enabled
-  if (isDebug && !DEBUG_LOGGING) return;
-
-  const timestamp = logTimestamp();
-  if (data) {
-    console.log(`[${timestamp}] ${emoji} ${category}: ${message}`, data);
-  } else {
-    console.log(`[${timestamp}] ${emoji} ${category}: ${message}`);
-  }
-};
 
 export function VoxbridgePage() {
   // Analytics state (Discord conversation monitoring) - kept for future Discord transcript integration
@@ -97,6 +82,7 @@ export function VoxbridgePage() {
   const toast = useToastHelpers();
   const listeningStartTimeRef = useRef<number | null>(null);
   const aiStartTimeRef = useRef<number | null>(null);
+  const isHandlingMessageRef = useRef(false); // Batch 3.3: Re-entrance detection
   const scrollAreaRef = useRef<HTMLDivElement>(null);
 
   // Service error handling
@@ -154,29 +140,29 @@ export function VoxbridgePage() {
 
       // ✅ DISABLED: Too verbose - only enable when debugging message fetching
       // const fetchStart = Date.now();
-      // console.log(`[QUERY] Starting message fetch at ${fetchStart} for session ${activeSessionId}`);
+      // logger.debug(`[QUERY] Starting message fetch at ${fetchStart} for session ${activeSessionId}`);
 
       const result = await api.getSessionMessages(activeSessionId);
 
       // ✅ DISABLED: Too verbose - only enable when debugging message fetching
       // const fetchEnd = Date.now();
       // const fetchDuration = fetchEnd - fetchStart;
-      // console.log(`[QUERY] Fetch complete in ${fetchDuration}ms, received ${result.length} messages`);
+      // logger.debug(`[QUERY] Fetch complete in ${fetchDuration}ms, received ${result.length} messages`);
 
       // ✅ DISABLED: Too verbose - only enable when debugging message fetching
-      // logUIEvent('📥', 'QUERY', `Fetched ${result.length} messages from database (session: ${activeSessionId})`, undefined, true);
+      // logger.debug('📥', 'QUERY', `Fetched ${result.length} messages from database (session: ${activeSessionId})`, undefined, true);
       // result.forEach((m, i) => {
       //   if (m.role === 'assistant') {
-      //     logUIEvent('  ', '  ', `- DB message[${i}]: id=${m.id}, role=${m.role}, length=${m.content.length} chars`, undefined, true);
+      //     logger.debug('  ', '  ', `- DB message[${i}]: id=${m.id}, role=${m.role}, length=${m.content.length} chars`, undefined, true);
       //   }
       // });
 
       // ✅ DISABLED: Too verbose - only enable when debugging duplicates
       // const assistantMessages = result.filter(m => m.role === 'assistant');
       // if (assistantMessages.length > 1) {
-      //   console.warn(`[QUERY] ⚠️ Received ${assistantMessages.length} assistant messages from database!`);
+      //   logger.warn(`[QUERY] ⚠️ Received ${assistantMessages.length} assistant messages from database!`);
       //   assistantMessages.forEach((m, i) => {
-      //     console.warn(`  - Assistant[${i}]: id=${m.id}, length=${m.content.length} chars, timestamp=${m.timestamp}`);
+      //     logger.warn(`  - Assistant[${i}]: id=${m.id}, length=${m.content.length} chars, timestamp=${m.timestamp}`);
       //   });
       // }
 
@@ -200,7 +186,7 @@ export function VoxbridgePage() {
       );
 
       if (!hasPendingInDB) {
-        console.log(`[DISPLAY] Adding pending user message to display (isFinalizing: ${pendingUserTranscript.isFinalizing})`);
+        logger.debug(`[DISPLAY] Adding pending user message to display (isFinalizing: ${pendingUserTranscript.isFinalizing})`);
         dbMessages.push({
           id: Date.now() - 1, // Temporary ID (earlier than streaming message)
           session_id: activeSessionId,
@@ -216,7 +202,7 @@ export function VoxbridgePage() {
           isFinalizing: pendingUserTranscript.isFinalizing,
         } as Message);
       } else {
-        console.log('[DISPLAY] Pending message already in DB, skipping placeholder');
+        logger.debug('[DISPLAY] Pending message already in DB, skipping placeholder');
       }
 
     }
@@ -241,6 +227,39 @@ export function VoxbridgePage() {
     return dbMessages;
   }, [messages, streamingChunks, activeSessionId, pendingUserTranscript]);
 
+  // State conflict detection: Detect invalid state combinations
+  useEffect(() => {
+    // Detect invalid state combinations
+    if (isListening && isBotSpeaking) {
+      logger.error('🚨 [STATE_CONFLICT] Invalid: isListening && isBotSpeaking both true!');
+    }
+    if (isListening && isVoiceAIGenerating) {
+      logger.warn('⚠️ [STATE_CONFLICT] Unusual: isListening && isVoiceAIGenerating both true');
+    }
+    if (isStreaming && !isVoiceAIGenerating) {
+      logger.warn('⚠️ [STATE_CONFLICT] Unusual: isStreaming true but isVoiceAIGenerating false');
+    }
+    // Note: connectionState check removed as variable no longer exists
+  }, [isListening, isBotSpeaking, isVoiceAIGenerating, isStreaming]);
+
+  // Batch 2.4: Frontend LLM timeout safety (120s)
+  useEffect(() => {
+    if (!isVoiceAIGenerating || !aiStartTimeRef.current) return;
+
+    const checkTimeout = setInterval(() => {
+      if (aiStartTimeRef.current) {
+        const elapsed = Date.now() - aiStartTimeRef.current;
+        if (elapsed > 120000) { // 120 seconds
+          logger.error(`🚨 [LLM_TIMEOUT] Frontend safety timeout triggered - AI generating for ${elapsed}ms (>120s)`);
+          logger.error('   - This may indicate backend timeout or stuck LLM request');
+          logger.error('   - Consider refreshing the page or reconnecting');
+        }
+      }
+    }, 5000); // Check every 5 seconds
+
+    return () => clearInterval(checkTimeout);
+  }, [isVoiceAIGenerating]);
+
   // Defensive auto-clear: If DB message loaded while placeholder still visible, clear it
   useEffect(() => {
     if (pendingUserTranscript && activeSessionId && messages.length > 0) {
@@ -249,7 +268,7 @@ export function VoxbridgePage() {
       );
 
       if (hasPendingInDB) {
-        console.log('[SAFETY] DB message loaded - auto-clearing stale placeholder');
+        logger.debug('[SAFETY] DB message loaded - auto-clearing stale placeholder');
         setPendingUserTranscript(null);
       }
     }
@@ -264,27 +283,35 @@ export function VoxbridgePage() {
   // Audio playback hook for TTS (web voice chat)
   const audioPlayback = useAudioPlayback({
     autoPlay: true,
-    onPlaybackStart: () => console.log('🔊 Playing TTS audio'),
-    onPlaybackEnd: () => console.log('✅ TTS playback complete'),
+    onPlaybackStart: () => logger.debug('🔊 Playing TTS audio'),
+    onPlaybackEnd: () => logger.debug('✅ TTS playback complete'),
     onError: (error) => toast.error('Audio playback failed', error),
   });
 
   // Handle WebRTC audio messages (web voice chat with database persistence)
   const handleWebRTCAudioMessage = useCallback(
     async (message: WebRTCAudioMessage) => {
-      // Log all WebRTC events for debugging (debug only)
-      logUIEvent('📡', 'WS EVENT (WebRTC)', message.event, {
-        event: message.event,
-        sessionId: message.data?.session_id,
-        textLength: message.data?.text?.length,
-      }, true);
+      // Batch 3.3: Re-entrance detection
+      if (isHandlingMessageRef.current) {
+        logger.warn(`⚠️ [REENTRANCE] WebSocket message handler re-entered while still processing (event: ${message.event})`);
+      }
+      isHandlingMessageRef.current = true;
+      const handlerStartTime = performance.now();
 
-      switch (message.event) {
+      try {
+        // Log all WebRTC events for debugging (debug only)
+        logger.debug('📡', 'WS EVENT (WebRTC)', message.event, {
+          event: message.event,
+          sessionId: message.data?.session_id,
+          textLength: message.data?.text?.length,
+        }, true);
+
+        switch (message.event) {
         case 'partial_transcript':
           // Only show listening indicator if we have actual transcript text AND connection is active
           if (message.data.text && connectionState === 'connected') {
             if (!listeningStartTimeRef.current) {
-              logUIEvent('🎤', 'LISTENING (WebRTC)', `Started (partial: "${message.data.text?.substring(0, 30)}...")`, undefined, true);
+              logger.debug('🎤', 'LISTENING (WebRTC)', `Started (partial: "${message.data.text?.substring(0, 30)}...")`, undefined, true);
               listeningStartTimeRef.current = Date.now();
             }
 
@@ -293,13 +320,13 @@ export function VoxbridgePage() {
             setIsListening(true);
 
             // Create optimistic user message placeholder (shows immediately in conversation)
-            console.log(`[PENDING] Creating user placeholder with text: "${message.data.text.substring(0, 30)}..."`);
+            logger.debug(`[PENDING] Creating user placeholder with text: "${message.data.text.substring(0, 30)}..."`);
             setPendingUserTranscript({ text: message.data.text, isFinalizing: false });
           }
           break;
 
         case 'final_transcript':
-          logUIEvent('🎤', 'LISTENING (WebRTC)', `Stopped (final: "${message.data.text?.substring(0, 50)}...")`, undefined, true);
+          logger.debug('🎤', 'LISTENING (WebRTC)', `Stopped (final: "${message.data.text?.substring(0, 50)}...")`, undefined, true);
 
           // Clear voice chat partial transcript
           setVoicePartialTranscript('');
@@ -309,7 +336,7 @@ export function VoxbridgePage() {
 
           // Update pending transcript to show finalizing state (bouncing dots)
           if (message.data.text) {
-            console.log(`[PENDING] Setting finalizing state for: "${message.data.text.substring(0, 30)}..."`);
+            logger.debug(`[PENDING] Setting finalizing state for: "${message.data.text.substring(0, 30)}..."`);
             setPendingUserTranscript({ text: message.data.text, isFinalizing: true });
           }
 
@@ -320,13 +347,13 @@ export function VoxbridgePage() {
           // Note: Placeholder will be cleared in ai_response_complete, NOT here
           // This ensures user message stays visible during AI generation
           if (activeSessionId) {
-            logUIEvent('🔄', 'QUERY (WebRTC)', `Invalidating messages query (session: ${activeSessionId})`, undefined, true);
+            logger.debug('🔄', 'QUERY (WebRTC)', `Invalidating messages query (session: ${activeSessionId})`, undefined, true);
             queryClient.invalidateQueries({ queryKey: ['messages', activeSessionId] });
-            console.log('[PENDING] Keeping placeholder visible - will clear after AI completes');
+            logger.debug('[PENDING] Keeping placeholder visible - will clear after AI completes');
           }
 
           // Start AI generation indicator for voice chat
-          logUIEvent('💭', 'THINKING (WebRTC)', `Started (session: ${activeSessionId})`, undefined, true);
+          logger.debug('💭', 'THINKING (WebRTC)', `Started (session: ${activeSessionId})`, undefined, true);
           setIsVoiceAIGenerating(true);
           aiStartTimeRef.current = Date.now();
           break;
@@ -341,7 +368,7 @@ export function VoxbridgePage() {
 
         case 'ai_response_complete':
           const aiDuration = aiStartTimeRef.current ? Date.now() - aiStartTimeRef.current : 0;
-          logUIEvent('💭', 'THINKING (WebRTC)', `Complete (duration: ${aiDuration}ms)`, undefined, true);
+          logger.debug('💭', 'THINKING (WebRTC)', `Complete (duration: ${aiDuration}ms)`, undefined, true);
 
           // Stop AI generating animation
           setIsVoiceAIGenerating(false);
@@ -352,12 +379,12 @@ export function VoxbridgePage() {
           setIsStreaming(false);
 
           // Clear user transcript placeholder (AI generation complete, DB query definitely done)
-          console.log('[PENDING] Clearing user placeholder - AI response complete');
+          logger.debug('[PENDING] Clearing user placeholder - AI response complete');
           setPendingUserTranscript(null);
 
           // ✅ Optimistic UI: Directly update cache with completed message
           if (activeSessionId && message.data.text) {
-            logUIEvent('💾', 'CACHE (WebRTC)', `Adding optimistic message to cache`, undefined, true);
+            logger.debug('💾', 'CACHE (WebRTC)', `Adding optimistic message to cache`, undefined, true);
 
             // Update cache immediately with new message
             queryClient.setQueryData<Message[]>(['messages', activeSessionId], (oldMessages = []) => {
@@ -382,51 +409,59 @@ export function VoxbridgePage() {
 
             // Background refetch to get real DB IDs (delayed for smooth transition)
             setTimeout(() => {
-              logUIEvent('🔄', 'QUERY (WebRTC)', `Background refetch for DB IDs (session: ${activeSessionId})`, undefined, true);
+              logger.debug('🔄', 'QUERY (WebRTC)', `Background refetch for DB IDs (session: ${activeSessionId})`, undefined, true);
               queryClient.invalidateQueries({ queryKey: ['messages', activeSessionId] });
             }, 500);
           }
 
           // AI response text is complete, now waiting for TTS audio
-          console.log('✅ AI response complete - waiting for TTS audio...');
+          logger.debug('✅ AI response complete - waiting for TTS audio...');
           break;
 
         case 'tts_start':
-          console.log('🔊 TTS generation started');
+          logger.debug('🔊 TTS generation started');
           break;
 
         case 'bot_speaking_state_changed':
-          console.log(`🤖 Bot speaking state changed: ${message.data.is_speaking ? 'SPEAKING' : 'LISTENING'}`);
+          logger.debug(`🤖 Bot speaking state changed: ${message.data.is_speaking ? 'SPEAKING' : 'LISTENING'}`);
           setIsBotSpeaking(message.data.is_speaking ?? false);
           break;
 
         case 'tts_complete':
-          console.log(`✅ TTS complete (${message.data.duration_s?.toFixed(2)}s)`);
-          console.log(`🔍 DEBUG: isSpeakerMuted=${isSpeakerMuted}, audioPlayback=${!!audioPlayback}`);
-          console.log(`🔍 DEBUG: audioPlayback.completeAudio=${!!audioPlayback?.completeAudio}`);
+          logger.debug(`✅ TTS complete (${message.data.duration_s?.toFixed(2)}s)`);
+          logger.debug(`🔍 DEBUG: isSpeakerMuted=${isSpeakerMuted}, audioPlayback=${!!audioPlayback}`);
+          logger.debug(`🔍 DEBUG: audioPlayback.completeAudio=${!!audioPlayback?.completeAudio}`);
 
           // Play buffered TTS audio if not muted
           if (!isSpeakerMuted) {
-            console.log('🔍 DEBUG: Calling audioPlayback.completeAudio()...');
+            logger.debug('🔍 DEBUG: Calling audioPlayback.completeAudio()...');
             try {
               await audioPlayback.completeAudio();
-              console.log('🔍 DEBUG: completeAudio() returned successfully');
+              logger.debug('🔍 DEBUG: completeAudio() returned successfully');
             } catch (error) {
-              console.error('🔍 DEBUG: completeAudio() threw error:', error);
+              logger.error('🔍 DEBUG: completeAudio() threw error:', error);
             }
           } else {
-            console.log('🔇 Speaker muted, discarding TTS audio');
+            logger.debug('🔇 Speaker muted, discarding TTS audio');
             audioPlayback.stop();
           }
           break;
 
         case 'error':
-          console.error('[VoiceChat] Backend error:', message.data.message);
+          logger.error('[VoiceChat] Backend error:', message.data.message);
           toast.error('Voice Chat Error', message.data.message || 'Unknown error');
           break;
 
         default:
-          console.warn('[VoiceChat] Unknown message event:', message.event);
+          logger.warn('[VoiceChat] Unknown message event:', message.event);
+      }
+      } finally {
+        // Batch 3.3: Handler duration tracking and re-entrance cleanup
+        isHandlingMessageRef.current = false;
+        const handlerDuration = performance.now() - handlerStartTime;
+        if (handlerDuration > 100) {
+          logger.warn(`⚠️ [HANDLER_SLOW] WebSocket message handler took ${handlerDuration.toFixed(1)}ms (>100ms, event: ${message.event})`);
+        }
       }
     },
     [activeSessionId, audioPlayback, isSpeakerMuted, queryClient, toast, setIsBotSpeaking]
@@ -436,10 +471,10 @@ export function VoxbridgePage() {
   const handleBinaryMessage = useCallback(
     (audioData: Uint8Array) => {
       if (!isSpeakerMuted) {
-        console.log(`🎵 Buffering audio chunk: ${audioData.length} bytes`);
+        logger.debug(`🎵 Buffering audio chunk: ${audioData.length} bytes`);
         audioPlayback.addAudioChunk(audioData);
       } else {
-        console.log('🔇 Speaker muted, discarding audio chunk');
+        logger.debug('🔇 Speaker muted, discarding audio chunk');
       }
     },
     [audioPlayback, isSpeakerMuted]
@@ -499,7 +534,7 @@ export function VoxbridgePage() {
   // Handle WebSocket messages (Discord conversation monitoring - for metrics updates)
   const handleMessage = useCallback((message: any) => {
     // Log all WebSocket events for debugging (debug only)
-    logUIEvent('📡', 'WS EVENT', message.event, {
+    logger.debug('📡', 'WS EVENT', message.event, {
       event: message.event,
       sessionId: message.data?.session_id,
       textLength: message.data?.text?.length,
@@ -548,13 +583,13 @@ export function VoxbridgePage() {
 
       // Start listening animation indicator (unified experience)
       if (!isListening && message.data.text) {
-        logUIEvent('🎤', 'LISTENING', `Started (partial: "${message.data.text?.substring(0, 30)}...")`, undefined, true);
+        logger.debug('🎤', 'LISTENING', `Started (partial: "${message.data.text?.substring(0, 30)}...")`, undefined, true);
         setIsListening(true);
         listeningStartTimeRef.current = Date.now();
       }
       setVoicePartialTranscript(message.data.text);
     } else if (message.event === 'final_transcript') {
-      logUIEvent('🎤', 'LISTENING', `Stopped (final: "${message.data.text?.substring(0, 50)}...")`, undefined, true);
+      logger.debug('🎤', 'LISTENING', `Stopped (final: "${message.data.text?.substring(0, 50)}...")`, undefined, true);
 
       // Clear analytics state
       setActiveSpeaker(null);
@@ -566,7 +601,7 @@ export function VoxbridgePage() {
       setListeningDuration(0);
       setVoicePartialTranscript('');
 
-      logUIEvent('💭', 'THINKING', `Started (session: ${activeSessionId})`, undefined, true);
+      logger.debug('💭', 'THINKING', `Started (session: ${activeSessionId})`, undefined, true);
       setIsVoiceAIGenerating(true);
       aiStartTimeRef.current = Date.now();
 
@@ -575,7 +610,7 @@ export function VoxbridgePage() {
 
       // Refresh message list to show backend-saved message
       if (activeSessionId) {
-        logUIEvent('🔄', 'QUERY', `Invalidating messages query (session: ${activeSessionId})`, undefined, true);
+        logger.debug('🔄', 'QUERY', `Invalidating messages query (session: ${activeSessionId})`, undefined, true);
         queryClient.invalidateQueries({ queryKey: ['messages', activeSessionId] });
       }
     } else if (message.event === 'ai_response_chunk') {
@@ -583,7 +618,7 @@ export function VoxbridgePage() {
       // Backend saves chunks to database, frontend just waits for ai_response_complete
     } else if (message.event === 'ai_response_complete') {
       const aiDuration = aiStartTimeRef.current ? Date.now() - aiStartTimeRef.current : 0;
-      logUIEvent('💭', 'THINKING', `Complete (duration: ${aiDuration}ms)`, undefined, true);
+      logger.debug('💭', 'THINKING', `Complete (duration: ${aiDuration}ms)`, undefined, true);
 
       // Stop AI generating animation (unified experience)
       setIsVoiceAIGenerating(false);
@@ -592,7 +627,7 @@ export function VoxbridgePage() {
 
       // Check for errors
       if (message.data.error) {
-        console.error('[Discord] LLM error:', message.data.error);
+        logger.error('[Discord] LLM error:', message.data.error);
         // Show error toast to user
         toast.error("AI Response Error", message.data.error);
       }
@@ -600,7 +635,7 @@ export function VoxbridgePage() {
       // Refresh message list to show backend-saved message
       // No optimistic updates to remove - just fetch from database
       if (activeSessionId) {
-        logUIEvent('🔄', 'QUERY', `Invalidating messages query (session: ${activeSessionId})`, undefined, true);
+        logger.debug('🔄', 'QUERY', `Invalidating messages query (session: ${activeSessionId})`, undefined, true);
         queryClient.invalidateQueries({ queryKey: ['messages', activeSessionId] });
       }
 
@@ -619,9 +654,9 @@ export function VoxbridgePage() {
 
   // Component lifecycle logging
   useEffect(() => {
-    logUIEvent('🚀', 'COMPONENT', 'VoxbridgePage mounted');
+    logger.debug('🚀', 'COMPONENT', 'VoxbridgePage mounted');
     return () => {
-      logUIEvent('💥', 'COMPONENT', 'VoxbridgePage unmounting');
+      logger.debug('💥', 'COMPONENT', 'VoxbridgePage unmounting');
     };
   }, []);
 
@@ -632,7 +667,7 @@ export function VoxbridgePage() {
   useEffect(() => {
     // Only auto-select if we have no active session yet
     if (sessions.length > 0 && activeSessionId === null) {
-      console.log('📋 Auto-selecting first session:', sessions[0].id);
+      logger.debug('📋 Auto-selecting first session:', sessions[0].id);
       setActiveSessionId(sessions[0].id);
     }
   }, [sessions.length, activeSessionId]); // Only trigger when length changes or activeSessionId becomes null
@@ -651,7 +686,7 @@ export function VoxbridgePage() {
         const statusData = await api.getStatus();
         setSpeakerLocked(statusData.speaker?.locked || false);
       } catch (error) {
-        console.error('[VoxBridge] Failed to fetch speaker status:', error);
+        logger.error('[VoxBridge] Failed to fetch speaker status:', error);
       }
     };
 
@@ -685,7 +720,7 @@ export function VoxbridgePage() {
         const status = await api.getAgentDiscordStatus(activeAgent.id);
         const connection = status.connections && status.connections.length > 0 ? status.connections[0] : null;
 
-        console.log('[VoxbridgePage] Discord status update:', {
+        logger.debug('[VoxbridgePage] Discord status update:', {
           bot_ready: status.bot?.ready,
           connections_count: status.connections?.length,
           connection_connected: connection?.connected,
@@ -699,7 +734,7 @@ export function VoxbridgePage() {
         const channelName = connection?.channel_name || null;
         const guildName = connection?.guild_name || null;
 
-        console.log('[VoxbridgePage] Setting state:', { botReady, inVoice, channelName, guildName });
+        logger.debug('[VoxbridgePage] Setting state:', { botReady, inVoice, channelName, guildName });
 
         setDiscordBotReady(botReady);
         setDiscordInVoice(inVoice);
@@ -717,7 +752,7 @@ export function VoxbridgePage() {
           setDiscordGuildId(storedId);
         }
       } catch (error) {
-        console.error('[VoxbridgePage] Failed to fetch Discord status:', error);
+        logger.error('[VoxbridgePage] Failed to fetch Discord status:', error);
         setDiscordBotReady(false);
         setDiscordInVoice(false);
       }
@@ -754,6 +789,20 @@ export function VoxbridgePage() {
   useEffect(() => {
     setPendingUserTranscript(null);
   }, [activeSessionId]);
+
+  // Batch 3.3: 10s timeout for pending transcript placeholder (safety net)
+  useEffect(() => {
+    if (!pendingUserTranscript) return;
+
+    const timeoutId = setTimeout(() => {
+      logger.warn(`⚠️ [PENDING_TIMEOUT] Pending user transcript not cleared after 10s - forcing clear`);
+      logger.warn(`   - Text: "${pendingUserTranscript.text.substring(0, 50)}..."`);
+      logger.warn(`   - isFinalizing: ${pendingUserTranscript.isFinalizing}`);
+      setPendingUserTranscript(null);
+    }, 10000); // 10 seconds
+
+    return () => clearTimeout(timeoutId);
+  }, [pendingUserTranscript]);
 
   // ✅ Cleanup useEffect removed - optimistic UI pattern handles transition directly in ai_response_complete
 
@@ -862,12 +911,12 @@ export function VoxbridgePage() {
       }
       setShowChannelSelector(false);
     } catch (error: any) {
-      console.error('[VoxbridgePage] Failed to join voice:', error);
+      logger.error('[VoxbridgePage] Failed to join voice:', error);
 
       // If already connected, try to force leave first then retry
       if (error?.message?.includes('Already connected')) {
         try {
-          console.log('Already connected detected, forcing leave and retry...');
+          logger.debug('Already connected detected, forcing leave and retry...');
           await api.leaveChannel(activeAgent.id, guildId);
           await api.joinChannel(activeAgent.id, channelId, guildId, activeSessionId);
           setDiscordGuildId(guildId);
@@ -901,7 +950,7 @@ export function VoxbridgePage() {
       return;
     }
 
-    console.log(`[VoxbridgePage] Leaving voice with guild ID: ${guildIdToUse}`);
+    logger.debug(`[VoxbridgePage] Leaving voice with guild ID: ${guildIdToUse}`);
 
     setIsJoiningLeaving(true);
     try {
@@ -922,7 +971,7 @@ export function VoxbridgePage() {
       await navigator.clipboard.writeText(text);
       toast.success('Copied!', 'Text copied to clipboard');
     } catch (err) {
-      console.error('Failed to copy:', err);
+      logger.error('Failed to copy:', err);
       toast.error('Copy failed', err instanceof Error ? err.message : 'Unknown error');
     }
   };

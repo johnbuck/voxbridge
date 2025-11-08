@@ -22,7 +22,6 @@ Note: Discord uses Opus path, WebRTC uses PCM path (dual-format)
 """
 
 import asyncio
-import logging
 import os
 import time
 import numpy as np
@@ -33,6 +32,7 @@ from uuid import UUID
 from fastapi import WebSocket, WebSocketDisconnect
 import av
 
+from src.config.logging_config import get_logger
 from src.services.conversation_service import ConversationService
 from src.services.stt_service import STTService
 from src.services.llm_service import LLMService, LLMConfig, ProviderType
@@ -40,7 +40,7 @@ from src.services.tts_service import TTSService
 from src.types.error_events import ServiceErrorEvent
 from src.api.server import get_metrics_tracker, ws_manager
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class WebRTCVoiceHandler:
@@ -100,6 +100,9 @@ class WebRTCVoiceHandler:
 
         # WebM continuous stream decoding (maintains Opus codec state)
         self.frames_sent_to_whisperx: int = 0  # Track frames already sent (to skip on next decode)
+
+        # Bot speaking discard tracking (Batch 2.1)
+        self.discarded_chunks_count: int = 0  # Track chunks discarded while bot speaks
 
         # Transcription state
         self.current_transcript = ""
@@ -285,6 +288,9 @@ class WebRTCVoiceHandler:
         self.silence_task = asyncio.create_task(self._monitor_silence())
         logger.info(f"[AUDIO_LOOP] ✅ Silence monitor task created: {self.silence_task}")
 
+        # ✅ CHECKPOINT: Audio loop entry
+        logger.info(f"🎙️ [AUDIO_LOOP] Entering main loop (session={self.session_id}, is_active={self.is_active})")
+
         try:
             while self.is_active:
                 # Receive WebM/OGG chunk from browser MediaRecorder
@@ -296,7 +302,15 @@ class WebRTCVoiceHandler:
 
                 # Block audio input while bot is speaking (prevent crosstalk)
                 if self.is_bot_speaking:
-                    logger.debug(f"🤖 [AUDIO_LOOP] Bot is speaking - discarding user audio chunk #{self.chunks_received}")
+                    self.discarded_chunks_count += 1
+                    logger.debug(f"🤖 [AUDIO_LOOP] Bot is speaking - discarding user audio chunk #{self.chunks_received} (total discarded: {self.discarded_chunks_count})")
+
+                    # ⚠️ CHECKPOINT: Warn if bot speaking for extended period (Batch 2.1)
+                    if self.discarded_chunks_count == 50:
+                        logger.warn(f"⚠️ [STATE] Bot speaking for extended period - {self.discarded_chunks_count} chunks discarded (~5 seconds)")
+                    elif self.discarded_chunks_count % 100 == 0:  # Warn every 10 seconds after first warning
+                        logger.warn(f"⚠️ [STATE] Bot still speaking - {self.discarded_chunks_count} chunks discarded (~{self.discarded_chunks_count // 10} seconds)")
+
                     continue  # Skip this chunk, wait for next one
 
                 if self.t_first_audio is None:
@@ -320,15 +334,20 @@ class WebRTCVoiceHandler:
                 # Max ~60 seconds of continuous audio before finalizing
                 MAX_BUFFER_SIZE = 500000  # 500KB (~60s at 48kHz stereo)
                 if len(self.webm_buffer) > MAX_BUFFER_SIZE:
-                    logger.info(f"🏁 Buffer limit reached ({len(self.webm_buffer)} bytes > {MAX_BUFFER_SIZE}) - finalizing current utterance")
+                    # Batch 3.2: Enhanced buffer limit warning with diagnostics
+                    estimated_duration_s = len(self.webm_buffer) / 8000  # Rough estimate: 8KB/sec for 48kHz stereo Opus
+                    logger.warn(f"⚠️ [BUFFER_LIMIT] Forced finalization - buffer size {len(self.webm_buffer)} bytes ({estimated_duration_s:.1f}s estimated), chunks_received={self.chunks_received}, frames_sent={self.frames_sent_to_whisperx}")
 
                     # Finalize current utterance (this will trigger transcription)
                     await self.stt_service.finalize_transcript(self.session_id)
 
                     # Clear buffer and reset to start fresh
+                    # Batch 3.2: Enhanced buffer clear logging
+                    cleared_size = len(self.webm_buffer)
+                    cleared_frames = self.frames_sent_to_whisperx
                     self.webm_buffer = bytearray()
                     self.frames_sent_to_whisperx = 0
-                    logger.info(f"✅ Buffer cleared and reset - ready for new utterance")
+                    logger.info(f"✅ [BUFFER_CLEAR] Buffer cleared (was {cleared_size} bytes, {cleared_frames} frames) - frame counter reset to 0")
 
                     # Skip processing this chunk since we just finalized
                     continue
@@ -350,9 +369,11 @@ class WebRTCVoiceHandler:
                         # Only update timer if NOT silent - this allows silence detection to work
                         if not is_silent:
                             self.last_audio_time = time.time()
-                            logger.debug(f"🔊 Non-silent audio detected (max_amp={max_amp}), updating timer")
+                            # Batch 2.2: Enhanced amplitude logging
+                            logger.debug(f"🔊 [AMPLITUDE] Non-silent audio (max_amp={max_amp}/32767, {max_amp/32767*100:.1f}%), updating last_audio_time")
                         else:
-                            logger.debug(f"🤫 Silent audio detected (max_amp={max_amp}), NOT updating timer")
+                            # Batch 2.2: Log silent audio to help diagnose silence detection
+                            logger.debug(f"🤫 [AMPLITUDE] Silent audio (max_amp={max_amp}/32767, {max_amp/32767*100:.1f}%), NOT updating timer - silence detection active")
                     else:
                         # Short PCM data - treat as non-silent to avoid false positives
                         self.last_audio_time = time.time()
@@ -375,9 +396,14 @@ class WebRTCVoiceHandler:
 
         except WebSocketDisconnect:
             logger.info(f"🔌 Browser disconnected")
+            logger.warn(f"⚠️ [AUDIO_LOOP] WebSocket disconnected at chunk #{self.chunks_received}, is_active={self.is_active}, session={self.session_id}")
         except Exception as e:
             logger.error(f"❌ Error in audio loop: {e}", exc_info=True)
+            logger.error(f"🚨 [AUDIO_LOOP] FATAL ERROR after {self.chunks_received} chunks, is_active={self.is_active}, session={self.session_id}")
         finally:
+            # ✅ CHECKPOINT: Audio loop exit
+            logger.warn(f"🛑 [AUDIO_LOOP] Exited main loop (is_active={self.is_active}, chunks_received={self.chunks_received}, session={self.session_id})")
+
             # Cancel silence monitoring
             if self.silence_task:
                 self.silence_task.cancel()
@@ -707,7 +733,10 @@ class WebRTCVoiceHandler:
                         # ✅ FIX: Reset final transcript flags for new turn
                         self.final_transcript_ready = False
                         self.final_transcript = ""
+                        # Batch 2.2: Track utterance start time reset
+                        old_utterance_start = self.utterance_start_time
                         self.utterance_start_time = self.last_audio_time  # New utterance start
+                        logger.debug(f"🔄 [STATE] Utterance start time reset: {old_utterance_start} → {self.utterance_start_time}")
                         iteration = 0
 
                         logger.info(f"✅ [STATE] Auto-restart complete - ready to accept new utterance (monitoring active)")
@@ -746,6 +775,11 @@ class WebRTCVoiceHandler:
                 # Check silence threshold - only if not finalized
                 if not finalized and self.last_audio_time:
                     silence_duration_ms = (time.time() - self.last_audio_time) * 1000
+
+                    # Batch 2.2: Log silence duration every ~1 second to help diagnose detection issues
+                    if iteration % 10 == 0:  # Every 1 second (10 iterations * 100ms)
+                        has_transcript = bool(self.current_transcript.strip())
+                        logger.debug(f"🤫 [SILENCE_CHECK] Duration: {silence_duration_ms:.0f}ms / {self.silence_threshold_ms}ms, has_transcript={has_transcript}, will_finalize={silence_duration_ms >= self.silence_threshold_ms and has_transcript}")
 
                     # ✅ FIX: Only finalize if we have actual speech (non-empty partial transcript)
                     # This prevents spurious finalizations from background noise before user speaks
@@ -952,6 +986,11 @@ class WebRTCVoiceHandler:
                         logger.info(f"⏱️ LATENCY [LLM first chunk]: {latency_s:.3f}s")
                         # DIAGNOSTIC: Log first chunk content
                         logger.info(f"📤 [AI_CHUNK] First chunk received: \"{chunk[:50]}{'...' if len(chunk) > 50 else ''}\" (length={len(chunk)} chars)")
+
+                        # Batch 2.4: Detect suspiciously short first chunks
+                        if len(chunk) < 3:
+                            logger.warn(f"⚠️ [LLM_QUALITY] First chunk is suspiciously short ({len(chunk)} chars) - possible truncation or streaming issue")
+
                         first_chunk_received = True
 
                     # Accumulate response
@@ -1246,7 +1285,10 @@ class WebRTCVoiceHandler:
             # Re-enable audio input after bot finishes speaking
             self.is_bot_speaking = False
             # ✅ CHECKPOINT 5: State Transition (TTS Complete → Listening)
-            logger.info("✅ [STATE] TTS complete → LISTENING state, user audio input re-enabled, ready for next utterance")
+            logger.info(f"✅ [STATE] TTS complete → LISTENING state, user audio input re-enabled, ready for next utterance (total discarded during TTS: {self.discarded_chunks_count} chunks)")
+
+            # Reset discard counter (Batch 2.1)
+            self.discarded_chunks_count = 0
 
             # Send bot_speaking state change event (only if still connected)
             if self.is_active:
@@ -1262,6 +1304,9 @@ class WebRTCVoiceHandler:
             logger.error(f"❌ TTS error: {e}", exc_info=True)
             # Ensure is_bot_speaking is reset even on error
             self.is_bot_speaking = False
+            # Reset discard counter even on error (Batch 2.1)
+            logger.info(f"⚠️ [STATE] TTS error - resetting bot speaking state (discarded {self.discarded_chunks_count} chunks before error)")
+            self.discarded_chunks_count = 0
             await self._send_error(f"TTS failed: {str(e)}")
 
     async def _send_error(self, message: str):

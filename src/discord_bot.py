@@ -56,6 +56,9 @@ import httpx
 import uvicorn
 from dotenv import load_dotenv
 
+# Tiered logging system
+from src.config.logging_config import configure_logging, get_logger
+
 # VoxBridge 2.0 Service Layer
 from src.services.conversation_service import ConversationService
 from src.services.stt_service import get_stt_service
@@ -72,12 +75,9 @@ from src.api.server import app, get_ws_manager, get_metrics_tracker, set_bot_bri
 # Load environment variables
 load_dotenv()
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
+# Configure logging with tiered system
+configure_logging(default_level="INFO")
+logger = get_logger(__name__)
 
 # ============================================================
 # PHASE 6.4.1 BATCH 2a: GRACEFUL DEPRECATION TOGGLE

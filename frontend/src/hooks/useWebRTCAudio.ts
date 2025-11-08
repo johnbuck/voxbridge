@@ -10,46 +10,25 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import type { WebRTCAudioMessage, ConnectionState } from '@/types/webrtc';
 import type { ServiceErrorEvent } from '@/types/errors';
+import { createLogger } from '@/utils/logger';
 
-// Debug logging flag - set to true to enable verbose logging
-const DEBUG_WEBRTC_HOOK = false;
-
-// Logging utility with timestamps and debug flag support
-const log = (...args: any[]) => {
-  const timestamp = new Date().toISOString();
-  console.log(`[${timestamp}] [WebRTC]`, ...args);
-};
-
-const logDebug = (...args: any[]) => {
-  if (!DEBUG_WEBRTC_HOOK) return;
-  const timestamp = new Date().toISOString();
-  console.log(`[${timestamp}] [WebRTC]`, ...args);
-};
-
-const logWarn = (...args: any[]) => {
-  const timestamp = new Date().toISOString();
-  console.warn(`[${timestamp}] [WebRTC]`, ...args);
-};
-
-const logError = (...args: any[]) => {
-  const timestamp = new Date().toISOString();
-  console.error(`[${timestamp}] [WebRTC]`, ...args);
-};
+// Initialize logger for WebRTC module
+const logger = createLogger('useWebRTCAudio');
 
 // WebSocket URL configuration
 // IMPORTANT: Always connect directly to backend port 4900, not nginx port 4903
 // Nginx cannot reliably proxy WebSocket connections, so we bypass it for WebRTC audio
 const getWebSocketUrl = () => {
-  logDebug('🔧 Environment check:');
-  logDebug('  - VITE_WS_URL:', import.meta.env.VITE_WS_URL || 'undefined');
-  logDebug('  - VITE_API_URL:', import.meta.env.VITE_API_URL || 'undefined');
-  logDebug('  - import.meta.env.PROD:', import.meta.env.PROD);
-  logDebug('  - window.location.hostname:', window.location.hostname);
-  logDebug('  - window.location.protocol:', window.location.protocol);
+  logger.debug('🔧 Environment check:');
+  logger.debug('  - VITE_WS_URL:', import.meta.env.VITE_WS_URL || 'undefined');
+  logger.debug('  - VITE_API_URL:', import.meta.env.VITE_API_URL || 'undefined');
+  logger.debug('  - import.meta.env.PROD:', import.meta.env.PROD);
+  logger.debug('  - window.location.hostname:', window.location.hostname);
+  logger.debug('  - window.location.protocol:', window.location.protocol);
 
   // Always use VITE_WS_URL if defined (for both dev and prod)
   if (import.meta.env.VITE_WS_URL) {
-    logDebug('✅ Using VITE_WS_URL from env:', import.meta.env.VITE_WS_URL);
+    logger.debug('✅ Using VITE_WS_URL from env:', import.meta.env.VITE_WS_URL);
     return import.meta.env.VITE_WS_URL;
   }
 
@@ -60,17 +39,17 @@ const getWebSocketUrl = () => {
     // Extract hostname but force port 4900 (backend)
     const hostname = window.location.hostname;
     const url = `${protocol}//${hostname}:4900`;
-    logDebug('🏭 Production mode - constructed URL:', url);
+    logger.debug('🏭 Production mode - constructed URL:', url);
     return url;
   }
 
   // Development fallback
-  logDebug('💻 Development mode - using fallback URL: ws://localhost:4900');
+  logger.debug('💻 Development mode - using fallback URL: ws://localhost:4900');
   return 'ws://localhost:4900';
 };
 
 const WS_URL = getWebSocketUrl();
-logDebug('🌐 Final WebSocket URL configured:', WS_URL);
+logger.debug('🌐 Final WebSocket URL configured:', WS_URL);
 
 // Default user ID for web clients
 const WEB_USER_ID = 'web_user_default';
@@ -108,15 +87,16 @@ export function useWebRTCAudio(options: UseWebRTCAudioOptions): UseWebRTCAudioRe
     timeslice = 100, // 100ms chunks for low latency
   } = options;
 
-  logDebug('🎤 Hook initialized with options:', {
-    sessionId: sessionId || 'null',
-    autoStart,
-    timeslice,
-    hasOnMessage: !!onMessage,
-    hasOnBinaryMessage: !!onBinaryMessage,
-    hasOnError: !!onError,
-    hasOnServiceError: !!onServiceError,
-  });
+  // ✅ DISABLED: Too verbose - only enable when debugging hook initialization
+  // logger.debug('🎤 Hook initialized with options:', {
+  //   sessionId: sessionId || 'null',
+  //   autoStart,
+  //   timeslice,
+  //   hasOnMessage: !!onMessage,
+  //   hasOnBinaryMessage: !!onBinaryMessage,
+  //   hasOnError: !!onError,
+  //   hasOnServiceError: !!onServiceError,
+  // });
 
   const [isMuted, setIsMuted] = useState(true);
   const [connectionState, setConnectionState] = useState<ConnectionState>('disconnected');
@@ -129,23 +109,25 @@ export function useWebRTCAudio(options: UseWebRTCAudioOptions): UseWebRTCAudioRe
   const reconnectTimeoutRef = useRef<number | null>(null);
   const reconnectAttemptsRef = useRef(0);
   const audioChunksBufferRef = useRef<Blob[]>([]);
+  const lastChunkTimeRef = useRef<number | null>(null); // Track last ondataavailable timestamp
+  const emptyChunkCountRef = useRef(0); // Batch 3.1: Track consecutive empty chunks
 
   const MAX_RECONNECT_ATTEMPTS = 5;
   const RECONNECT_INTERVAL = 3000;
 
   // Connect to WebSocket
   const connectWebSocket = useCallback(() => {
-    logDebug('🔌 connectWebSocket() called');
+    logger.debug('🔌 connectWebSocket() called');
 
     if (wsRef.current?.readyState === WebSocket.OPEN) {
-      logDebug('⚠️  Already connected, skipping');
+      logger.debug('⚠️  Already connected, skipping');
       return; // Already connected
     }
 
     // Validate sessionId is present
     if (!sessionId) {
       const errorMsg = 'Cannot connect: No session ID available';
-      logError('❌', errorMsg);
+      logger.error('❌', errorMsg);
       setConnectionState('error');
       if (onError) {
         onError(errorMsg);
@@ -153,19 +135,19 @@ export function useWebRTCAudio(options: UseWebRTCAudioOptions): UseWebRTCAudioRe
       return;
     }
 
-    log('📡 Attempting WebSocket connection with session:', sessionId);
+    logger.info('📡 Attempting WebSocket connection with session:', sessionId);
     setConnectionState('connecting');
 
     try {
       // Build WebSocket URL with required query parameters
       const wsUrl = `${WS_URL}/ws/voice?session_id=${encodeURIComponent(sessionId)}&user_id=${encodeURIComponent(WEB_USER_ID)}`;
-      logDebug('🔗 Full WebSocket URL:', wsUrl);
+      logger.debug('🔗 Full WebSocket URL:', wsUrl);
 
       const ws = new WebSocket(wsUrl);
-      logDebug('🌐 WebSocket object created, readyState:', ws.readyState);
+      logger.debug('🌐 WebSocket object created, readyState:', ws.readyState);
 
       ws.onopen = () => {
-        log('✅ WebSocket CONNECTED successfully');
+        logger.info('✅ WebSocket CONNECTED successfully');
         setConnectionState('connected');
         reconnectAttemptsRef.current = 0;
       };
@@ -176,7 +158,7 @@ export function useWebRTCAudio(options: UseWebRTCAudioOptions): UseWebRTCAudioRe
           if (event.data instanceof ArrayBuffer) {
             // Binary audio chunk from TTS
             const audioData = new Uint8Array(event.data);
-            logDebug(`🔊 Received binary audio chunk: ${audioData.length} bytes`);
+            logger.debug(`🔊 Received binary audio chunk: ${audioData.length} bytes`);
 
             if (onBinaryMessage) {
               onBinaryMessage(audioData);
@@ -185,7 +167,7 @@ export function useWebRTCAudio(options: UseWebRTCAudioOptions): UseWebRTCAudioRe
             // Blob data (convert to ArrayBuffer)
             event.data.arrayBuffer().then((buffer) => {
               const audioData = new Uint8Array(buffer);
-              logDebug(`🔊 Received blob audio chunk: ${audioData.length} bytes`);
+              logger.debug(`🔊 Received blob audio chunk: ${audioData.length} bytes`);
 
               if (onBinaryMessage) {
                 onBinaryMessage(audioData);
@@ -194,12 +176,12 @@ export function useWebRTCAudio(options: UseWebRTCAudioOptions): UseWebRTCAudioRe
           } else {
             // Text message (JSON)
             const message: WebRTCAudioMessage = JSON.parse(event.data);
-            logDebug('📨 Received message:', message.event, 'text:', message.data.text?.substring(0, 50));
+            logger.debug('📨 Received message:', message.event, 'text:', message.data.text?.substring(0, 50));
 
             // Handle error messages from backend
             if (message.event === 'error') {
               const errorText = message.data.message || message.data.text || 'Unknown error';
-              logError('❌ Backend error:', errorText);
+              logger.error('❌ Backend error:', errorText);
               setConnectionState('error');
               if (onError) {
                 onError(errorText);
@@ -209,7 +191,7 @@ export function useWebRTCAudio(options: UseWebRTCAudioOptions): UseWebRTCAudioRe
 
             // Handle service error events (Phase 2)
             if (message.event === 'service_error' && onServiceError) {
-              logWarn('⚠️  Service error event:', message.data);
+              logger.warn('⚠️  Service error event:', message.data);
               onServiceError(message.data as any as ServiceErrorEvent);
               return;
             }
@@ -224,7 +206,7 @@ export function useWebRTCAudio(options: UseWebRTCAudioOptions): UseWebRTCAudioRe
                 ? `(elapsed: ${message.data.elapsed_ms}ms)`
                 : '';
 
-              logDebug(`🤫 Silence detected: ${reason} ${metadata} - finalizing utterance but KEEPING mic active for next turn`);
+              logger.debug(`🤫 Silence detected: ${reason} ${metadata} - finalizing utterance but KEEPING mic active for next turn`);
 
               // ✅ DO NOT STOP MediaRecorder - keep it running for multi-turn conversations!
               // ✅ DO NOT STOP media stream - keep it active like Discord's continuous audio
@@ -233,7 +215,7 @@ export function useWebRTCAudio(options: UseWebRTCAudioOptions): UseWebRTCAudioRe
               // Backend auto-restart detection (lines 643-658 in webrtc_handler.py) will
               // automatically detect new audio and start a new conversation turn.
 
-              logDebug('✅ Utterance finalized, microphone STAYS ACTIVE - ready for next question');
+              logger.debug('✅ Utterance finalized, microphone STAYS ACTIVE - ready for next question');
               return;
             }
 
@@ -241,7 +223,7 @@ export function useWebRTCAudio(options: UseWebRTCAudioOptions): UseWebRTCAudioRe
             // After TTS completes, we wait for user to speak again (auto-restart detection on backend)
             // Only disconnect when user explicitly stops or closes page
             if (message.event === 'tts_complete') {
-              logDebug(`✅ TTS complete - ready for next conversation turn (keeping WebSocket open)`);
+              logger.debug(`✅ TTS complete - ready for next conversation turn (keeping WebSocket open)`);
               // Notify parent so it can trigger audio playback
               if (onMessage) {
                 onMessage(message);
@@ -255,14 +237,14 @@ export function useWebRTCAudio(options: UseWebRTCAudioOptions): UseWebRTCAudioRe
             }
           }
         } catch (err) {
-          logError('❌ Failed to parse WebSocket message:', err);
+          logger.error('❌ Failed to parse WebSocket message:', err);
         }
       };
 
       ws.onerror = (event) => {
-        logError('❌ WebSocket ERROR event:', event);
-        logError('   - readyState:', ws.readyState);
-        logError('   - URL:', wsUrl);
+        logger.error('❌ WebSocket ERROR event:', event);
+        logger.error('   - readyState:', ws.readyState);
+        logger.error('   - URL:', wsUrl);
         setConnectionState('error');
         const errorMsg = 'WebSocket connection error';
         if (onError) {
@@ -271,10 +253,10 @@ export function useWebRTCAudio(options: UseWebRTCAudioOptions): UseWebRTCAudioRe
       };
 
       ws.onclose = (event) => {
-        log('🔌 WebSocket CLOSED');
-        logDebug('   - code:', event.code);
-        logDebug('   - reason:', event.reason || 'none');
-        logDebug('   - wasClean:', event.wasClean);
+        logger.info('🔌 WebSocket CLOSED');
+        logger.debug('   - code:', event.code);
+        logger.debug('   - reason:', event.reason || 'none');
+        logger.debug('   - wasClean:', event.wasClean);
         setConnectionState('disconnected');
 
         // Discard buffered audio on disconnect
@@ -286,7 +268,7 @@ export function useWebRTCAudio(options: UseWebRTCAudioOptions): UseWebRTCAudioRe
           !isMuted // Only reconnect if we're still unmuted
         ) {
           reconnectAttemptsRef.current += 1;
-          log(
+          logger.info(
             `🔄 Reconnecting... (${reconnectAttemptsRef.current}/${MAX_RECONNECT_ATTEMPTS})`
           );
 
@@ -297,9 +279,9 @@ export function useWebRTCAudio(options: UseWebRTCAudioOptions): UseWebRTCAudioRe
       };
 
       wsRef.current = ws;
-      logDebug('✅ WebSocket object stored in ref');
+      logger.debug('✅ WebSocket object stored in ref');
     } catch (err) {
-      logError('❌ WebSocket connection FAILED:', err);
+      logger.error('❌ WebSocket connection FAILED:', err);
       setConnectionState('error');
       if (onError) {
         onError('Failed to connect to voice server');
@@ -309,16 +291,16 @@ export function useWebRTCAudio(options: UseWebRTCAudioOptions): UseWebRTCAudioRe
 
   // Disconnect WebSocket
   const disconnectWebSocket = useCallback(() => {
-    logDebug('🔌 disconnectWebSocket() called');
+    logger.debug('🔌 disconnectWebSocket() called');
 
     if (reconnectTimeoutRef.current) {
       clearTimeout(reconnectTimeoutRef.current);
       reconnectTimeoutRef.current = null;
-      logDebug('   - Cleared reconnect timeout');
+      logger.debug('   - Cleared reconnect timeout');
     }
 
     if (wsRef.current) {
-      logDebug('   - Closing WebSocket (current state:', wsRef.current.readyState, ')');
+      logger.debug('   - Closing WebSocket (current state:', wsRef.current.readyState, ')');
       wsRef.current.close();
       wsRef.current = null;
     }
@@ -329,15 +311,15 @@ export function useWebRTCAudio(options: UseWebRTCAudioOptions): UseWebRTCAudioRe
 
   // Start audio capture
   const start = useCallback(async () => {
-    log('🎙️ start() called - initiating audio capture');
-    logDebug('   - Current sessionId:', sessionId);
-    logDebug('   - Current isMuted:', isMuted);
-    logDebug('   - Current connectionState:', connectionState);
+    logger.info('🎙️ start() called - initiating audio capture');
+    logger.debug('   - Current sessionId:', sessionId);
+    logger.debug('   - Current isMuted:', isMuted);
+    logger.debug('   - Current connectionState:', connectionState);
 
     try {
       setPermissionError(null);
 
-      logDebug('🎤 Requesting microphone access...');
+      logger.debug('🎤 Requesting microphone access...');
       // Request microphone access (48kHz stereo to match Discord)
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
@@ -349,12 +331,12 @@ export function useWebRTCAudio(options: UseWebRTCAudioOptions): UseWebRTCAudioRe
         },
       });
 
-      log('✅ Microphone access GRANTED');
-      logDebug('   - Audio tracks:', stream.getAudioTracks().length);
+      logger.info('✅ Microphone access GRANTED');
+      logger.debug('   - Audio tracks:', stream.getAudioTracks().length);
 
       mediaStreamRef.current = stream;
 
-      logDebug('🎬 Creating MediaRecorder (OGG/Opus preferred, 100ms chunks)');
+      logger.debug('🎬 Creating MediaRecorder (OGG/Opus preferred, 100ms chunks)');
 
       // Try OGG/Opus first (better streaming), fallback to WebM
       const mimeTypes = [
@@ -366,7 +348,7 @@ export function useWebRTCAudio(options: UseWebRTCAudioOptions): UseWebRTCAudioRe
       for (const mimeType of mimeTypes) {
         if (MediaRecorder.isTypeSupported(mimeType)) {
           selectedMimeType = mimeType;
-          logDebug('✅ Using MIME type:', mimeType);
+          logger.debug('✅ Using MIME type:', mimeType);
           break;
         }
       }
@@ -383,35 +365,57 @@ export function useWebRTCAudio(options: UseWebRTCAudioOptions): UseWebRTCAudioRe
 
       // Handle audio data chunks
       mediaRecorder.ondataavailable = (event) => {
+        const timestamp = new Date().toISOString();
+        lastChunkTimeRef.current = Date.now(); // Track last chunk time for watchdog
+
         if (event.data.size > 0) {
+          // Batch 3.1: Reset empty chunk counter on non-empty chunk
+          emptyChunkCountRef.current = 0;
+
+          // ✅ CHECKPOINT 1: Frontend Audio Chunk Available
+          logger.info(`[${timestamp}] [MediaRecorder] 📤 Audio chunk available: ${event.data.size} bytes, connected=${wsRef.current?.readyState === WebSocket.OPEN}`);
+
           // Send WebM chunk via WebSocket if connected
           if (wsRef.current?.readyState === WebSocket.OPEN) {
             // Send as Blob (will be sent as binary data)
             event.data.arrayBuffer().then((buffer) => {
               wsRef.current?.send(buffer);
-              logDebug(`📤 Sent WebM chunk: ${buffer.byteLength} bytes`);
+              // ✅ CHECKPOINT 1: Confirm Send
+              logger.info(`[${timestamp}] [MediaRecorder] ✅ Sent ${buffer.byteLength} bytes to WebSocket`);
             });
           } else {
             // Buffer chunks while disconnected (will be discarded on reconnect)
             audioChunksBufferRef.current.push(event.data);
-            logDebug('⚠️  Audio chunk buffered (WebSocket not connected, state:', wsRef.current?.readyState, ')');
+            logger.warn(`[${timestamp}] [MediaRecorder] ⚠️  Audio chunk BUFFERED (WebSocket not connected, state: ${wsRef.current?.readyState}), buffer size: ${audioChunksBufferRef.current.length}`);
+          }
+        } else {
+          // Batch 3.1: Track consecutive empty chunks
+          emptyChunkCountRef.current++;
+          logger.warn(`[${timestamp}] [MediaRecorder] ⚠️  Empty audio chunk received (size=0), consecutive count: ${emptyChunkCountRef.current}`);
+
+          // Batch 3.1: Error after >10 consecutive empty chunks
+          if (emptyChunkCountRef.current > 10) {
+            logger.error(`🚨 [MediaRecorder] CRITICAL: ${emptyChunkCountRef.current} consecutive empty chunks - MediaRecorder may be broken!`);
+            logger.error(`   - MediaRecorder state: ${mediaRecorderRef.current?.state}`);
+            logger.error(`   - Stream active: ${mediaStreamRef.current?.active}`);
+            logger.error(`   - Audio tracks: ${mediaStreamRef.current?.getAudioTracks().length}`);
           }
         }
       };
 
       mediaRecorder.onstart = () => {
-        log('✅ MediaRecorder STARTED');
+        logger.info('✅ MediaRecorder STARTED');
         setIsRecording(true);
       };
 
       mediaRecorder.onstop = () => {
-        log('🛑 MediaRecorder STOPPED');
+        logger.info('🛑 MediaRecorder STOPPED');
         setIsRecording(false);
         audioChunksBufferRef.current = [];
       };
 
       mediaRecorder.onerror = (event) => {
-        logError('❌ MediaRecorder ERROR:', event);
+        logger.error('❌ MediaRecorder ERROR:', event);
         const errorMsg = 'Audio recording error';
         setPermissionError(errorMsg);
         if (onError) {
@@ -422,20 +426,20 @@ export function useWebRTCAudio(options: UseWebRTCAudioOptions): UseWebRTCAudioRe
       mediaRecorderRef.current = mediaRecorder;
 
       // Start recording with 100ms timeslice (good balance of latency vs overhead)
-      logDebug('🎬 Starting MediaRecorder with timeslice:', timeslice, 'ms');
+      logger.debug('🎬 Starting MediaRecorder with timeslice:', timeslice, 'ms');
       mediaRecorder.start(timeslice || 100);
 
       // Connect WebSocket
-      logDebug('🔌 Calling connectWebSocket()...');
+      logger.debug('🔌 Calling connectWebSocket()...');
       connectWebSocket();
 
       // Unmute
-      logDebug('🔓 Setting isMuted to false');
+      logger.debug('🔓 Setting isMuted to false');
       setIsMuted(false);
 
-      logDebug('✅ start() completed successfully');
+      logger.debug('✅ start() completed successfully');
     } catch (err) {
-      logError('❌ Failed to start audio capture:', err);
+      logger.error('❌ Failed to start audio capture:', err);
 
       let errorMsg = 'Failed to access microphone';
       if (err instanceof Error) {
@@ -448,7 +452,7 @@ export function useWebRTCAudio(options: UseWebRTCAudioOptions): UseWebRTCAudioRe
         }
       }
 
-      logError('   - Error message:', errorMsg);
+      logger.error('   - Error message:', errorMsg);
       setPermissionError(errorMsg);
       if (onError) {
         onError(errorMsg);
@@ -464,18 +468,22 @@ export function useWebRTCAudio(options: UseWebRTCAudioOptions): UseWebRTCAudioRe
 
   // Stop audio capture
   const stop = useCallback(() => {
-    log('🛑 stop() called - stopping audio capture');
+    logger.info('🛑 stop() called - stopping audio capture');
 
     // Stop MediaRecorder
     if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
-      logDebug('   - Stopping MediaRecorder (current state:', mediaRecorderRef.current.state, ')');
+      // Batch 3.1: Log MediaRecorder state before stop()
+      const state = mediaRecorderRef.current.state;
+      const hasStream = !!mediaStreamRef.current;
+      const streamActive = mediaStreamRef.current?.active || false;
+      logger.info(`🛑 [MediaRecorder] Stopping (state: ${state}, hasStream: ${hasStream}, streamActive: ${streamActive})`);
       mediaRecorderRef.current.stop();
     }
     mediaRecorderRef.current = null;
 
     // Stop media stream tracks
     if (mediaStreamRef.current) {
-      logDebug('   - Stopping', mediaStreamRef.current.getTracks().length, 'media tracks');
+      logger.debug('   - Stopping', mediaStreamRef.current.getTracks().length, 'media tracks');
       mediaStreamRef.current.getTracks().forEach((track) => track.stop());
       mediaStreamRef.current = null;
     }
@@ -489,60 +497,84 @@ export function useWebRTCAudio(options: UseWebRTCAudioOptions): UseWebRTCAudioRe
 
     // Notify parent component to clear UI state (Fix #2: Listening indicator cleanup)
     if (onRecordingStop) {
-      logDebug('   - Calling onRecordingStop callback');
+      logger.debug('   - Calling onRecordingStop callback');
       onRecordingStop();
     }
 
-    logDebug('✅ stop() completed');
+    logger.debug('✅ stop() completed');
   }, [disconnectWebSocket, onRecordingStop]);
 
   // Toggle mute (stop/start recording but keep WebSocket connection)
   const toggleMute = useCallback(() => {
-    logDebug('🔄 toggleMute() called (current isMuted:', isMuted, ')');
+    logger.debug('🔄 toggleMute() called (current isMuted:', isMuted, ')');
+
+    // ✅ DEBUG: Print stack trace to see who called toggleMute
+    console.trace('🔍 toggleMute() stack trace:');
 
     if (isMuted) {
-      logDebug('   - Currently muted, calling start()...');
+      logger.debug('   - Currently muted, calling start()...');
       start();
     } else {
-      logDebug('   - Currently unmuted, calling stop()...');
+      logger.debug('   - Currently unmuted, calling stop()...');
       stop();
     }
   }, [isMuted, start, stop]);
 
   // Auto-start if enabled
   useEffect(() => {
-    logDebug('🔄 useEffect[autoStart, sessionId] triggered');
-    logDebug('   - autoStart:', autoStart);
-    logDebug('   - sessionId:', sessionId);
+    logger.debug('🔄 useEffect[autoStart, sessionId] triggered');
+    logger.debug('   - autoStart:', autoStart);
+    logger.debug('   - sessionId:', sessionId);
 
     if (autoStart && sessionId) {
-      logDebug('   - Calling start() due to autoStart');
+      logger.debug('   - Calling start() due to autoStart');
       start();
     }
 
     // Cleanup on unmount
     return () => {
-      logDebug('🧹 useEffect cleanup - calling stop()');
+      logger.debug('🧹 useEffect cleanup - calling stop()');
       stop();
     };
   }, [autoStart, sessionId]); // Only run when autoStart or sessionId changes
 
   // Update WebSocket session when sessionId changes
   useEffect(() => {
-    logDebug('🔄 useEffect[sessionId] triggered - session ID changed to:', sessionId);
+    logger.debug('🔄 useEffect[sessionId] triggered - session ID changed to:', sessionId);
 
     if (wsRef.current?.readyState === WebSocket.OPEN && sessionId) {
-      logDebug('   - Sending session_init message to WebSocket');
+      logger.debug('   - Sending session_init message to WebSocket');
       wsRef.current.send(JSON.stringify({ event: 'session_init', session_id: sessionId }));
     }
   }, [sessionId]);
 
-  logDebug('🔄 Hook rendering with state:', {
-    isMuted,
-    connectionState,
-    isRecording,
-    hasPermissionError: !!permissionError,
-  });
+  // Watchdog: Detect if MediaRecorder stops sending chunks (silent failure)
+  useEffect(() => {
+    if (!isRecording) return;
+
+    const watchdog = setInterval(() => {
+      if (lastChunkTimeRef.current) {
+        const timeSinceLastChunk = Date.now() - lastChunkTimeRef.current;
+        if (timeSinceLastChunk > 5000) { // 5 seconds without chunks = problem
+          logger.error(`🚨 [WATCHDOG] MediaRecorder ondataavailable stopped firing! Last chunk: ${timeSinceLastChunk}ms ago`);
+          logger.error(`   - MediaRecorder state: ${mediaRecorderRef.current?.state}`);
+          logger.error(`   - WebSocket state: ${wsRef.current?.readyState}`);
+          logger.error(`   - isRecording: ${isRecording}`);
+          logger.error(`   - isMuted: ${isMuted}`);
+        }
+      }
+    }, 2000); // Check every 2 seconds
+
+    return () => clearInterval(watchdog);
+  }, [isRecording, isMuted]);
+
+  // ✅ DISABLED: Too verbose - only enable when debugging hook lifecycle
+  // logger.debug('🔄 Hook rendering with state:', {
+  //   isMuted,
+  //   connectionState,
+  //   isRecording,
+  //   hasPermissionError: !!permissionError,
+  // });
 
   return {
     isMuted,

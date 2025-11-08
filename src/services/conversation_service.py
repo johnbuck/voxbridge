@@ -23,7 +23,6 @@ Design Patterns:
 
 import os
 import asyncio
-import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
@@ -32,11 +31,12 @@ from uuid import UUID
 from sqlalchemy import select, update, and_
 from sqlalchemy.orm import selectinload
 
+from src.config.logging_config import get_logger
 from src.database.models import Agent, Session, Conversation
 from src.database.session import get_db_session
 
 # Configure logging with emoji prefixes
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 # Configuration from environment variables
 CONVERSATION_CACHE_TTL_MINUTES = int(os.getenv('CONVERSATION_CACHE_TTL_MINUTES', '15'))

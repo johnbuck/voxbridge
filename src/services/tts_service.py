@@ -22,17 +22,17 @@ Design Patterns:
 import os
 import asyncio
 import time
-import logging
 from typing import Dict, List, Optional, Callable, Any, Awaitable
 from dataclasses import dataclass
 from enum import Enum
 import httpx
 import json
 
+from src.config.logging_config import get_logger
 from src.types.error_events import ServiceErrorEvent, ServiceErrorType
 from src.config.streaming import StreamingConfig, get_streaming_config
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 # Configuration from environment variables
 CHATTERBOX_URL = os.getenv('CHATTERBOX_URL', 'http://chatterbox-tts:4123')

@@ -12,13 +12,13 @@ Design Patterns:
 """
 
 import asyncio
-import logging
 import os
 import time
 from typing import Dict, List, Optional, Callable, AsyncIterator, Awaitable
 from dataclasses import dataclass
 from enum import Enum
 
+from src.config.logging_config import get_logger
 from src.llm import (
     LLMProvider,
     LLMProviderFactory,
@@ -32,7 +32,7 @@ from src.llm import (
 )
 from src.types.error_events import ServiceErrorEvent, ServiceErrorType
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class ProviderType(Enum):
@@ -511,6 +511,19 @@ class LLMService:
         """
         SERVICE_TIMEOUT = 90.0  # Service layer timeout (higher than provider's 60s)
 
+        # Batch 2.4: Timeout warner task for progressive warnings
+        async def timeout_warner():
+            """Warn at 30s and 60s if LLM response is slow"""
+            try:
+                await asyncio.sleep(30.0)
+                logger.warn("⏱️ [LLM_TIMEOUT] LLM generation taking longer than expected (30s elapsed)")
+                await asyncio.sleep(30.0)  # Total 60s
+                logger.warn("⏱️ [LLM_TIMEOUT] LLM generation slow (60s elapsed) - approaching timeout")
+            except asyncio.CancelledError:
+                pass  # Normal cancellation when generation completes
+
+        warner_task = asyncio.create_task(timeout_warner())
+
         try:
             async with asyncio.timeout(SERVICE_TIMEOUT):
                 if not stream:
@@ -543,6 +556,13 @@ class LLMService:
         except asyncio.TimeoutError:
             logger.error(f"🤖 LLM Service: ⏱️ Service layer timeout after {SERVICE_TIMEOUT}s")
             raise LLMTimeoutError(f"LLM service timeout: No response in {SERVICE_TIMEOUT}s")
+        finally:
+            # Batch 2.4: Cancel warner task when generation completes
+            warner_task.cancel()
+            try:
+                await warner_task
+            except asyncio.CancelledError:
+                pass
 
     async def get_provider_status(self) -> Dict[str, bool]:
         """

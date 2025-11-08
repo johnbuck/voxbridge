@@ -22,16 +22,16 @@ Design Patterns:
 import os
 import asyncio
 import time
-import logging
 from typing import Dict, Optional, Callable, Any, Awaitable
 from dataclasses import dataclass
 from enum import Enum
 import websockets
 import json
 
+from src.config.logging_config import get_logger
 from src.types.error_events import ServiceErrorEvent, ServiceErrorType
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 # Configuration from environment variables
 WHISPER_SERVER_URL = os.getenv('WHISPER_SERVER_URL', 'ws://whisperx:4901')
@@ -268,13 +268,15 @@ class STTService:
         try:
             # Send format indicator on first audio (if not already sent)
             if not hasattr(connection, 'format_sent'):
-                logger.info(f"📡 Sending audio format to WhisperX: {audio_format}")
-                import json
-                await connection.websocket.send(json.dumps({
+                # Batch 2.3: Log exact format indicator message
+                format_message = {
                     'type': 'start',
-                    'userId': str(session_id),  # Convert UUID to string
+                    'userId': str(session_id),
                     'audio_format': audio_format
-                }))
+                }
+                logger.info(f"📡 [STT_FORMAT] Sending format indicator to WhisperX: {json.dumps(format_message)}")
+                import json
+                await connection.websocket.send(json.dumps(format_message))
                 connection.format_sent = True
                 connection.audio_format = audio_format
 
@@ -355,7 +357,10 @@ class STTService:
             # Send finalize message to WhisperX
             finalize_message = json.dumps({'type': 'finalize'})
             await connection.websocket.send(finalize_message)
-            logger.info(f"🏁 Sent finalize message to WhisperX for session {session_id}")
+            # Batch 2.3: Track finalize acknowledgment
+            connection.finalize_sent_time = time.time()
+            connection.finalize_acknowledged = False
+            logger.info(f"🏁 [STT_FINALIZE] Sent finalize message to WhisperX for session {session_id}, awaiting acknowledgment")
             return True
 
         except Exception as e:
@@ -522,8 +527,18 @@ class STTService:
         try:
             logger.info(f"👂 Started STT receive loop for session {session_id}")
 
+            # Batch 2.3: Track time between WhisperX messages to detect silent disconnects
+            last_message_time = time.time()
+
             async for message in connection.websocket:
-                connection.last_activity = time.time()
+                # Batch 2.3: Check for long gaps between messages
+                current_time = time.time()
+                gap_duration = current_time - last_message_time
+                if gap_duration > 10.0:  # Warn on >10s gaps
+                    logger.warn(f"⚠️ [STT_GAP] Long gap between WhisperX messages: {gap_duration:.1f}s (session={session_id})")
+
+                last_message_time = current_time
+                connection.last_activity = current_time
                 await self._handle_message(session_id, message)
 
         except websockets.exceptions.ConnectionClosed:
@@ -570,6 +585,13 @@ class STTService:
             elif msg_type == 'final':
                 # Final transcription result
                 text = data.get('text', '')
+
+                # Batch 2.3: Track finalize acknowledgment
+                if hasattr(connection, 'finalize_sent_time') and not connection.finalize_acknowledged:
+                    ack_latency = time.time() - connection.finalize_sent_time
+                    connection.finalize_acknowledged = True
+                    logger.info(f"✅ [STT_FINALIZE] WhisperX acknowledged finalize after {ack_latency:.3f}s")
+
                 logger.info(f"✅ STT Final (session={session_id}): \"{text or '(empty)'}\"")
 
                 self.total_transcriptions += 1
