@@ -285,8 +285,14 @@ export function MetricsPanel() {
 
             <div className="space-y-1">
               <div className="text-xs text-muted-foreground">Transcription Duration</div>
-              <div className="text-xl font-semibold text-foreground">
+              <div className={`text-xl font-semibold ${getLatencyColor(metrics?.transcriptionDuration?.avg || 0, 'moderate')}`}>
                 {formatLatency(metrics?.transcriptionDuration?.avg || 0)}
+              </div>
+              <div className="h-2 w-full bg-muted rounded overflow-hidden">
+                <div
+                  className={`h-full ${getLatencyColor(metrics?.transcriptionDuration?.avg || 0, 'moderate').replace('text-', 'bg-')}`}
+                  style={{ width: `${Math.min((metrics?.transcriptionDuration?.avg || 0) * 20, 100)}%` }}
+                />
               </div>
               <div className="text-xs text-muted-foreground">P95: {formatLatency(metrics?.transcriptionDuration?.p95 || 0)}</div>
             </div>
