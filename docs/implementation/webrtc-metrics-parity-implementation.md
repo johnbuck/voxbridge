@@ -79,10 +79,21 @@ self.t_audio_complete = None        # TTS audio streaming complete
 
 ### Phase 4: TTS Generation Metrics (1 metric)
 
-**Metric 8: TTS Generation Latency** (Lines 1323-1325)
+**Metric 8: TTS Generation Latency** (Lines 1332-1333)
 - **Location**: After TTS audio synthesis complete
 - **Calculation**: `t_complete - t_tts_start`
 - **Log**: `⏱️ LATENCY [WebRTC - TTS Generation]: X.XXms`
+
+### Phase 4.5: Audio Delivery Metrics (1 metric)
+
+**Metric 8.5: Audio Streaming Duration** (Lines 1335-1341)
+- **Location**: After all audio chunks streamed to browser
+- **Calculation**: `t_last_chunk_sent - t_first_chunk_sent`
+- **Log**: `⏱️ LATENCY [WebRTC - Audio Streaming Duration]: X.XXms (first chunk → last chunk delivered to browser)`
+- **Purpose**: WebRTC equivalent of Discord's playback duration metric
+  - **Discord**: Measures server-side audio playback duration (how long audio plays through voice channel)
+  - **WebRTC**: Measures client-side audio streaming duration (how long to deliver all chunks to browser)
+- **Note**: Both measure the final audio delivery phase, adapted to their respective architectures
 
 ### Phase 5: End-to-End Metrics (1 metric)
 
@@ -158,7 +169,7 @@ logger.info("📊 Broadcast full metrics snapshot to frontend")
 | Phase 1: Speech → Transcription | 4/4 | 100% ✅ |
 | Phase 2: AI Processing | 2/3 | 67% (parsing N/A) |
 | Phase 3: TTS Generation | 3/3 | 100% ✅ |
-| Phase 4: Audio Playback | 0/2 | 0% (N/A for WebRTC) |
+| Phase 4: Audio Playback | 1/2 | 50% (streaming duration ✅, FFmpeg N/A) |
 | End-to-End | 2/2 | 100% ✅ |
 | Counters | 2/2 | 100% ✅ |
 | **Total** | **21/21** | **100%** ✅ |
@@ -268,6 +279,12 @@ if (message.event === 'metrics_updated') {
    - **Impact**: 1 metric skipped (n8n webhook-specific)
    - **Discord Coverage**: 100% (21/21)
    - **WebRTC Coverage**: 95% (20/21, excluding N/A metric)
+
+3. **Audio Playback Metric Difference**: Discord vs WebRTC measure different aspects of audio delivery
+   - **Discord**: Measures server-side playback duration (via `voice_client.is_playing()` loop)
+   - **WebRTC**: Measures audio streaming duration (first chunk → last chunk delivered to browser)
+   - **Impact**: Both are valid metrics, just adapted to their respective architectures
+   - **Note**: FFmpeg processing latency is Discord-only (not applicable for WebRTC browser streaming)
 
 ## Next Steps
 

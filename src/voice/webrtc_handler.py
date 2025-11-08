@@ -1276,9 +1276,11 @@ class WebRTCVoiceHandler:
             # Stream audio callback
             first_byte = True
             total_bytes = 0
+            t_first_chunk_sent = None
+            t_last_chunk_sent = None
 
             async def on_audio_chunk(chunk: bytes):
-                nonlocal first_byte, total_bytes
+                nonlocal first_byte, total_bytes, t_first_chunk_sent, t_last_chunk_sent
 
                 # Log first byte latency (critical UX metric)
                 if first_byte:
@@ -1300,6 +1302,11 @@ class WebRTCVoiceHandler:
                 if self.is_active:
                     await self.websocket.send_bytes(chunk)
                     total_bytes += len(chunk)
+
+                    # Track streaming timing (for audio delivery metric)
+                    if t_first_chunk_sent is None:
+                        t_first_chunk_sent = time.time()
+                    t_last_chunk_sent = time.time()
 
             # Synthesize with streaming via TTSService
             voice_id = agent.tts_voice or os.getenv('CHATTERBOX_VOICE_ID', 'default')
@@ -1324,6 +1331,14 @@ class WebRTCVoiceHandler:
             # ⏱️ METRIC 8: TTS Generation Latency
             self.metrics.record_tts_generation_latency(total_latency_s)
             logger.info(f"⏱️ LATENCY [WebRTC - TTS Generation]: {total_latency_s * 1000:.2f}ms")
+
+            # ⏱️ Audio Streaming Duration (WebRTC audio delivery metric, analogous to Discord playback)
+            # Discord: Measures playback duration (server-side audio playing through voice channel)
+            # WebRTC: Measures streaming duration (time to deliver all chunks to browser)
+            if t_first_chunk_sent and t_last_chunk_sent:
+                streaming_duration = t_last_chunk_sent - t_first_chunk_sent
+                self.metrics.record_audio_playback_latency(streaming_duration)
+                logger.info(f"⏱️ LATENCY [WebRTC - Audio Streaming Duration]: {streaming_duration * 1000:.2f}ms (first chunk → last chunk delivered to browser)")
 
             # ⏱️ METRIC 9: Total Pipeline Latency (end-to-end: user speaks → audio complete)
             self.t_audio_complete = time.time()
