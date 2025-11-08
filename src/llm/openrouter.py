@@ -207,50 +207,77 @@ class OpenRouterProvider(LLMProvider):
 
         Yields:
             str: Content deltas from SSE stream
+
+        Raises:
+            LLMTimeoutError: Stream timeout (no data for 60s)
         """
         line_count = 0
         content_chunks = 0
+        all_chunks = []  # Store chunks for debugging empty responses
+        MAX_STREAM_TIME = 60.0  # Maximum time to wait for stream data
 
-        async for line in response.aiter_lines():
-            line = line.strip()
-            line_count += 1
+        try:
+            async with asyncio.timeout(MAX_STREAM_TIME):
+                async for line in response.aiter_lines():
+                    line = line.strip()
+                    line_count += 1
 
-            # Skip empty lines and non-data lines
-            if not line or not line.startswith("data: "):
-                continue
+                    # Skip empty lines and non-data lines
+                    if not line or not line.startswith("data: "):
+                        continue
 
-            # Extract data payload
-            data = line[6:]  # Remove "data: " prefix
+                    # Extract data payload
+                    data = line[6:]  # Remove "data: " prefix
 
-            # Check for stream end marker
-            if data == "[DONE]":
-                logger.info(f"🤖 LLM [openrouter]: SSE stream ended after {line_count} lines, {content_chunks} content chunks")
-                break
+                    # Check for stream end marker
+                    if data == "[DONE]":
+                        logger.info(f"🤖 LLM [openrouter]: SSE stream ended after {line_count} lines, {content_chunks} content chunks")
 
-            # Parse JSON chunk
-            try:
-                chunk = json.loads(data)
+                        # Enhanced debugging: Log full stream when 0 content chunks received
+                        if content_chunks == 0:
+                            logger.error(f"🤖 LLM [openrouter]: ❌ EMPTY RESPONSE - Received {line_count} SSE lines but 0 content chunks!")
+                            logger.error(f"🤖 LLM [openrouter]: First 5 chunks (for debugging):")
+                            for i, stored_chunk in enumerate(all_chunks[:5], 1):
+                                logger.error(f"🤖 LLM [openrouter]:   Chunk #{i}: {json.dumps(stored_chunk, indent=2)[:500]}")
+                            logger.error(f"🤖 LLM [openrouter]: This may indicate:")
+                            logger.error(f"🤖 LLM [openrouter]:   1. Content in different field (check chunk structure above)")
+                            logger.error(f"🤖 LLM [openrouter]:   2. Model safety filter triggered")
+                            logger.error(f"🤖 LLM [openrouter]:   3. OpenRouter API issue")
 
-                # Debug: Log first chunk structure
-                if line_count <= 2:
-                    logger.info(f"🤖 LLM [openrouter]: SSE chunk #{line_count} structure: {json.dumps(chunk)[:250]}")
+                        break
 
-                # Extract content delta
-                choices = chunk.get("choices", [])
-                if choices:
-                    delta = choices[0].get("delta", {})
-                    content = delta.get("content", "")
+                    # Parse JSON chunk
+                    try:
+                        chunk = json.loads(data)
+                        all_chunks.append(chunk)  # Store for debugging
 
-                    if content:
-                        content_chunks += 1
-                        yield content
-                    elif line_count <= 5:
-                        # Debug: Log why content is empty (first 5 chunks only)
-                        logger.info(f"🤖 LLM [openrouter]: Empty content in chunk #{line_count} (delta keys: {list(delta.keys())})")
+                        # Debug: Log first chunk structure
+                        if line_count <= 2:
+                            logger.info(f"🤖 LLM [openrouter]: SSE chunk #{line_count} structure: {json.dumps(chunk)[:250]}")
 
-            except json.JSONDecodeError as e:
-                logger.warning(f"🤖 LLM [openrouter]: Failed to parse SSE chunk: {e}, data: {data[:100]}")
-                continue
+                        # Extract content delta
+                        choices = chunk.get("choices", [])
+                        if choices:
+                            delta = choices[0].get("delta", {})
+                            content = delta.get("content", "")
+
+                            if content:
+                                content_chunks += 1
+                                yield content
+                            elif line_count <= 5:
+                                # Debug: Log why content is empty (first 5 chunks only)
+                                logger.info(f"🤖 LLM [openrouter]: Empty content in chunk #{line_count} (delta keys: {list(delta.keys())})")
+
+                    except json.JSONDecodeError as e:
+                        logger.warning(f"🤖 LLM [openrouter]: Failed to parse SSE chunk: {e}, data: {data[:100]}")
+                        continue
+
+        except asyncio.TimeoutError:
+            logger.error(f"🤖 LLM [openrouter]: ⏱️ SSE stream timeout after {MAX_STREAM_TIME}s (received {line_count} lines, {content_chunks} content chunks)")
+            if content_chunks == 0:
+                raise LLMTimeoutError(f"OpenRouter SSE stream timeout: No content received in {MAX_STREAM_TIME}s")
+            # If we got some content before timeout, log warning but don't raise (partial response is acceptable)
+            logger.warning(f"🤖 LLM [openrouter]: Partial response received before timeout ({content_chunks} chunks)")
 
     async def health_check(self) -> bool:
         """

@@ -183,7 +183,7 @@ export function VoxbridgePage() {
       return result;
     },
     enabled: !!activeSessionId,
-    refetchInterval: 30000, // Poll every 30 seconds to catch any drift (WebSocket provides real-time updates)
+    refetchInterval: 5000, // Fix #4: Poll every 5 seconds for better UX responsiveness (WebSocket provides real-time updates)
   });
 
   // Get active session details
@@ -212,15 +212,16 @@ export function VoxbridgePage() {
 
       switch (message.event) {
         case 'partial_transcript':
-          if (!listeningStartTimeRef.current) {
-            logUIEvent('🎤', 'LISTENING (WebRTC)', `Started (partial: "${message.data.text?.substring(0, 30)}...")`, undefined, true);
-          }
+          // Only show listening indicator if we have actual transcript text AND connection is active
+          if (message.data.text && connectionState === 'connected') {
+            if (!listeningStartTimeRef.current) {
+              logUIEvent('🎤', 'LISTENING (WebRTC)', `Started (partial: "${message.data.text?.substring(0, 30)}...")`, undefined, true);
+              listeningStartTimeRef.current = Date.now();
+            }
 
-          // Update voice chat partial transcript
-          setVoicePartialTranscript(message.data.text || '');
-          setIsListening(true);
-          if (!listeningStartTimeRef.current) {
-            listeningStartTimeRef.current = Date.now();
+            // Update voice chat partial transcript
+            setVoicePartialTranscript(message.data.text);
+            setIsListening(true);
           }
           break;
 
@@ -355,10 +356,43 @@ export function VoxbridgePage() {
     onBinaryMessage: handleBinaryMessage,
     onError: handleAudioError,
     onServiceError: handleServiceError, // Phase 2: Service error handling
+    onRecordingStop: () => {
+      // Fix #2: Clear listening state when recording stops
+      setIsListening(false);
+      setVoicePartialTranscript('');
+      listeningStartTimeRef.current = null;
+    },
     autoStart: false,
     timeslice: 100,
   });
 
+  // Fix #2 (Enhancement): Clear listening state when WebRTC connection drops
+  useEffect(() => {
+    if (connectionState === 'disconnected' || connectionState === 'error') {
+      // Connection lost - clear any stale listening state
+      setIsListening(false);
+      setVoicePartialTranscript('');
+      listeningStartTimeRef.current = null;
+      setListeningDuration(0);
+    }
+  }, [connectionState]);
+
+  // Fix #2 (Enhancement): Auto-clear stale listening state after timeout (safety net)
+  useEffect(() => {
+    if (!isListening) return;
+
+    // Max listening duration: 60s (matches backend MAX_UTTERANCE_TIME_MS + buffer)
+    const MAX_LISTENING_MS = 60000;
+    const timeout = setTimeout(() => {
+      console.warn('⚠️ Listening state stuck for 60s - auto-clearing (safety net)');
+      setIsListening(false);
+      setVoicePartialTranscript('');
+      listeningStartTimeRef.current = null;
+      setListeningDuration(0);
+    }, MAX_LISTENING_MS);
+
+    return () => clearTimeout(timeout);
+  }, [isListening]);
 
   // Handle WebSocket messages (Discord conversation monitoring - for metrics updates)
   const handleMessage = useCallback((message: any) => {

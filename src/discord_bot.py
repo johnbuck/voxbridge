@@ -1212,7 +1212,14 @@ async def start_bot():
 
 async def start_api():
     """Start FastAPI server (from API module)"""
-    config = uvicorn.Config(app, host="0.0.0.0", port=PORT, log_level="info")
+    config = uvicorn.Config(
+        app,
+        host="0.0.0.0",
+        port=PORT,
+        log_level="info",
+        ws_ping_interval=300,  # Send keepalive ping every 5 minutes
+        ws_ping_timeout=60,    # Wait up to 60 seconds for pong response
+    )
     server = uvicorn.Server(config)
 
     logger.info("=" * 60)

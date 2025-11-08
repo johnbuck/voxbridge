@@ -11,6 +11,7 @@ Design Patterns:
 - Observer pattern: Callback mechanism for streaming chunks
 """
 
+import asyncio
 import logging
 import os
 import time
@@ -504,33 +505,44 @@ class LLMService:
 
         Returns:
             str: Complete response text
+
+        Raises:
+            LLMTimeoutError: Service layer timeout (90s)
         """
-        if not stream:
-            # Non-streaming mode: Collect all chunks
-            chunks = []
-            async for chunk in provider.generate_stream(request):
-                chunks.append(chunk)
-            return "".join(chunks)
+        SERVICE_TIMEOUT = 90.0  # Service layer timeout (higher than provider's 60s)
 
-        # Streaming mode: Yield chunks to callback
-        chunks = []
-        async for chunk in provider.generate_stream(request):
-            chunks.append(chunk)
+        try:
+            async with asyncio.timeout(SERVICE_TIMEOUT):
+                if not stream:
+                    # Non-streaming mode: Collect all chunks
+                    chunks = []
+                    async for chunk in provider.generate_stream(request):
+                        chunks.append(chunk)
+                    return "".join(chunks)
 
-            if callback:
-                # Call callback with chunk (supports both sync and async callbacks)
-                if hasattr(callback, "__call__"):
-                    try:
-                        result = callback(chunk)
-                        # If callback is async, await it
-                        if hasattr(result, "__await__"):
-                            await result
-                    except Exception as e:
-                        logger.warning(
-                            f"🤖 LLM Service: Callback error (continuing): {e}"
-                        )
+                # Streaming mode: Yield chunks to callback
+                chunks = []
+                async for chunk in provider.generate_stream(request):
+                    chunks.append(chunk)
 
-        return "".join(chunks)
+                    if callback:
+                        # Call callback with chunk (supports both sync and async callbacks)
+                        if hasattr(callback, "__call__"):
+                            try:
+                                result = callback(chunk)
+                                # If callback is async, await it
+                                if hasattr(result, "__await__"):
+                                    await result
+                            except Exception as e:
+                                logger.warning(
+                                    f"🤖 LLM Service: Callback error (continuing): {e}"
+                                )
+
+                return "".join(chunks)
+
+        except asyncio.TimeoutError:
+            logger.error(f"🤖 LLM Service: ⏱️ Service layer timeout after {SERVICE_TIMEOUT}s")
+            raise LLMTimeoutError(f"LLM service timeout: No response in {SERVICE_TIMEOUT}s")
 
     async def get_provider_status(self) -> Dict[str, bool]:
         """

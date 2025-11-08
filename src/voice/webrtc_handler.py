@@ -95,12 +95,19 @@ class WebRTCVoiceHandler:
         self.utterance_start_time: Optional[float] = None  # Track utterance start for max timeout
         self.silence_task: Optional[asyncio.Task] = None
 
+        # LLM task tracking (Phase 3: Prevent orphaned tasks)
+        self.llm_task: Optional[asyncio.Task] = None
+
         # WebM continuous stream decoding (maintains Opus codec state)
         self.frames_sent_to_whisperx: int = 0  # Track frames already sent (to skip on next decode)
 
         # Transcription state
         self.current_transcript = ""
         self.is_finalizing = False
+
+        # Final transcript tracking (fix for transcript duplication issue)
+        self.final_transcript_ready = False  # Flag: WhisperX sent final transcript
+        self.final_transcript = ""  # Stores final transcript from WhisperX
 
         # Bot speaking state (blocks input during TTS playback)
         self.is_bot_speaking = False
@@ -219,24 +226,20 @@ class WebRTCVoiceHandler:
                     logger.info(f"⏱️ LATENCY [connection → first transcript]: {latency_s:.3f}s")
 
                 if not is_final:
-                    # Partial transcript
-                    logger.info(f"📝 [TRANSCRIPT] Storing PARTIAL in self.current_transcript: \"{text}\"")
+                    # WhisperX sends FULL transcript so far in each partial (not delta)
+                    # Just use latest partial directly - no accumulation needed
+                    logger.info(f"📝 [TRANSCRIPT] Received PARTIAL: \"{text}\"")
                     self.current_transcript = text
+
                     await self._send_partial_transcript(text)
                 else:
-                    # Final transcript - store it (silence monitor will trigger finalization)
-                    prev_transcript = self.current_transcript
-                    logger.info(f"✅ [TRANSCRIPT] Storing FINAL in self.current_transcript: \"{text}\"")
-                    self.current_transcript = text
+                    # ✅ FIX: Store WhisperX final transcript and set flag
+                    # This is the REAL final transcript from WhisperX's full session_buffer
+                    logger.info(f"✅ [TRANSCRIPT] Received FINAL from WhisperX: \"{text}\" (length={len(text)} chars)")
+                    self.final_transcript = text
+                    self.final_transcript_ready = True
 
-                    # DIAGNOSTIC: Check if final differs from previous partial
-                    if prev_transcript and prev_transcript != text:
-                        logger.warning(f"⚠️ [TRANSCRIPT] FINAL differs from previous PARTIAL!")
-                        logger.warning(f"   - Previous PARTIAL: \"{prev_transcript}\"")
-                        logger.warning(f"   - Current FINAL:    \"{text}\"")
-
-                    # Note: Silence monitor calls _finalize_transcription() when silence detected
-                    # Do NOT call finalization here to avoid race conditions!
+                    # Note: _finalize_transcription() waits for this flag before proceeding
 
             # Connect to STTService
             whisper_url = os.getenv('WHISPER_SERVER_URL', 'ws://whisperx:4901')
@@ -288,6 +291,9 @@ class WebRTCVoiceHandler:
                 webm_chunk = await self.websocket.receive_bytes()
                 self.chunks_received += 1
 
+                # ✅ CHECKPOINT 2: WebSocket Receipt
+                logger.info(f"🔌 [WS_RECV] Received {len(webm_chunk)} bytes (chunk #{self.chunks_received}), session={self.session_id}")
+
                 # Block audio input while bot is speaking (prevent crosstalk)
                 if self.is_bot_speaking:
                     logger.debug(f"🤖 [AUDIO_LOOP] Bot is speaking - discarding user audio chunk #{self.chunks_received}")
@@ -308,6 +314,24 @@ class WebRTCVoiceHandler:
                 # Accumulate all chunks to maintain Opus codec state across the entire stream
                 # Opus is stateful - each frame depends on previous frames' decoder state
                 self.webm_buffer.extend(webm_chunk)
+                logger.debug(f"📦 [WS_RECV] WebM buffer size: {len(self.webm_buffer)} bytes")
+
+                # Buffer management: Prevent memory leak from unbounded growth
+                # Max ~60 seconds of continuous audio before finalizing
+                MAX_BUFFER_SIZE = 500000  # 500KB (~60s at 48kHz stereo)
+                if len(self.webm_buffer) > MAX_BUFFER_SIZE:
+                    logger.info(f"🏁 Buffer limit reached ({len(self.webm_buffer)} bytes > {MAX_BUFFER_SIZE}) - finalizing current utterance")
+
+                    # Finalize current utterance (this will trigger transcription)
+                    await self.stt_service.finalize_transcript(self.session_id)
+
+                    # Clear buffer and reset to start fresh
+                    self.webm_buffer = bytearray()
+                    self.frames_sent_to_whisperx = 0
+                    logger.info(f"✅ Buffer cleared and reset - ready for new utterance")
+
+                    # Skip processing this chunk since we just finalized
+                    continue
 
                 # Decode entire accumulated buffer to maintain codec state
                 # Skip frames we've already sent to avoid duplicates
@@ -335,6 +359,9 @@ class WebRTCVoiceHandler:
 
                 # Send new PCM data to WhisperX (if extraction successful)
                 if pcm_data:
+                    # ✅ CHECKPOINT 4: WhisperX Send
+                    logger.info(f"🎤 [WHISPER_SEND] Sending {len(pcm_data)} bytes PCM to WhisperX, session={self.session_id}")
+
                     success = await self.stt_service.send_audio(
                         session_id=self.session_id,
                         audio_data=pcm_data,
@@ -342,7 +369,9 @@ class WebRTCVoiceHandler:
                     )
 
                     if not success:
-                        logger.warning(f"⚠️ Failed to send PCM audio to STTService")
+                        logger.warning(f"⚠️ [WHISPER_SEND] Failed to send PCM audio to STTService")
+                    else:
+                        logger.debug(f"✅ [WHISPER_SEND] Successfully sent to STTService")
 
         except WebSocketDisconnect:
             logger.info(f"🔌 Browser disconnected")
@@ -366,6 +395,9 @@ class WebRTCVoiceHandler:
         """
         if not self.webm_buffer:
             return b''
+
+        # ✅ CHECKPOINT 3: PyAV Decode Attempt
+        logger.debug(f"🎵 [DECODE] Attempting PyAV decode, buffer={len(self.webm_buffer)} bytes")
 
         try:
             # Decode entire accumulated buffer (maintains codec state)
@@ -416,29 +448,24 @@ class WebRTCVoiceHandler:
                     logger.info(f"🔊 PCM quality: max_amp={max_amp}/32767 ({max_amp/32767*100:.1f}%), "
                                f"avg_amp={avg_amp:.0f}, silent={max_amp < 100}")
 
-                logger.info(f"✅ Decoded {len(new_pcm_chunks)} new frames from {len(self.webm_buffer)} bytes "
-                           f"(total {len(all_pcm_chunks)} frames, skipped {len(all_pcm_chunks) - len(new_pcm_chunks)})")
+                logger.info(f"✅ [DECODE] Decoded {len(new_pcm_chunks)} new frames from {len(self.webm_buffer)} bytes "
+                           f"(total {len(all_pcm_chunks)} frames, skipped {len(all_pcm_chunks) - len(new_pcm_chunks)}) → {len(pcm_data)} bytes PCM")
 
-                # Buffer management: Trim if too large to prevent memory leak
-                MAX_BUFFER_SIZE = 500000  # 500KB (~2.6 seconds at 48kHz stereo)
-                if len(self.webm_buffer) > MAX_BUFFER_SIZE:
-                    # Keep only recent data to maintain codec state
-                    old_size = len(self.webm_buffer)
-                    self.webm_buffer = self.webm_buffer[-MAX_BUFFER_SIZE:]
-                    self.frames_sent_to_whisperx = 0  # Reset frame counter after trim
-                    logger.info(f"🧹 Trimmed buffer: {old_size} → {len(self.webm_buffer)} bytes, reset frame counter")
+                # Note: Buffer management now handled in main audio loop (see line 319-334)
+                # This ensures we finalize utterances gracefully instead of breaking WebM decode
 
                 return pcm_data
 
             return b''
 
-        except (av.error.InvalidDataError, av.error.ValueError):
+        except (av.error.InvalidDataError, av.error.ValueError) as e:
             # Incomplete container data - keep buffering
-            logger.debug(f"⏳ Incomplete WebM data, buffering... ({len(self.webm_buffer)} bytes)")
+            # Note: This should be rare after buffer management fix
+            logger.warning(f"⏳ [DECODE] Incomplete WebM data ({type(e).__name__}), buffering... ({len(self.webm_buffer)} bytes)")
             return b''
 
         except Exception as e:
-            logger.warning(f"⚠️ WebM decode error: {type(e).__name__}: {e}")
+            logger.error(f"❌ [DECODE] PyAV decode failed: {type(e).__name__}: {e}, buffer={len(self.webm_buffer)} bytes")
             return b''
 
     def _decode_webm_chunk(self, chunk: bytes) -> bytes:
@@ -669,28 +696,39 @@ class WebRTCVoiceHandler:
 
                     # If audio is recent (less than silence threshold), user started speaking again
                     if elapsed_ms < self.silence_threshold_ms:
-                        logger.info(f"🔄 [SILENCE_MONITOR] New audio after finalization - starting new conversation turn!")
+                        # ✅ CHECKPOINT 5: State Transition (Auto-Restart)
+                        logger.info(f"🔄 [STATE] New audio detected after finalization ({elapsed_ms:.0f}ms ago) - auto-restarting for new conversation turn!")
 
                         # Reset state for new turn
                         finalized = False
                         last_finalization_time = time.time()
                         self.current_transcript = ""
                         self.is_finalizing = False
+                        # ✅ FIX: Reset final transcript flags for new turn
+                        self.final_transcript_ready = False
+                        self.final_transcript = ""
                         self.utterance_start_time = self.last_audio_time  # New utterance start
                         iteration = 0
 
-                        logger.debug(f"🔄 [SILENCE_MONITOR] State reset complete - ready for new utterance")
+                        logger.info(f"✅ [STATE] Auto-restart complete - ready to accept new utterance (monitoring active)")
 
                 # Check max utterance timeout (absolute limit) - only if not finalized
                 if not finalized and self.utterance_start_time:
                     elapsed_ms = (time.time() - self.utterance_start_time) * 1000
 
-                    if elapsed_ms >= self.max_utterance_time_ms:
+                    # ✅ FIX: Only finalize if we have actual speech (non-empty partial transcript)
+                    if elapsed_ms >= self.max_utterance_time_ms and self.current_transcript.strip():
                         if not self.is_finalizing:
                             logger.warning(f"[SILENCE_MONITOR] ⏱️ Max utterance time ({self.max_utterance_time_ms}ms) exceeded - forcing finalization")
 
-                            # DIAGNOSTIC: Log transcript that will be finalized
-                            logger.info(f"📝 [SILENCE_MONITOR] Will finalize with current_transcript: \"{self.current_transcript[:100]}{'...' if len(self.current_transcript) > 100 else ''}\" (length={len(self.current_transcript)} chars)")
+                            # DIAGNOSTIC: Log current partial transcript
+                            logger.info(f"📝 [SILENCE_MONITOR] Current partial transcript: \"{self.current_transcript[:100]}{'...' if len(self.current_transcript) > 100 else ''}\" (length={len(self.current_transcript)} chars)")
+
+                            # ✅ FIX: Tell WhisperX to finalize (process full session_buffer)
+                            logger.info(f"🏁 [FINALIZE] Requesting final transcript from WhisperX (max utterance timeout, session={self.session_id})")
+                            success = await self.stt_service.finalize_transcript(self.session_id)
+                            if not success:
+                                logger.warning(f"⚠️ [FINALIZE] Failed to trigger WhisperX finalize")
 
                             # MULTI-TURN MODE: Don't send stop_listening - keep MediaRecorder running!
                             # Frontend will show "Ready for next question" automatically
@@ -709,12 +747,20 @@ class WebRTCVoiceHandler:
                 if not finalized and self.last_audio_time:
                     silence_duration_ms = (time.time() - self.last_audio_time) * 1000
 
-                    if silence_duration_ms >= self.silence_threshold_ms:
+                    # ✅ FIX: Only finalize if we have actual speech (non-empty partial transcript)
+                    # This prevents spurious finalizations from background noise before user speaks
+                    if silence_duration_ms >= self.silence_threshold_ms and self.current_transcript.strip():
                         if not self.is_finalizing:
                             logger.info(f"[SILENCE_MONITOR] 🤫 Silence detected ({int(silence_duration_ms)}ms) - finalizing")
 
-                            # DIAGNOSTIC: Log transcript that will be finalized
-                            logger.info(f"📝 [SILENCE_MONITOR] Will finalize with current_transcript: \"{self.current_transcript[:100]}{'...' if len(self.current_transcript) > 100 else ''}\" (length={len(self.current_transcript)} chars)")
+                            # DIAGNOSTIC: Log current partial transcript
+                            logger.info(f"📝 [SILENCE_MONITOR] Current partial transcript: \"{self.current_transcript[:100]}{'...' if len(self.current_transcript) > 100 else ''}\" (length={len(self.current_transcript)} chars)")
+
+                            # ✅ FIX: Tell WhisperX to finalize (process full session_buffer)
+                            logger.info(f"🏁 [FINALIZE] Requesting final transcript from WhisperX (session={self.session_id})")
+                            success = await self.stt_service.finalize_transcript(self.session_id)
+                            if not success:
+                                logger.warning(f"⚠️ [FINALIZE] Failed to trigger WhisperX finalize")
 
                             # MULTI-TURN MODE: Don't send stop_listening - keep MediaRecorder running!
                             # Frontend will show "Ready for next question" automatically
@@ -737,19 +783,21 @@ class WebRTCVoiceHandler:
         """
         Finalize transcription and route to LLM
 
-        IMPORTANT: Single-trigger pattern (silence monitor only)
-        - STT callback stores transcript in self.current_transcript
-        - Silence monitor calls this method when silence detected
-        - Do NOT call from STT callback to avoid race conditions
+        IMPORTANT: Wait for WhisperX final transcript pattern (matches Discord)
+        - Silence monitor calls stt_service.finalize_transcript() when silence detected
+        - WhisperX processes full session_buffer and sends final transcript
+        - STT callback sets self.final_transcript_ready flag
+        - This method waits for flag (with timeout), then uses final transcript
 
         Steps:
-        1. Get final transcript (stored in self.current_transcript)
-        2. Send final_transcript event to browser
-        3. Save user message via ConversationService
-        4. Get conversation context
-        5. Route to LLMService with streaming
-        6. Save AI response via ConversationService
-        7. Generate TTS via TTSService
+        1. Wait for WhisperX final transcript (with 2s timeout)
+        2. Use final transcript from WhisperX (NOT current_transcript)
+        3. Send final_transcript event to browser
+        4. Save user message via ConversationService
+        5. Get conversation context
+        6. Route to LLMService with streaming
+        7. Save AI response via ConversationService
+        8. Generate TTS via TTSService
         """
         if self.is_finalizing:
             return
@@ -757,15 +805,35 @@ class WebRTCVoiceHandler:
         self.is_finalizing = True
 
         try:
-            # Use current transcript from STT callback
-            transcript = self.current_transcript.strip()
+            # ✅ FIX: Wait for WhisperX final transcript (with timeout)
+            MAX_WAIT_TIME = 2.0  # 2 seconds timeout
+            wait_start = time.time()
+
+            logger.info(f"⏳ [FINALIZE] Waiting for WhisperX final transcript (timeout={MAX_WAIT_TIME}s)...")
+
+            while not self.final_transcript_ready and (time.time() - wait_start) < MAX_WAIT_TIME:
+                await asyncio.sleep(0.05)  # Check every 50ms
+
+            # Check if we got the final transcript
+            if self.final_transcript_ready:
+                wait_duration = time.time() - wait_start
+                logger.info(f"✅ [FINALIZE] Final transcript received after {wait_duration:.3f}s")
+                transcript = self.final_transcript.strip()
+            else:
+                # Timeout - fall back to last partial
+                wait_duration = time.time() - wait_start
+                logger.warning(f"⏱️ [FINALIZE] Timeout waiting for final transcript ({wait_duration:.3f}s) - using last partial")
+                transcript = self.current_transcript.strip()
 
             # DIAGNOSTIC: Log the transcript being finalized
-            logger.info(f"📝 [FINALIZE] Starting finalization with transcript: \"{transcript}\" (length={len(transcript)} chars)")
+            logger.info(f"📝 [FINALIZE] Using transcript: \"{transcript[:100]}{'...' if len(transcript) > 100 else ''}\" (length={len(transcript)} chars, from_final={self.final_transcript_ready})")
 
             if not transcript:
                 logger.info("📝 Empty transcript - skipping LLM processing")
                 self.is_finalizing = False
+                # Reset flags for next turn
+                self.final_transcript_ready = False
+                self.final_transcript = ""
                 return
 
             # DIAGNOSTIC: Warn if transcript seems suspiciously short
@@ -794,17 +862,31 @@ class WebRTCVoiceHandler:
             agent = await self.conversation_service.get_agent_config(self.session_id)
             logger.info(f"🤖 Using agent: {agent.name} (provider: {agent.llm_provider}, model: {agent.llm_model})")
 
-            # Route to LLM
-            await self._handle_llm_response(transcript, agent)
+            # Route to LLM (Phase 3: Track as task for cancellation)
+            self.llm_task = asyncio.create_task(self._handle_llm_response(transcript, agent))
+
+            try:
+                await self.llm_task
+            except asyncio.CancelledError:
+                logger.info(f"🛑 LLM task cancelled during generation")
+                raise
+            finally:
+                self.llm_task = None  # Clear task reference
 
             # Reset state for next turn
             self.current_transcript = ""
             self.is_finalizing = False
+            # ✅ FIX: Reset final transcript flags for next turn
+            self.final_transcript_ready = False
+            self.final_transcript = ""
 
         except Exception as e:
             logger.error(f"❌ Error finalizing transcription: {e}", exc_info=True)
             await self._send_error(f"Error processing transcript: {str(e)}")
             self.is_finalizing = False
+            # Reset flags even on error
+            self.final_transcript_ready = False
+            self.final_transcript = ""
 
     async def _handle_llm_response(self, transcript: str, agent):
         """
@@ -829,6 +911,12 @@ class WebRTCVoiceHandler:
                 {'role': msg.role, 'content': msg.content}
                 for msg in messages
             ]
+
+            # DIAGNOSTIC: Log the full conversation context being sent to LLM
+            logger.info(f"📋 [LLM_CONTEXT] Building LLM request with {len(llm_messages)} messages:")
+            for idx, msg in enumerate(llm_messages):
+                content_preview = msg['content'][:80] + '...' if len(msg['content']) > 80 else msg['content']
+                logger.info(f"   [{idx}] {msg['role']}: \"{content_preview}\"")
 
             # Build LLM config
             llm_config = LLMConfig(
@@ -933,19 +1021,23 @@ class WebRTCVoiceHandler:
             latency_s = t_llm_complete - t_llm_start
             logger.info(f"⏱️ LATENCY [total LLM generation]: {latency_s:.3f}s")
 
-            # Save AI message to conversation
-            logger.info(f"💾 [DB_SAVE] Saving AI response to database: session={self.session_id}, role=assistant, length={len(full_response)} chars")
-            await self.conversation_service.add_message(
-                session_id=self.session_id,
-                role="assistant",
-                content=full_response,
-                metadata={
-                    'llm_provider': agent.llm_provider,
-                    'llm_model': agent.llm_model,
-                    'latency_s': latency_s
-                }
-            )
-            logger.info(f"✅ [DB_SAVE] Saved AI message to database (ID will be assigned by DB)")
+            # ✅ FIX: Validate response is non-empty before saving
+            if not full_response.strip():
+                logger.warning(f"🚫 [DB_SAVE] Skipping save of empty AI response (session={self.session_id})")
+            else:
+                # Save AI message to conversation
+                logger.info(f"💾 [DB_SAVE] Saving AI response to database: session={self.session_id}, role=assistant, length={len(full_response)} chars")
+                await self.conversation_service.add_message(
+                    session_id=self.session_id,
+                    role="assistant",
+                    content=full_response,
+                    metadata={
+                        'llm_provider': agent.llm_provider,
+                        'llm_model': agent.llm_model,
+                        'latency_s': latency_s
+                    }
+                )
+                logger.info(f"✅ [DB_SAVE] Saved AI message to database (ID will be assigned by DB)")
 
             # Broadcast metrics update to global event stream (for metrics UI)
             await ws_manager.broadcast({
@@ -1153,7 +1245,8 @@ class WebRTCVoiceHandler:
 
             # Re-enable audio input after bot finishes speaking
             self.is_bot_speaking = False
-            logger.info("🤖 Bot speaking state: DISABLED (user audio input re-enabled)")
+            # ✅ CHECKPOINT 5: State Transition (TTS Complete → Listening)
+            logger.info("✅ [STATE] TTS complete → LISTENING state, user audio input re-enabled, ready for next utterance")
 
             # Send bot_speaking state change event (only if still connected)
             if self.is_active:
@@ -1193,6 +1286,17 @@ class WebRTCVoiceHandler:
         logger.info(f"🧹 Cleaning up WebRTC handler for session {self.session_id}")
 
         self.is_active = False
+
+        # Cancel active LLM task (Phase 3: Prevent orphaned tasks)
+        if self.llm_task and not self.llm_task.done():
+            logger.info(f"🛑 Cancelling active LLM task")
+            self.llm_task.cancel()
+            try:
+                await self.llm_task
+            except asyncio.CancelledError:
+                logger.info(f"✅ LLM task cancelled successfully")
+            except Exception as e:
+                logger.warning(f"⚠️ Error awaiting cancelled LLM task: {e}")
 
         # Cancel silence monitoring
         if self.silence_task and not self.silence_task.done():

@@ -124,15 +124,29 @@ export function useAudioPlayback(options: UseAudioPlaybackOptions = {}): UseAudi
 
   const completeAudio = useCallback(async () => {
     console.log(`🔍 DEBUG: completeAudio() called, ${audioChunksRef.current.length} chunks buffered`);
+
+    // Fix #1: Wait for audio chunks to arrive (race condition fix)
+    // tts_complete event may arrive before binary audio chunks due to different TCP buffers
+    const MAX_WAIT_MS = 500;
+    const startTime = Date.now();
+
+    while (audioChunksRef.current.length === 0 && (Date.now() - startTime) < MAX_WAIT_MS) {
+      console.log(`⏳ Waiting for audio chunks... (elapsed: ${Date.now() - startTime}ms)`);
+      await new Promise(resolve => setTimeout(resolve, 50)); // Check every 50ms
+    }
+
     if (audioChunksRef.current.length === 0) {
-      console.warn('⚠️ No audio chunks buffered');
+      const errorMsg = 'No audio data received after waiting 500ms';
+      console.error('❌', errorMsg);
+      options.onError?.(errorMsg);
       return;
     }
 
+    console.log(`✅ Audio chunks arrived after ${Date.now() - startTime}ms`);
     await playAudioChunks(audioChunksRef.current);
     console.log('🔍 DEBUG: playAudioChunks() completed, clearing buffer');
     audioChunksRef.current = [];
-  }, [playAudioChunks]);
+  }, [playAudioChunks, options]);
 
   const stop = useCallback(() => {
     if (audioRef.current) {

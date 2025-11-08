@@ -81,6 +81,7 @@ export interface UseWebRTCAudioOptions {
   onBinaryMessage?: (data: Uint8Array) => void;  // NEW: Binary audio chunks
   onError?: (error: string) => void;
   onServiceError?: (error: ServiceErrorEvent) => void; // NEW: Service error events
+  onRecordingStop?: () => void; // NEW: Callback when recording stops (for cleanup)
   autoStart?: boolean;
   timeslice?: number; // milliseconds between audio chunks
 }
@@ -102,6 +103,7 @@ export function useWebRTCAudio(options: UseWebRTCAudioOptions): UseWebRTCAudioRe
     onBinaryMessage,
     onError,
     onServiceError,
+    onRecordingStop,
     autoStart = false,
     timeslice = 100, // 100ms chunks for low latency
   } = options;
@@ -485,8 +487,14 @@ export function useWebRTCAudio(options: UseWebRTCAudioOptions): UseWebRTCAudioRe
     setIsRecording(false);
     audioChunksBufferRef.current = [];
 
+    // Notify parent component to clear UI state (Fix #2: Listening indicator cleanup)
+    if (onRecordingStop) {
+      logDebug('   - Calling onRecordingStop callback');
+      onRecordingStop();
+    }
+
     logDebug('✅ stop() completed');
-  }, [disconnectWebSocket]);
+  }, [disconnectWebSocket, onRecordingStop]);
 
   // Toggle mute (stop/start recording but keep WebSocket connection)
   const toggleMute = useCallback(() => {
