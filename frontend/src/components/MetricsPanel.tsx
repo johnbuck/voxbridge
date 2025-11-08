@@ -227,17 +227,17 @@ export function MetricsPanel() {
             {/* Total Pipeline Latency */}
             <div className="space-y-2">
               <div className="text-xs text-muted-foreground">Total Response Time</div>
-              <div className={`text-3xl font-bold ${getLatencyColor(metrics?.totalPipelineLatency?.avg || 0, 'slow')}`}>
+              <div className="text-3xl font-bold text-foreground">
                 {formatLatency(metrics?.totalPipelineLatency?.avg || 0)}
               </div>
               <div className="flex gap-2 text-xs flex-wrap">
-                <span className={`px-2 py-0.5 rounded ${getLatencyColor(metrics?.totalPipelineLatency?.p50 || 0, 'slow')} bg-opacity-10`}>
+                <span className="px-2 py-0.5 rounded bg-muted text-muted-foreground">
                   P50: {formatLatency(metrics?.totalPipelineLatency?.p50 || 0)}
                 </span>
-                <span className={`px-2 py-0.5 rounded ${getLatencyColor(metrics?.totalPipelineLatency?.p95 || 0, 'slow')} bg-opacity-10`}>
+                <span className="px-2 py-0.5 rounded bg-muted text-muted-foreground">
                   P95: {formatLatency(metrics?.totalPipelineLatency?.p95 || 0)}
                 </span>
-                <span className={`px-2 py-0.5 rounded ${getLatencyColor(metrics?.totalPipelineLatency?.p99 || 0, 'slow')} bg-opacity-10`}>
+                <span className="px-2 py-0.5 rounded bg-muted text-muted-foreground">
                   P99: {formatLatency(metrics?.totalPipelineLatency?.p99 || 0)}
                 </span>
               </div>
@@ -285,28 +285,16 @@ export function MetricsPanel() {
 
             <div className="space-y-1">
               <div className="text-xs text-muted-foreground">Transcription Duration</div>
-              <div className={`text-xl font-semibold ${getLatencyColor(metrics?.transcriptionDuration?.avg || 0, 'moderate')}`}>
+              <div className="text-xl font-semibold text-foreground">
                 {formatLatency(metrics?.transcriptionDuration?.avg || 0)}
-              </div>
-              <div className="h-2 w-full bg-muted rounded overflow-hidden">
-                <div
-                  className={`h-full ${getLatencyColor(metrics?.transcriptionDuration?.avg || 0, 'moderate').replace('text-', 'bg-')}`}
-                  style={{ width: `${Math.min((metrics?.transcriptionDuration?.avg || 0) * 20, 100)}%` }}
-                />
               </div>
               <div className="text-xs text-muted-foreground">P95: {formatLatency(metrics?.transcriptionDuration?.p95 || 0)}</div>
             </div>
 
             <div className="space-y-1">
               <div className="text-xs text-muted-foreground">Silence Detection</div>
-              <div className={`text-xl font-semibold ${getLatencyColor(metrics?.silenceDetectionLatency?.avg || 0, 'fast')}`}>
+              <div className="text-xl font-semibold text-foreground">
                 {formatLatency(metrics?.silenceDetectionLatency?.avg || 0, true)}
-              </div>
-              <div className="h-2 w-full bg-muted rounded overflow-hidden">
-                <div
-                  className={`h-full ${getLatencyColor(metrics?.silenceDetectionLatency?.avg ? metrics.silenceDetectionLatency.avg / 1000 : 0, 'fast').replace('text-', 'bg-')}`}
-                  style={{ width: `${Math.min((metrics?.silenceDetectionLatency?.avg || 0) / 10, 100)}%` }}
-                />
               </div>
               <div className="text-xs text-muted-foreground">P95: {formatLatency(metrics?.silenceDetectionLatency?.p95 || 0, true)}</div>
             </div>
@@ -425,14 +413,8 @@ export function MetricsPanel() {
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div className="space-y-1">
               <div className="text-xs text-muted-foreground">Audio Playback Time</div>
-              <div className={`text-xl font-semibold ${getLatencyColor(metrics?.audioPlaybackLatency?.avg || 0, 'moderate')}`}>
+              <div className="text-xl font-semibold text-foreground">
                 {formatLatency(metrics?.audioPlaybackLatency?.avg || 0)}
-              </div>
-              <div className="h-2 w-full bg-muted rounded overflow-hidden">
-                <div
-                  className={`h-full ${getLatencyColor(metrics?.audioPlaybackLatency?.avg || 0, 'moderate').replace('text-', 'bg-')}`}
-                  style={{ width: `${Math.min((metrics?.audioPlaybackLatency?.avg || 0) * 20, 100)}%` }}
-                />
               </div>
               <div className="text-xs text-muted-foreground">
                 P50: {formatLatency(metrics?.audioPlaybackLatency?.p50 || 0)} |
