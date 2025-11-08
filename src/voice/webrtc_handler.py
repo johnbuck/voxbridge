@@ -771,6 +771,16 @@ class WebRTCVoiceHandler:
                         # Batch 2.2: Track utterance start time reset
                         old_utterance_start = self.utterance_start_time
                         self.utterance_start_time = self.last_audio_time  # New utterance start
+
+                        # ✅ FIX: Reset per-turn timing metrics for accurate latency tracking
+                        # These timestamps must be reset between conversation turns, not just on connection
+                        self.t_first_partial = None
+                        self.t_transcription_complete = None
+                        self.t_ai_start = None
+                        self.t_ai_complete = None
+                        self.t_llm_complete = None
+                        self.t_audio_complete = None
+                        logger.debug(f"🔄 [TIMING] Reset per-turn timing metrics for new conversation")
                         logger.debug(f"🔄 [STATE] Utterance start time reset: {old_utterance_start} → {self.utterance_start_time}")
                         iteration = 0
 
