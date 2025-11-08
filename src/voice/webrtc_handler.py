@@ -249,11 +249,13 @@ class WebRTCVoiceHandler:
                     self.current_transcript = text
 
                     # ⏱️ METRIC 2: First Partial Transcript Latency
-                    if self.t_first_partial is None and self.t_whisper_connected:
+                    # Measures: User starts speaking (first audio) → First partial transcript received
+                    # This reflects actual STT processing speed (not connection time)
+                    if self.t_first_partial is None and self.utterance_start_time:
                         self.t_first_partial = time.time()
-                        latency_s = self.t_first_partial - self.t_whisper_connected
+                        latency_s = self.t_first_partial - self.utterance_start_time
                         self.metrics.record_first_partial_transcript_latency(latency_s)
-                        logger.info(f"⏱️ LATENCY [WebRTC - First Partial]: {latency_s * 1000:.2f}ms")
+                        logger.info(f"⏱️ LATENCY [WebRTC - First Partial]: {latency_s * 1000:.2f}ms (utterance start → first partial)")
 
                     await self._send_partial_transcript(text)
                 else:

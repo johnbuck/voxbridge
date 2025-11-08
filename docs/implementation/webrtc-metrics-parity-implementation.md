@@ -46,10 +46,12 @@ self.t_audio_complete = None        # TTS audio streaming complete
 - **Calculation**: `t_whisper_connected - t_start`
 - **Log**: `⏱️ LATENCY [WebRTC - WhisperX Connection]: X.XXms`
 
-**Metric 2: First Partial Transcript Latency** (Lines 249-254)
+**Metric 2: First Partial Transcript Latency** (Lines 251-258)
 - **Location**: In `on_transcript` callback (first partial)
-- **Calculation**: `t_first_partial - t_whisper_connected`
-- **Log**: `⏱️ LATENCY [WebRTC - First Partial]: X.XXms`
+- **Calculation**: `t_first_partial - utterance_start_time`
+- **Log**: `⏱️ LATENCY [WebRTC - First Partial]: X.XXms (utterance start → first partial)`
+- **Measures**: User starts speaking (first audio chunk) → First partial transcript received
+- **Purpose**: Actual STT processing latency, not connection overhead
 
 **Metric 3: Transcription Duration** (Lines 264-269)
 - **Location**: In `on_transcript` callback (final transcript)
