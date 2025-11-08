@@ -275,7 +275,6 @@ class STTService:
                     'audio_format': audio_format
                 }
                 logger.info(f"📡 [STT_FORMAT] Sending format indicator to WhisperX: {json.dumps(format_message)}")
-                import json
                 await connection.websocket.send(json.dumps(format_message))
                 connection.format_sent = True
                 connection.audio_format = audio_format
