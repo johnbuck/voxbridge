@@ -4,7 +4,7 @@
  * VoxBridge 2.0 - Proper conversation management integration
  */
 
-import { useState, useRef, useCallback, useEffect } from 'react';
+import { useState, useRef, useCallback, useEffect, useMemo } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { api, type Message } from '@/services/api';
 import { useWebSocket } from '@/hooks/useWebSocket';
@@ -17,7 +17,6 @@ import { NewConversationDialog } from '@/components/NewConversationDialog';
 import { AudioControls } from '@/components/AudioControls';
 import { STTWaitingIndicator } from '@/components/STTWaitingIndicator';
 import { AIGeneratingIndicator } from '@/components/AIGeneratingIndicator';
-import { StreamingMessageDisplay } from '@/components/StreamingMessageDisplay';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Badge } from '@/components/ui/badge';
 import { useToastHelpers } from '@/components/ui/toast';
@@ -44,7 +43,7 @@ const WEB_USER_ID = 'web_user_default';
 // ============================================================
 // LOGGING UTILITIES FOR UI/UX DEBUGGING
 // ============================================================
-const DEBUG_LOGGING = false; // Set to true to enable verbose logging
+const DEBUG_LOGGING = true; // Set to true to enable verbose logging
 
 const logTimestamp = () => new Date().toISOString();
 
@@ -92,6 +91,7 @@ export function VoxbridgePage() {
   const [isSpeakerMuted, setIsSpeakerMuted] = useState(false);
   const [voicePartialTranscript, setVoicePartialTranscript] = useState<string>('');
   const [isBotSpeaking, setIsBotSpeaking] = useState(false);  // Bot speaking state (blocks input during TTS)
+  const [pendingUserTranscript, setPendingUserTranscript] = useState<{ text: string; isFinalizing: boolean } | null>(null);
 
   const queryClient = useQueryClient();
   const toast = useToastHelpers();
@@ -152,39 +152,108 @@ export function VoxbridgePage() {
     queryFn: async () => {
       if (!activeSessionId) return [];
 
-      // DIAGNOSTIC: Log fetch start
-      const fetchStart = Date.now();
-      console.log(`[QUERY] Starting message fetch at ${fetchStart} for session ${activeSessionId}`);
+      // ✅ DISABLED: Too verbose - only enable when debugging message fetching
+      // const fetchStart = Date.now();
+      // console.log(`[QUERY] Starting message fetch at ${fetchStart} for session ${activeSessionId}`);
 
       const result = await api.getSessionMessages(activeSessionId);
 
-      // DIAGNOSTIC: Log fetch complete
-      const fetchEnd = Date.now();
-      const fetchDuration = fetchEnd - fetchStart;
-      console.log(`[QUERY] Fetch complete in ${fetchDuration}ms, received ${result.length} messages`);
+      // ✅ DISABLED: Too verbose - only enable when debugging message fetching
+      // const fetchEnd = Date.now();
+      // const fetchDuration = fetchEnd - fetchStart;
+      // console.log(`[QUERY] Fetch complete in ${fetchDuration}ms, received ${result.length} messages`);
 
-      // Log database fetch results (debug only)
-      logUIEvent('📥', 'QUERY', `Fetched ${result.length} messages from database (session: ${activeSessionId})`, undefined, true);
-      result.forEach((m, i) => {
-        if (m.role === 'assistant') {
-          logUIEvent('  ', '  ', `- DB message[${i}]: id=${m.id}, role=${m.role}, length=${m.content.length} chars`, undefined, true);
-        }
-      });
+      // ✅ DISABLED: Too verbose - only enable when debugging message fetching
+      // logUIEvent('📥', 'QUERY', `Fetched ${result.length} messages from database (session: ${activeSessionId})`, undefined, true);
+      // result.forEach((m, i) => {
+      //   if (m.role === 'assistant') {
+      //     logUIEvent('  ', '  ', `- DB message[${i}]: id=${m.id}, role=${m.role}, length=${m.content.length} chars`, undefined, true);
+      //   }
+      // });
 
-      // DIAGNOSTIC: Check for duplicates
-      const assistantMessages = result.filter(m => m.role === 'assistant');
-      if (assistantMessages.length > 1) {
-        console.warn(`[QUERY] ⚠️ Received ${assistantMessages.length} assistant messages from database!`);
-        assistantMessages.forEach((m, i) => {
-          console.warn(`  - Assistant[${i}]: id=${m.id}, length=${m.content.length} chars, timestamp=${m.timestamp}`);
-        });
-      }
+      // ✅ DISABLED: Too verbose - only enable when debugging duplicates
+      // const assistantMessages = result.filter(m => m.role === 'assistant');
+      // if (assistantMessages.length > 1) {
+      //   console.warn(`[QUERY] ⚠️ Received ${assistantMessages.length} assistant messages from database!`);
+      //   assistantMessages.forEach((m, i) => {
+      //     console.warn(`  - Assistant[${i}]: id=${m.id}, length=${m.content.length} chars, timestamp=${m.timestamp}`);
+      //   });
+      // }
 
       return result;
     },
     enabled: !!activeSessionId,
-    refetchInterval: 5000, // Fix #4: Poll every 5 seconds for better UX responsiveness (WebSocket provides real-time updates)
+    staleTime: Infinity, // ✅ Optimistic UI: Never auto-refetch, only invalidate on explicit events
+    refetchOnWindowFocus: false, // ✅ Don't refetch on window focus
+    // refetchInterval removed - WebSocket provides real-time updates, explicit invalidation on completion
   });
+
+  // ✅ Optimistic UI: Merge database messages + streaming chunks for seamless display
+  const displayMessages = useMemo(() => {
+    const dbMessages = [...messages];
+
+    // Add pending user transcript placeholder (shows immediately before DB fetch)
+    // Only show if the message isn't already in the database (prevents duplicates)
+    if (pendingUserTranscript && activeSessionId) {
+      const hasPendingInDB = dbMessages.some(
+        m => m.role === 'user' && m.content === pendingUserTranscript.text
+      );
+
+      if (!hasPendingInDB) {
+        console.log(`[DISPLAY] Adding pending user message to display (isFinalizing: ${pendingUserTranscript.isFinalizing})`);
+        dbMessages.push({
+          id: Date.now() - 1, // Temporary ID (earlier than streaming message)
+          session_id: activeSessionId,
+          role: 'user',
+          content: pendingUserTranscript.text,
+          timestamp: new Date().toISOString(),
+          audio_duration_ms: null,
+          tts_duration_ms: null,
+          llm_latency_ms: null,
+          total_latency_ms: null,
+          // @ts-ignore - Add flag for styling
+          isPending: !pendingUserTranscript.isFinalizing,
+          isFinalizing: pendingUserTranscript.isFinalizing,
+        } as Message);
+      } else {
+        console.log('[DISPLAY] Pending message already in DB, skipping placeholder');
+      }
+
+    }
+
+    // If streaming, append optimistic message (not yet in database)
+    if (streamingChunks.length > 0 && activeSessionId) {
+      dbMessages.push({
+        id: Date.now(), // Temporary ID (number)
+        session_id: activeSessionId,
+        role: 'assistant',
+        content: streamingChunks.join(''),
+        timestamp: new Date().toISOString(),
+        audio_duration_ms: null,
+        tts_duration_ms: null,
+        llm_latency_ms: null,
+        total_latency_ms: null,
+        // @ts-ignore - Add flag for styling
+        isStreaming: true,
+      } as Message);
+    }
+
+    return dbMessages;
+  }, [messages, streamingChunks, activeSessionId, pendingUserTranscript]);
+
+  // Defensive auto-clear: If DB message loaded while placeholder still visible, clear it
+  useEffect(() => {
+    if (pendingUserTranscript && activeSessionId && messages.length > 0) {
+      const hasPendingInDB = messages.some(
+        m => m.role === 'user' && m.content === pendingUserTranscript.text
+      );
+
+      if (hasPendingInDB) {
+        console.log('[SAFETY] DB message loaded - auto-clearing stale placeholder');
+        setPendingUserTranscript(null);
+      }
+    }
+  }, [messages, pendingUserTranscript, activeSessionId]);
 
   // Get active session details
   const activeSession = sessions.find((s) => s.id === activeSessionId);
@@ -222,6 +291,10 @@ export function VoxbridgePage() {
             // Update voice chat partial transcript
             setVoicePartialTranscript(message.data.text);
             setIsListening(true);
+
+            // Create optimistic user message placeholder (shows immediately in conversation)
+            console.log(`[PENDING] Creating user placeholder with text: "${message.data.text.substring(0, 30)}..."`);
+            setPendingUserTranscript({ text: message.data.text, isFinalizing: false });
           }
           break;
 
@@ -234,13 +307,22 @@ export function VoxbridgePage() {
           listeningStartTimeRef.current = null;
           setListeningDuration(0);
 
+          // Update pending transcript to show finalizing state (bouncing dots)
+          if (message.data.text) {
+            console.log(`[PENDING] Setting finalizing state for: "${message.data.text.substring(0, 30)}..."`);
+            setPendingUserTranscript({ text: message.data.text, isFinalizing: true });
+          }
+
           // Backend already saved user message - frontend only updates UI
           // (Removed duplicate save - backend is single source of truth)
 
           // Refresh message list to show backend-saved message
+          // Note: Placeholder will be cleared in ai_response_complete, NOT here
+          // This ensures user message stays visible during AI generation
           if (activeSessionId) {
             logUIEvent('🔄', 'QUERY (WebRTC)', `Invalidating messages query (session: ${activeSessionId})`, undefined, true);
             queryClient.invalidateQueries({ queryKey: ['messages', activeSessionId] });
+            console.log('[PENDING] Keeping placeholder visible - will clear after AI completes');
           }
 
           // Start AI generation indicator for voice chat
@@ -266,15 +348,43 @@ export function VoxbridgePage() {
           aiStartTimeRef.current = null;
           setAiGeneratingDuration(0);
 
-          // Stop streaming animation but KEEP chunks visible
-          // (Chunks will be cleared by useEffect when database has assistant message)
+          // Stop streaming animation
           setIsStreaming(false);
-          // DON'T clear streamingChunks here
 
-          // Trigger database fetch
-          if (activeSessionId) {
-            logUIEvent('🔄', 'QUERY (WebRTC)', `Invalidating messages query (session: ${activeSessionId})`, undefined, true);
-            queryClient.invalidateQueries({ queryKey: ['messages', activeSessionId] });
+          // Clear user transcript placeholder (AI generation complete, DB query definitely done)
+          console.log('[PENDING] Clearing user placeholder - AI response complete');
+          setPendingUserTranscript(null);
+
+          // ✅ Optimistic UI: Directly update cache with completed message
+          if (activeSessionId && message.data.text) {
+            logUIEvent('💾', 'CACHE (WebRTC)', `Adding optimistic message to cache`, undefined, true);
+
+            // Update cache immediately with new message
+            queryClient.setQueryData<Message[]>(['messages', activeSessionId], (oldMessages = []) => {
+              return [
+                ...oldMessages,
+                {
+                  id: Date.now(), // Temporary ID until background refetch gets real DB ID
+                  session_id: activeSessionId,
+                  role: 'assistant',
+                  content: message.data.text,
+                  timestamp: new Date().toISOString(),
+                  audio_duration_ms: null,
+                  tts_duration_ms: null,
+                  llm_latency_ms: null,
+                  total_latency_ms: null,
+                } as Message
+              ];
+            });
+
+            // Clear streaming chunks AFTER cache update (prevents visual gap)
+            setStreamingChunks([]);
+
+            // Background refetch to get real DB IDs (delayed for smooth transition)
+            setTimeout(() => {
+              logUIEvent('🔄', 'QUERY (WebRTC)', `Background refetch for DB IDs (session: ${activeSessionId})`, undefined, true);
+              queryClient.invalidateQueries({ queryKey: ['messages', activeSessionId] });
+            }, 500);
           }
 
           // AI response text is complete, now waiting for TTS audio
@@ -377,22 +487,14 @@ export function VoxbridgePage() {
     }
   }, [connectionState]);
 
-  // Fix #2 (Enhancement): Auto-clear stale listening state after timeout (safety net)
-  useEffect(() => {
-    if (!isListening) return;
-
-    // Max listening duration: 60s (matches backend MAX_UTTERANCE_TIME_MS + buffer)
-    const MAX_LISTENING_MS = 60000;
-    const timeout = setTimeout(() => {
-      console.warn('⚠️ Listening state stuck for 60s - auto-clearing (safety net)');
-      setIsListening(false);
-      setVoicePartialTranscript('');
-      listeningStartTimeRef.current = null;
-      setListeningDuration(0);
-    }, MAX_LISTENING_MS);
-
-    return () => clearTimeout(timeout);
-  }, [isListening]);
+  // REMOVED: 60-second timeout safety net
+  // This timeout was causing issues in multi-turn conversations where users might
+  // pause for more than 60 seconds between exchanges. The listening state is already
+  // properly cleared by:
+  // 1. final_transcript events (lines 233, 462)
+  // 2. onRecordingStop callback (line 361)
+  // 3. Connection state changes (lines 373-376)
+  // So this timeout was redundant and harmful.
 
   // Handle WebSocket messages (Discord conversation monitoring - for metrics updates)
   const handleMessage = useCallback((message: any) => {
@@ -523,12 +625,17 @@ export function VoxbridgePage() {
     };
   }, []);
 
-  // Auto-select first session on load
+  // Auto-select first session on INITIAL load only (not on every sessions update)
+  // ✅ FIX: Only run when activeSessionId is null AND we have sessions
+  //         Don't re-run when sessions array updates during active conversation
+  //         (which was causing WebSocket disconnects mid-conversation)
   useEffect(() => {
-    if (sessions.length > 0 && !activeSessionId) {
+    // Only auto-select if we have no active session yet
+    if (sessions.length > 0 && activeSessionId === null) {
+      console.log('📋 Auto-selecting first session:', sessions[0].id);
       setActiveSessionId(sessions[0].id);
     }
-  }, [sessions, activeSessionId]);
+  }, [sessions.length, activeSessionId]); // Only trigger when length changes or activeSessionId becomes null
 
   // Fetch speaker lock status when agent has Discord plugin
   useEffect(() => {
@@ -643,21 +750,12 @@ export function VoxbridgePage() {
     }
   }, [isVoiceAIGenerating]);
 
-  // Clear streaming chunks when database has assistant message
+  // Clear pending user transcript when switching sessions
   useEffect(() => {
-    if (!isStreaming && streamingChunks.length > 0 && activeSessionId) {
-      // Check if database has an assistant message
-      const latestAssistantMsg = messages
-        .filter(m => m.role === 'assistant')
-        .slice(-1)[0];
+    setPendingUserTranscript(null);
+  }, [activeSessionId]);
 
-      if (latestAssistantMsg) {
-        // Database has caught up - clear streaming display
-        console.log(`[STREAMING] Database ready, clearing ${streamingChunks.length} chunks`);
-        setStreamingChunks([]);
-      }
-    }
-  }, [messages, isStreaming, streamingChunks.length, activeSessionId]);
+  // ✅ Cleanup useEffect removed - optimistic UI pattern handles transition directly in ai_response_complete
 
   // Conversation Management Handlers
 
@@ -1313,31 +1411,21 @@ export function VoxbridgePage() {
                         />
                       )}
 
-                      {/* Streaming Message Display - shows during streaming and while waiting for database */}
-                      {streamingChunks.length > 0 && (
-                        <StreamingMessageDisplay
-                          chunks={streamingChunks}
-                          isStreaming={isStreaming}
-                          agentName={activeAgent?.name || 'AI Assistant'}
-                        />
-                      )}
-
-                      {/* Ready for Next Question Indicator (Multi-Turn Mode) */}
+                      {/* Ready for Next Question Indicator (Multi-Turn Mode) - Text removed but functionality kept */}
                       {activeSessionId && connectionState === 'connected' && !isListening && !isVoiceAIGenerating && !isBotSpeaking && !isStreaming && (
                         <div className="flex items-center justify-center py-4">
                           <Badge variant="outline" className="text-sm bg-green-500/10 text-green-400 border-green-500/30">
-                            <CircleCheckBig className="h-4 w-4 mr-2" />
-                            Ready for next question
+                            <CircleCheckBig className="h-4 w-4" />
                           </Badge>
                         </div>
                       )}
 
-                      {/* Messages from Database */}
+                      {/* Messages (Database + Optimistic Streaming) */}
                       {isLoadingMessages ? (
                         <div className="text-center py-12 text-muted-foreground">
                           <p className="text-sm">Loading messages...</p>
                         </div>
-                      ) : messages.length === 0 && !voicePartialTranscript && !isListening ? (
+                      ) : displayMessages.length === 0 && !voicePartialTranscript && !isListening ? (
                         <div className="text-center py-12 text-muted-foreground">
                           <MessageSquare className="h-12 w-12 mx-auto mb-3 opacity-50" />
                           <p className="text-sm">No messages yet</p>
@@ -1345,7 +1433,7 @@ export function VoxbridgePage() {
                         </div>
                       ) : (
                         <>
-                          {messages.slice().reverse().map((message) => (
+                          {displayMessages.slice().reverse().map((message) => (
                             <div
                               key={message.id}
                               className={cn(
@@ -1377,6 +1465,30 @@ export function VoxbridgePage() {
                                 <p className="text-sm whitespace-pre-wrap leading-relaxed">
                                   {message.content}
                                 </p>
+
+                                {/* Finalizing indicator for user messages being saved */}
+                                {(message as any).isFinalizing && message.role === 'user' && (
+                                  <div className="mt-2 flex items-center gap-2 text-xs text-primary/70">
+                                    <span className="inline-flex gap-1">
+                                      <span className="animate-bounce" style={{ animationDelay: '0ms' }}>●</span>
+                                      <span className="animate-bounce" style={{ animationDelay: '150ms' }}>●</span>
+                                      <span className="animate-bounce" style={{ animationDelay: '300ms' }}>●</span>
+                                    </span>
+                                    <span>finalizing...</span>
+                                  </div>
+                                )}
+
+                                {/* Streaming indicator for optimistic messages */}
+                                {(message as any).isStreaming && (
+                                  <div className="mt-2 flex items-center gap-2 text-xs text-purple-400">
+                                    <span className="inline-flex gap-1">
+                                      <span className="animate-pulse">●</span>
+                                      <span className="animate-pulse delay-100">●</span>
+                                      <span className="animate-pulse delay-200">●</span>
+                                    </span>
+                                    <span>streaming...</span>
+                                  </div>
+                                )}
 
                                 {/* Latency info (if available) */}
                                 {(message.llm_latency_ms || message.tts_duration_ms || message.total_latency_ms) && (

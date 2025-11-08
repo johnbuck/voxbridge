@@ -281,12 +281,13 @@ class ConversationService:
             include_system_prompt: Prepend agent's system prompt (default: True)
 
         Returns:
-            List[Message]: Recent conversation history in chronological order
+            List[Message]: Recent conversation history in chronological order (oldest→newest)
 
         Note:
             - Returns empty list if session not found (graceful degradation)
             - System prompt is inserted as first message if include_system_prompt=True
-            - Messages are sorted chronologically (oldest first)
+            - Messages are in chronological order (oldest first, newest last)
+            - ✅ FIX: Messages are now loaded from DB in ASC order to match append() behavior
         """
         try:
             # Ensure session is cached
@@ -309,8 +310,9 @@ class ConversationService:
                     ))
 
                 # Add conversation messages (convert from Conversation to Message)
-                # cached.messages are in DESC order, so reverse for chronological
-                for conv in reversed(cached.messages[-limit:]):
+                # ✅ FIX: cached.messages are now in ASC order (oldest first)
+                # No need to reverse - just take last N messages directly
+                for conv in cached.messages[-limit:]:
                     messages.append(Message(
                         role=conv.role,
                         content=conv.content,
@@ -323,9 +325,12 @@ class ConversationService:
                         }
                     ))
 
-                logger.debug(
-                    f"🎤 Retrieved {len(messages)} messages for session {session_id[:8]}..."
-                )
+                # DIAGNOSTIC: Log all messages being returned
+                logger.info(f"📋 [CONVERSATION_CONTEXT] Returning {len(messages)} messages for session {session_id[:8]}:")
+                for idx, msg in enumerate(messages):
+                    content_preview = msg.content[:60] + '...' if len(msg.content) > 60 else msg.content
+                    logger.info(f"   [{idx}] {msg.role}: \"{content_preview}\"")
+
                 return messages
 
         except Exception as e:
@@ -368,7 +373,7 @@ class ConversationService:
 
                 # Create conversation entry
                 async with get_db_session() as db:
-                    # DIAGNOSTIC: Check for duplicate messages (within last 10 seconds)
+                    # ✅ FIX: Check for duplicate messages and PREVENT insertion
                     ten_seconds_ago = datetime.utcnow() - timedelta(seconds=10)
                     existing_check = await db.execute(
                         select(Conversation)
@@ -384,12 +389,20 @@ class ConversationService:
                     existing = existing_check.scalar_one_or_none()
                     if existing:
                         logger.warning(
-                            f"⚠️ [DB_DUPLICATE] Message already exists! "
+                            f"🚫 [DB_DUPLICATE] Duplicate message detected - returning existing! "
                             f"session={session_id[:8]}..., role={role}, "
                             f"existing_id={existing.id}, existing_timestamp={existing.timestamp}"
                         )
 
-                    # Create and insert new conversation
+                        # Return existing message instead of creating duplicate
+                        return Message(
+                            role=existing.role,
+                            content=existing.content,
+                            timestamp=existing.timestamp,
+                            metadata=metadata
+                        )
+
+                    # Create and insert new conversation (only if not duplicate)
                     logger.info(
                         f"💾 [DB_INSERT] Inserting message: session={session_id[:8]}..., "
                         f"role={role}, length={len(content)} chars"
@@ -582,11 +595,12 @@ class ConversationService:
                     logger.warning(f"⚠️ Session {session_id[:8]}... not found in database")
                     return None
 
-                # Load recent messages
+                # Load recent messages in ASC order (oldest first)
+                # This matches the order when we append() new messages to the cache
                 result = await db.execute(
                     select(Conversation)
                     .where(Conversation.session_id == UUID(session_id))
-                    .order_by(Conversation.timestamp.desc())
+                    .order_by(Conversation.timestamp.asc())
                     .limit(self._max_context)
                 )
                 messages = list(result.scalars().all())
