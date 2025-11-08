@@ -115,11 +115,23 @@ class WebRTCVoiceHandler:
         # Bot speaking state (blocks input during TTS playback)
         self.is_bot_speaking = False
 
-        # Timing metrics
+        # Timing metrics (expanded for full metrics parity with Discord)
         self.t_start = time.time()
         self.t_first_audio = None
         self.t_first_transcript = None
-        self.t_llm_complete = None  # Track LLM completion for TTS queue metric
+
+        # Phase 1: Speech → Transcription
+        self.t_whisper_connected = None     # WhisperX connection time
+        self.t_first_partial = None         # First partial transcript received
+        self.t_transcription_complete = None # Final transcript ready
+
+        # Phase 2: AI Processing
+        self.t_ai_start = None              # LLM generation start
+        self.t_ai_complete = None           # LLM generation complete (same as t_llm_complete)
+        self.t_llm_complete = None          # Track LLM completion for TTS queue metric (legacy, remove after migration)
+
+        # Phase 3+: TTS & Pipeline
+        self.t_audio_complete = None        # TTS audio streaming complete
 
         logger.info(f"🎙️ WebRTC handler initialized for user={user_id}, session={session_id}")
         logger.info(f"   Silence threshold: {self.silence_threshold_ms}ms")
@@ -198,6 +210,8 @@ class WebRTCVoiceHandler:
             logger.info(f"[START] 🔌 WebSocket disconnected for user {self.user_id}")
         except Exception as e:
             logger.error(f"[START] ❌ Error in WebRTC handler at unknown step: {e}", exc_info=True)
+            # ⏱️ METRIC 11: Error Count
+            self.metrics.record_error()
             await self._send_error(f"Server error: {str(e)}")
         finally:
             logger.info(f"[START] Step 5: Cleanup...")
@@ -234,6 +248,13 @@ class WebRTCVoiceHandler:
                     logger.info(f"📝 [TRANSCRIPT] Received PARTIAL: \"{text}\"")
                     self.current_transcript = text
 
+                    # ⏱️ METRIC 2: First Partial Transcript Latency
+                    if self.t_first_partial is None and self.t_whisper_connected:
+                        self.t_first_partial = time.time()
+                        latency_s = self.t_first_partial - self.t_whisper_connected
+                        self.metrics.record_first_partial_transcript_latency(latency_s)
+                        logger.info(f"⏱️ LATENCY [WebRTC - First Partial]: {latency_s * 1000:.2f}ms")
+
                     await self._send_partial_transcript(text)
                 else:
                     # ✅ FIX: Store WhisperX final transcript and set flag
@@ -241,6 +262,13 @@ class WebRTCVoiceHandler:
                     logger.info(f"✅ [TRANSCRIPT] Received FINAL from WhisperX: \"{text}\" (length={len(text)} chars)")
                     self.final_transcript = text
                     self.final_transcript_ready = True
+
+                    # ⏱️ METRIC 3: Transcription Duration
+                    self.t_transcription_complete = time.time()
+                    if self.t_first_partial:
+                        duration_s = self.t_transcription_complete - self.t_first_partial
+                        self.metrics.record_transcription_duration(duration_s)
+                        logger.info(f"⏱️ LATENCY [WebRTC - Transcription Duration]: {duration_s * 1000:.2f}ms")
 
                     # Note: _finalize_transcription() waits for this flag before proceeding
 
@@ -260,6 +288,11 @@ class WebRTCVoiceHandler:
                 callback=on_transcript
             )
 
+            # ⏱️ METRIC 1: WhisperX Connection Latency
+            self.t_whisper_connected = time.time()
+            latency_s = self.t_whisper_connected - self.t_start
+            self.metrics.record_whisper_connection_latency(latency_s)
+            logger.info(f"⏱️ LATENCY [WebRTC - WhisperX Connection]: {latency_s * 1000:.2f}ms")
             logger.info(f"✅ Connected to STTService")
 
         except Exception as e:
@@ -400,6 +433,8 @@ class WebRTCVoiceHandler:
         except Exception as e:
             logger.error(f"❌ Error in audio loop: {e}", exc_info=True)
             logger.error(f"🚨 [AUDIO_LOOP] FATAL ERROR after {self.chunks_received} chunks, is_active={self.is_active}, session={self.session_id}")
+            # ⏱️ METRIC 11: Error Count
+            self.metrics.record_error()
         finally:
             # ✅ CHECKPOINT: Audio loop exit
             logger.warn(f"🛑 [AUDIO_LOOP] Exited main loop (is_active={self.is_active}, chunks_received={self.chunks_received}, session={self.session_id})")
@@ -787,6 +822,11 @@ class WebRTCVoiceHandler:
                         if not self.is_finalizing:
                             logger.info(f"[SILENCE_MONITOR] 🤫 Silence detected ({int(silence_duration_ms)}ms) - finalizing")
 
+                            # ⏱️ METRIC 4: Silence Detection Latency
+                            latency_s = silence_duration_ms / 1000
+                            self.metrics.record_silence_detection_latency(latency_s)
+                            logger.info(f"⏱️ LATENCY [WebRTC - Silence Detection]: {silence_duration_ms:.2f}ms")
+
                             # DIAGNOSTIC: Log current partial transcript
                             logger.info(f"📝 [SILENCE_MONITOR] Current partial transcript: \"{self.current_transcript[:100]}{'...' if len(self.current_transcript) > 100 else ''}\" (length={len(self.current_transcript)} chars)")
 
@@ -916,6 +956,8 @@ class WebRTCVoiceHandler:
 
         except Exception as e:
             logger.error(f"❌ Error finalizing transcription: {e}", exc_info=True)
+            # ⏱️ METRIC 11: Error Count
+            self.metrics.record_error()
             await self._send_error(f"Error processing transcript: {str(e)}")
             self.is_finalizing = False
             # Reset flags even on error
@@ -932,6 +974,7 @@ class WebRTCVoiceHandler:
         """
         try:
             t_llm_start = time.time()
+            self.t_ai_start = t_llm_start  # Store for metrics tracking
 
             # Get conversation context from ConversationService
             messages = await self.conversation_service.get_conversation_context(
@@ -984,6 +1027,11 @@ class WebRTCVoiceHandler:
                         t_first_chunk = time.time()
                         latency_s = t_first_chunk - t_llm_start
                         logger.info(f"⏱️ LATENCY [LLM first chunk]: {latency_s:.3f}s")
+
+                        # ⏱️ METRIC 7: First LLM Chunk Latency (n8n webhook path - also applies to direct LLM)
+                        self.metrics.record_n8n_first_chunk_latency(latency_s)
+                        logger.info(f"⏱️ LATENCY [WebRTC - First LLM Chunk]: {latency_s * 1000:.2f}ms")
+
                         # DIAGNOSTIC: Log first chunk content
                         logger.info(f"📤 [AI_CHUNK] First chunk received: \"{chunk[:50]}{'...' if len(chunk) > 50 else ''}\" (length={len(chunk)} chars)")
 
@@ -1057,8 +1105,13 @@ class WebRTCVoiceHandler:
             # Record latency
             t_llm_complete = time.time()
             self.t_llm_complete = t_llm_complete  # Store for TTS queue metric
+            self.t_ai_complete = t_llm_complete   # Store for metrics tracking
             latency_s = t_llm_complete - t_llm_start
             logger.info(f"⏱️ LATENCY [total LLM generation]: {latency_s:.3f}s")
+
+            # ⏱️ METRIC 5: AI Generation Latency
+            self.metrics.record_ai_generation_latency(latency_s)
+            logger.info(f"⏱️ LATENCY [WebRTC - AI Generation]: {latency_s * 1000:.2f}ms")
 
             # ✅ FIX: Validate response is non-empty before saving
             if not full_response.strip():
@@ -1078,22 +1131,16 @@ class WebRTCVoiceHandler:
                 )
                 logger.info(f"✅ [DB_SAVE] Saved AI message to database (ID will be assigned by DB)")
 
-            # Broadcast metrics update to global event stream (for metrics UI)
-            await ws_manager.broadcast({
-                "event": "metrics_update",
-                "data": {
-                    "session_id": str(self.session_id),
-                    "llm_latency_s": latency_s,
-                    "llm_provider": agent.llm_provider,
-                    "llm_model": agent.llm_model
-                }
-            })
+            # Note: Full metrics snapshot broadcast moved to end of _generate_tts() after total_pipeline_latency
+            # This ensures all metrics (including TTS) are included in the broadcast
 
             # Generate and stream TTS audio to browser
             await self._generate_tts(full_response, agent)
 
         except Exception as e:
             logger.error(f"❌ Error handling LLM response: {e}", exc_info=True)
+            # ⏱️ METRIC 11: Error Count
+            self.metrics.record_error()
             await self._send_error(f"Error generating AI response: {str(e)}")
 
     # WebSocket message senders
@@ -1273,6 +1320,27 @@ class WebRTCVoiceHandler:
             total_latency_s = t_complete - t_tts_start
             logger.info(f"✅ TTS complete ({len(audio_bytes):,} bytes, {total_latency_s:.2f}s)")
 
+            # ⏱️ METRIC 8: TTS Generation Latency
+            self.metrics.record_tts_generation_latency(total_latency_s)
+            logger.info(f"⏱️ LATENCY [WebRTC - TTS Generation]: {total_latency_s * 1000:.2f}ms")
+
+            # ⏱️ METRIC 9: Total Pipeline Latency (end-to-end: user speaks → audio complete)
+            self.t_audio_complete = time.time()
+            total_pipeline = self.t_audio_complete - self.t_start
+            self.metrics.record_total_pipeline_latency(total_pipeline)
+            logger.info(f"⏱️ LATENCY [WebRTC - Total Pipeline]: {total_pipeline * 1000:.2f}ms")
+
+            # ⏱️ METRIC 10: Transcript Count (increment counter for each conversation turn)
+            self.metrics.record_transcript()
+
+            # 📊 Broadcast full metrics snapshot to frontend (matches Discord pattern)
+            metrics_snapshot = self.metrics.get_metrics()
+            await ws_manager.broadcast({
+                "event": "metrics_updated",  # Match Discord event name (not "metrics_update")
+                "data": metrics_snapshot     # Full snapshot with all 21 metrics
+            })
+            logger.info("📊 Broadcast full metrics snapshot to frontend")
+
             if self.is_active:
                 await self.websocket.send_json({
                     "event": "tts_complete",
@@ -1302,6 +1370,8 @@ class WebRTCVoiceHandler:
 
         except Exception as e:
             logger.error(f"❌ TTS error: {e}", exc_info=True)
+            # ⏱️ METRIC 11: Error Count
+            self.metrics.record_error()
             # Ensure is_bot_speaking is reset even on error
             self.is_bot_speaking = False
             # Reset discard counter even on error (Batch 2.1)
