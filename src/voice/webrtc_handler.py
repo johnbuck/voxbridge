@@ -930,6 +930,16 @@ class WebRTCVoiceHandler:
             # Send final transcript to browser
             await self._send_final_transcript(transcript)
 
+            # Notify frontend that AI response generation is starting (TTS will follow)
+            # This must happen early, right after final transcript, so frontend knows to defer disconnect if user clicks mic OFF
+            await self.websocket.send_json({
+                "event": "ai_response_start",
+                "data": {
+                    "session_id": str(self.session_id)
+                }
+            })
+            logger.info("🤖 Sent ai_response_start event to frontend (TTS pipeline starting)")
+
             # Save user message to conversation
             logger.info(f"💾 [DB_SAVE] Saving user message to database: session={self.session_id}, role=user, length={len(transcript)} chars")
             await self.conversation_service.add_message(

@@ -495,6 +495,7 @@ export function VoxbridgePage() {
     connectionState,
     permissionError,
     isRecording,
+    isPendingTTS,
   } = useWebRTCAudio({
     sessionId: activeSessionId, // Use active session ID from conversation management
     onMessage: handleWebRTCAudioMessage,
@@ -1290,6 +1291,13 @@ export function VoxbridgePage() {
                           <Volume2 className="h-3 w-3 mr-1" />
                           AI Speaking...
                         </Badge>
+                      )}
+                      {/* TTS Pending Indicator (multi-turn conversation mode) */}
+                      {isMuted && isPendingTTS && (
+                        <div className="text-xs text-amber-500 flex items-center gap-1">
+                          <Volume2 className="w-3 h-3 animate-pulse" />
+                          AI is speaking - mic off
+                        </div>
                       )}
                     </div>
                   )}

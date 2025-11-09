@@ -73,6 +73,7 @@ export interface UseWebRTCAudioReturn {
   isRecording: boolean;
   start: () => Promise<void>;
   stop: () => void;
+  isPendingTTS: boolean;  // Whether TTS audio is pending (AI is generating/streaming response)
 }
 
 export function useWebRTCAudio(options: UseWebRTCAudioOptions): UseWebRTCAudioReturn {
@@ -102,6 +103,9 @@ export function useWebRTCAudio(options: UseWebRTCAudioOptions): UseWebRTCAudioRe
   const [connectionState, setConnectionState] = useState<ConnectionState>('disconnected');
   const [permissionError, setPermissionError] = useState<string | null>(null);
   const [isRecording, setIsRecording] = useState(false);
+
+  // TTS playback state tracking (for UI indicators only - multi-turn conversation mode)
+  const [isPendingTTS, setIsPendingTTS] = useState(false);  // True when AI is generating/streaming TTS
 
   const wsRef = useRef<WebSocket | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
@@ -219,16 +223,29 @@ export function useWebRTCAudio(options: UseWebRTCAudioOptions): UseWebRTCAudioRe
               return;
             }
 
+            // Handle AI response start - track TTS pending state
+            if (message.event === 'ai_response_start') {
+              logger.info('🤖 AI response started - TTS pending');
+              setIsPendingTTS(true);
+              // Notify parent component
+              if (onMessage) {
+                onMessage(message);
+              }
+              return;
+            }
+
             // Handle TTS complete - MULTI-TURN MODE: Keep connection open!
             // After TTS completes, we wait for user to speak again (auto-restart detection on backend)
             // Only disconnect when user explicitly stops or closes page
             if (message.event === 'tts_complete') {
-              logger.debug(`✅ TTS complete - ready for next conversation turn (keeping WebSocket open)`);
+              logger.info('✅ TTS complete - ready for next conversation turn');
+              setIsPendingTTS(false);
+
               // Notify parent so it can trigger audio playback
               if (onMessage) {
                 onMessage(message);
               }
-              // ✅ DON'T disconnect - keep connection alive for next turn!
+              // ✅ MULTI-TURN: Keep WebSocket alive - user can speak again immediately
               return;
             }
 
@@ -263,10 +280,10 @@ export function useWebRTCAudio(options: UseWebRTCAudioOptions): UseWebRTCAudioRe
         audioChunksBufferRef.current = [];
 
         // Auto-reconnect logic
-        if (
-          reconnectAttemptsRef.current < MAX_RECONNECT_ATTEMPTS &&
-          !isMuted // Only reconnect if we're still unmuted
-        ) {
+        // ✅ ARCHITECTURE FIX: Always reconnect WebSocket regardless of mic mute state
+        // Mic mute should ONLY affect audio capture, not WebSocket connectivity
+        // This allows AI responses and TTS to work even when mic is muted
+        if (reconnectAttemptsRef.current < MAX_RECONNECT_ATTEMPTS) {
           reconnectAttemptsRef.current += 1;
           logger.info(
             `🔄 Reconnecting... (${reconnectAttemptsRef.current}/${MAX_RECONNECT_ATTEMPTS})`
@@ -287,7 +304,7 @@ export function useWebRTCAudio(options: UseWebRTCAudioOptions): UseWebRTCAudioRe
         onError('Failed to connect to voice server');
       }
     }
-  }, [sessionId, isMuted, onMessage, onBinaryMessage, onServiceError, onError]);
+  }, [sessionId, onMessage, onBinaryMessage, onServiceError, onError]);
 
   // Disconnect WebSocket
   const disconnectWebSocket = useCallback(() => {
@@ -464,12 +481,13 @@ export function useWebRTCAudio(options: UseWebRTCAudioOptions): UseWebRTCAudioRe
         mediaStreamRef.current = null;
       }
     }
-  }, [connectWebSocket, timeslice, onError, sessionId, isMuted, connectionState]);
+  }, [connectWebSocket, timeslice, onError, sessionId, connectionState]);
 
   // Stop audio capture
   const stop = useCallback(() => {
-    logger.info('🛑 stop() called - stopping audio capture');
+    logger.info('🛑 stop() called - stopping microphone input');
 
+    // ALWAYS stop microphone input (user wants to stop talking)
     // Stop MediaRecorder
     if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
       // Batch 3.1: Log MediaRecorder state before stop()
@@ -488,9 +506,6 @@ export function useWebRTCAudio(options: UseWebRTCAudioOptions): UseWebRTCAudioRe
       mediaStreamRef.current = null;
     }
 
-    // Disconnect WebSocket
-    disconnectWebSocket();
-
     setIsMuted(true);
     setIsRecording(false);
     audioChunksBufferRef.current = [];
@@ -501,8 +516,15 @@ export function useWebRTCAudio(options: UseWebRTCAudioOptions): UseWebRTCAudioRe
       onRecordingStop();
     }
 
+    // ✅ MULTI-TURN CONVERSATION MODE: Never auto-disconnect WebSocket
+    // Philosophy: Mic OFF = "stop listening to me", NOT "end conversation"
+    // - WebSocket stays alive for TTS audio to complete
+    // - User can click mic ON again for next question (multi-turn like Discord)
+    // - Connection only closes when user leaves page or explicitly disconnects
+    logger.info('✅ Microphone stopped - WebSocket stays open for multi-turn conversation');
+
     logger.debug('✅ stop() completed');
-  }, [disconnectWebSocket, onRecordingStop]);
+  }, [onRecordingStop]);
 
   // Toggle mute (stop/start recording but keep WebSocket connection)
   const toggleMute = useCallback(() => {
@@ -533,10 +555,11 @@ export function useWebRTCAudio(options: UseWebRTCAudioOptions): UseWebRTCAudioRe
 
     // Cleanup on unmount
     return () => {
-      logger.debug('🧹 useEffect cleanup - calling stop()');
+      logger.debug('🧹 useEffect cleanup - stopping microphone and disconnecting WebSocket');
       stop();
+      disconnectWebSocket();  // Disconnect when component unmounts (user leaving page)
     };
-  }, [autoStart, sessionId]); // Only run when autoStart or sessionId changes
+  }, [autoStart, sessionId, stop, disconnectWebSocket]); // Include deps for cleanup
 
   // Update WebSocket session when sessionId changes
   useEffect(() => {
@@ -584,5 +607,6 @@ export function useWebRTCAudio(options: UseWebRTCAudioOptions): UseWebRTCAudioRe
     isRecording,
     start,
     stop,
+    isPendingTTS,  // Export for UI indicators
   };
 }

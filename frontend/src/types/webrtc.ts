@@ -14,6 +14,7 @@ export type ConnectionState = 'connecting' | 'connected' | 'disconnected' | 'err
 export type WebRTCAudioEventType =
   | 'partial_transcript'
   | 'final_transcript'
+  | 'ai_response_start'  // AI response generation started (TTS pending)
   | 'ai_response_chunk'
   | 'ai_response_complete'
   | 'tts_start'
@@ -96,6 +97,9 @@ export interface UseWebRTCAudioReturn {
 
   /** Manually stop recording and disconnect */
   stop: () => void;
+
+  /** Whether TTS audio is pending (AI is generating/streaming response) */
+  isPendingTTS: boolean;
 }
 
 /**
