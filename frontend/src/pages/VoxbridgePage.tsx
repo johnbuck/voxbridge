@@ -15,8 +15,8 @@ import { RuntimeSettings } from '@/components/RuntimeSettings';
 import { ConversationList } from '@/components/ConversationList';
 import { NewConversationDialog } from '@/components/NewConversationDialog';
 import { AudioControls } from '@/components/AudioControls';
-import { STTWaitingIndicator } from '@/components/STTWaitingIndicator';
 import { AIGeneratingIndicator } from '@/components/AIGeneratingIndicator';
+import { BouncingDots } from '@/components/BouncingDots';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Badge } from '@/components/ui/badge';
 import { useToastHelpers } from '@/components/ui/toast';
@@ -68,7 +68,6 @@ export function VoxbridgePage() {
 
   // Unified conversation state (adapts for Discord/WebRTC)
   const [isListening, setIsListening] = useState(false);
-  const [listeningDuration, setListeningDuration] = useState(0);
   const [isVoiceAIGenerating, setIsVoiceAIGenerating] = useState(false);
   const [aiGeneratingDuration, setAiGeneratingDuration] = useState(0);
   const [streamingChunks, setStreamingChunks] = useState<string[]>([]);
@@ -77,7 +76,7 @@ export function VoxbridgePage() {
   const [voicePartialTranscript, setVoicePartialTranscript] = useState<string>('');
   const [isBotSpeaking, setIsBotSpeaking] = useState(false);  // Bot speaking state (blocks input during TTS)
   const [activeTTSContent, setActiveTTSContent] = useState<string | null>(null);  // Track message content being synthesized for ellipsis animation (survives DB refetch)
-  const [pendingUserTranscript, setPendingUserTranscript] = useState<{ text: string; isFinalizing: boolean } | null>(null);
+  const [pendingUserTranscript, setPendingUserTranscript] = useState<{ text: string; isFinalizing: boolean; isStreaming: boolean } | null>(null);
 
   const queryClient = useQueryClient();
   const toast = useToastHelpers();
@@ -201,6 +200,7 @@ export function VoxbridgePage() {
           // @ts-ignore - Add flag for styling
           isPending: !pendingUserTranscript.isFinalizing,
           isFinalizing: pendingUserTranscript.isFinalizing,
+          isStreaming: pendingUserTranscript.isStreaming,
         } as Message);
       } else {
         logger.debug('[DISPLAY] Pending message already in DB, skipping placeholder');
@@ -322,7 +322,7 @@ export function VoxbridgePage() {
 
             // Create optimistic user message placeholder (shows immediately in conversation)
             logger.debug(`[PENDING] Creating user placeholder with text: "${message.data.text.substring(0, 30)}..."`);
-            setPendingUserTranscript({ text: message.data.text, isFinalizing: false });
+            setPendingUserTranscript({ text: message.data.text, isFinalizing: false, isStreaming: true });
           }
           break;
 
@@ -333,12 +333,11 @@ export function VoxbridgePage() {
           setVoicePartialTranscript('');
           setIsListening(false);
           listeningStartTimeRef.current = null;
-          setListeningDuration(0);
 
           // Update pending transcript to show finalizing state (bouncing dots)
           if (message.data.text) {
             logger.debug(`[PENDING] Setting finalizing state for: "${message.data.text.substring(0, 30)}..."`);
-            setPendingUserTranscript({ text: message.data.text, isFinalizing: true });
+            setPendingUserTranscript({ text: message.data.text, isFinalizing: true, isStreaming: false });
           }
 
           // Backend already saved user message - frontend only updates UI
@@ -541,7 +540,6 @@ export function VoxbridgePage() {
       setIsListening(false);
       setVoicePartialTranscript('');
       listeningStartTimeRef.current = null;
-      setListeningDuration(0);
 
       // Show toast notification for connection errors (Discord-style: toast only, no persistent badge)
       if (connectionState === 'error') {
@@ -626,7 +624,6 @@ export function VoxbridgePage() {
       // Stop listening, start AI generating animation (unified experience)
       setIsListening(false);
       listeningStartTimeRef.current = null;
-      setListeningDuration(0);
       setVoicePartialTranscript('');
 
       logger.debug('💭', 'THINKING', `Started (session: ${activeSessionId})`, undefined, true);
@@ -792,16 +789,6 @@ export function VoxbridgePage() {
     const interval = setInterval(fetchDiscordStatus, 3000);
     return () => clearInterval(interval);
   }, [activeAgent]);
-
-  // Update listening duration (web voice chat)
-  useEffect(() => {
-    if (isListening && listeningStartTimeRef.current) {
-      const interval = setInterval(() => {
-        setListeningDuration(Date.now() - listeningStartTimeRef.current!);
-      }, 100);
-      return () => clearInterval(interval);
-    }
-  }, [isListening]);
 
   // Update AI generating duration (web voice chat)
   useEffect(() => {
@@ -1526,15 +1513,6 @@ export function VoxbridgePage() {
                         </div>
                       )}
 
-                      {/* STT Waiting Indicator */}
-                      {(isListening || voicePartialTranscript) && (
-                        <STTWaitingIndicator
-                          isListening={isListening}
-                          duration={listeningDuration}
-                          partialTranscript={voicePartialTranscript}
-                        />
-                      )}
-
                       {/* AI Generating Indicator */}
                       {isVoiceAIGenerating && (
                         <AIGeneratingIndicator
@@ -1599,28 +1577,42 @@ export function VoxbridgePage() {
                                     {formatTimestamp(message.timestamp)}
                                   </span>
                                 </div>
-                                <p className="text-sm whitespace-pre-line leading-relaxed">
-                                  {message.content}
-                                </p>
+                                {/* User message: Show streaming state with bouncing dots + text */}
+                                {message.role === 'user' && (message as any).isStreaming && (
+                                  <div className="flex items-center gap-2">
+                                    <BouncingDots size="sm" className="text-primary/60" />
+                                    <p className="text-sm whitespace-pre-line leading-relaxed opacity-75">
+                                      {message.content || 'Listening...'}
+                                    </p>
+                                  </div>
+                                )}
 
-                                {/* Finalizing indicator for user messages being saved */}
-                                {(message as any).isFinalizing && message.role === 'user' && (
-                                  <div className="mt-2 flex items-center gap-2 text-xs text-primary/70">
-                                    <span className="inline-flex gap-1">
-                                      <span className="animate-bounce" style={{ animationDelay: '0ms' }}>●</span>
-                                      <span className="animate-bounce" style={{ animationDelay: '150ms' }}>●</span>
-                                      <span className="animate-bounce" style={{ animationDelay: '300ms' }}>●</span>
-                                    </span>
+                                {/* User message: Show finalizing state (bouncing dots only) */}
+                                {message.role === 'user' && (message as any).isFinalizing && !(message as any).isStreaming && (
+                                  <div className="flex items-center gap-2 text-xs text-primary/70">
+                                    <BouncingDots size="sm" className="text-primary/60" />
                                     <span>finalizing...</span>
                                   </div>
                                 )}
 
+                                {/* User message: Show final content (normal state) */}
+                                {message.role === 'user' && !(message as any).isStreaming && !(message as any).isFinalizing && (
+                                  <p className="text-sm whitespace-pre-line leading-relaxed">
+                                    {message.content}
+                                  </p>
+                                )}
+
+                                {/* Assistant message: Always show content (streaming handled elsewhere) */}
+                                {message.role === 'assistant' && (
+                                  <p className="text-sm whitespace-pre-line leading-relaxed">
+                                    {message.content}
+                                  </p>
+                                )}
+
                                 {/* AI Speaking Indicator - Show bouncing dots while TTS is active */}
                                 {message.role === 'assistant' && message.content === activeTTSContent && (
-                                  <div className="mt-2 flex gap-1">
-                                    <div className="w-2 h-2 rounded-full bg-purple-400/60 animate-bounce" style={{ animationDelay: '0ms' }} />
-                                    <div className="w-2 h-2 rounded-full bg-purple-400/60 animate-bounce" style={{ animationDelay: '150ms' }} />
-                                    <div className="w-2 h-2 rounded-full bg-purple-400/60 animate-bounce" style={{ animationDelay: '300ms' }} />
+                                  <div className="mt-2">
+                                    <BouncingDots size="sm" className="text-purple-400/60" />
                                   </div>
                                 )}
 
