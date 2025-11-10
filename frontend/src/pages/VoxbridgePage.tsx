@@ -309,20 +309,22 @@ export function VoxbridgePage() {
 
         switch (message.event) {
         case 'partial_transcript':
-          // Only show listening indicator if we have actual transcript text AND connection is active
-          if (message.data.text && connectionState === 'connected') {
+          // Show speech bubble immediately when user starts speaking (even if text is empty)
+          if (connectionState === 'connected') {
             if (!listeningStartTimeRef.current) {
-              logger.debug('🎤', 'LISTENING (WebRTC)', `Started (partial: "${message.data.text?.substring(0, 30)}...")`, undefined, true);
+              logger.debug('🎤', 'LISTENING (WebRTC)', `Started (partial: "${message.data.text?.substring(0, 30) || '(empty)'}...")`, undefined, true);
               listeningStartTimeRef.current = Date.now();
             }
 
             // Update voice chat partial transcript
-            setVoicePartialTranscript(message.data.text);
+            setVoicePartialTranscript(message.data.text || '');
             setIsListening(true);
 
             // Create optimistic user message placeholder (shows immediately in conversation)
-            logger.debug(`[PENDING] Creating user placeholder with text: "${message.data.text.substring(0, 30)}..."`);
-            setPendingUserTranscript({ text: message.data.text, isFinalizing: false, isStreaming: true });
+            // Bubble will show "Listening..." if text is empty, or streaming text if available
+            const transcriptText = message.data.text || '';
+            logger.debug(`[PENDING] Creating user placeholder with text: "${transcriptText.substring(0, 30) || '(empty)'}..."`);
+            setPendingUserTranscript({ text: transcriptText, isFinalizing: false, isStreaming: true });
           }
           break;
 
