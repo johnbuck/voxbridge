@@ -53,6 +53,102 @@ Real-time voice transcription service for Discord using WhisperX STT.
 - Other speakers ignored until current speaker finishes
 - Natural conversation flow
 
+### 🤖 AI Agent Management
+- Create and manage multiple AI agents with different personalities and LLM configurations
+- Dedicated web UI for agent CRUD operations
+- Real-time updates via WebSocket
+
+## VoxBridge 2.0: Multi-Agent Platform
+
+VoxBridge 2.0 transforms the Discord bot into a modular AI voice platform:
+
+### Phase 1: Core Infrastructure ✅ (Complete)
+- PostgreSQL database for agent storage
+- SQLAlchemy ORM models (agents, sessions, conversations)
+- Alembic migrations
+
+### Phase 2: Agent Management ✅ (Complete)
+- Full CRUD API for AI agents
+- Dedicated agent management UI (`/agents`)
+- Real-time updates via WebSocket
+- Support for multiple LLM providers (OpenRouter, Local)
+
+### Phase 3: LLM Provider Abstraction ✅ (Complete)
+- Abstract provider interface
+- OpenRouter implementation
+- Local LLM support (Ollama-compatible)
+- Dynamic routing based on agent configuration
+
+### Phase 6: Discord Plugin Integration ✅ (Complete)
+- Per-agent Discord bot plugin system
+- Agent-specific voice channel controls
+- Discord snowflake ID precision preservation
+- Channel selector modal with guild/channel browsing
+- Auto-reconnect logic for state desync handling
+- localStorage persistence for guild IDs
+- Responsive UI with connection status indicators
+- TTS test modal for agent-specific voice testing
+
+## ⚠️ Breaking Changes & Migration
+
+### TTS Configuration Update (November 2025)
+
+**VoxBridge TTS configuration has been aligned with the Chatterbox API.** This is a breaking change requiring database migration.
+
+**Deprecated TTS Fields** (removed):
+- `tts_rate` - Not supported by Chatterbox
+- `tts_pitch` - Not supported by Chatterbox
+
+**New Chatterbox TTS Fields** (added):
+- `tts_exaggeration` (Float, 0.25-2.0, default 1.0) - Emotion intensity
+- `tts_cfg_weight` (Float, 0.0-1.0, default 0.7) - Speech pace control
+- `tts_temperature` (Float, 0.05-5.0, default 0.3) - Voice sampling randomness
+- `tts_language` (String, default "en") - Language code
+
+**Migration Steps**:
+
+1. **Stop services**:
+   ```bash
+   docker compose down
+   ```
+
+2. **Pull latest code**:
+   ```bash
+   git pull origin feature/sentence-level-streaming
+   ```
+
+3. **Run Alembic migration**:
+   ```bash
+   docker compose up -d voxbridge-discord
+   docker exec voxbridge-discord alembic upgrade head
+   ```
+
+4. **Restart all services**:
+   ```bash
+   docker compose up -d --build
+   ```
+
+5. **Verify migration**:
+   - Check agent table schema: Should have `tts_exaggeration`, `tts_cfg_weight`, `tts_temperature`, `tts_language`
+   - No `tts_rate` or `tts_pitch` columns should exist
+   - Test TTS with an agent to confirm voice synthesis works
+
+**Data Loss Warning**: Existing `tts_rate` and `tts_pitch` values will be permanently lost. This is acceptable as these fields were not functional with Chatterbox.
+
+**Migration File**: `alembic/versions/20251105_1930_011_align_tts_with_chatterbox.py`
+
+### WebRTC Fixes (November 5-7, 2025)
+
+Three critical bugs resolved for browser-based voice chat:
+
+1. **Silence Detection** - Timer now updates before silence check (prevents infinite hang)
+2. **TTS Audio** - WebSocket kept open until user disconnect (fixes 100% audio failure)
+3. **Duplicate Responses** - Removed optimistic updates (fixes React Query race condition)
+
+**Test Coverage**: 27 new tests (100% passing), 90%+ WebRTC handler coverage
+
+See [docs/WEBRTC_FIXES_SESSION_SUMMARY.md](docs/WEBRTC_FIXES_SESSION_SUMMARY.md) for detailed analysis.
+
 ## Quick Start
 
 ### WhisperX Benefits
@@ -214,7 +310,7 @@ SILENCE_THRESHOLD_MS=800              # Silence detection threshold (ms)
 MAX_SPEAKING_TIME_MS=45000            # Max speaking time (45 seconds)
 
 # Chatterbox TTS Configuration
-CHATTERBOX_URL=http://host.docker.internal:4800/v1
+CHATTERBOX_URL=http://host.docker.internal:4800
 CHATTERBOX_VOICE_ID=your_voice_id
 
 # n8n Integration
@@ -291,6 +387,90 @@ Speak text in the voice channel using TTS.
 {
   "success": true,
   "message": "Speaking text"
+}
+```
+
+### Discord Plugin Endpoints (VoxBridge 2.0)
+
+#### GET /api/plugins/discord/voice/status/{agent_id}
+Get Discord voice connection status for a specific agent.
+
+**Response:**
+```json
+{
+  "connections": [
+    {
+      "agent_id": "uuid-here",
+      "guild_id": "680488880935403563",
+      "guild_name": "My Discord Server",
+      "channel_id": "680488880935403564",
+      "channel_name": "General Voice",
+      "connected": true
+    }
+  ]
+}
+```
+
+#### POST /api/plugins/discord/voice/join
+Join a voice channel for a specific agent.
+
+**Request:**
+```json
+{
+  "agent_id": "uuid-here",
+  "channel_id": 680488880935403564,
+  "guild_id": 680488880935403563
+}
+```
+
+**Important:** Discord snowflake IDs must be passed as numeric literals (not strings) to preserve precision. The frontend uses manual JSON serialization to avoid JavaScript number precision loss.
+
+**Response:**
+```json
+{
+  "success": true,
+  "message": "Joined voice channel: General Voice"
+}
+```
+
+#### POST /api/plugins/discord/voice/leave
+Leave the current voice channel for a specific agent.
+
+**Request:**
+```json
+{
+  "agent_id": "uuid-here",
+  "guild_id": 680488880935403563
+}
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "message": "Left voice channel"
+}
+```
+
+#### GET /api/channels
+List all available Discord guilds and voice channels.
+
+**Response:**
+```json
+{
+  "guilds": [
+    {
+      "id": "680488880935403563",
+      "name": "My Discord Server",
+      "channels": [
+        {
+          "id": "680488880935403564",
+          "name": "General Voice",
+          "userCount": 3
+        }
+      ]
+    }
+  ]
 }
 ```
 

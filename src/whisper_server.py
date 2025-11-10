@@ -37,6 +37,7 @@ WHISPERX_MODEL = os.getenv('WHISPERX_MODEL', 'small')
 WHISPERX_DEVICE = os.getenv('WHISPERX_DEVICE', 'auto')  # auto, cuda, or cpu
 WHISPERX_COMPUTE_TYPE = os.getenv('WHISPERX_COMPUTE_TYPE', 'float16')
 WHISPERX_BATCH_SIZE = int(os.getenv('WHISPERX_BATCH_SIZE', '16'))
+WHISPERX_LANGUAGE = os.getenv('WHISPERX_LANGUAGE', 'en')  # Force English (prevents Korean/auto-detect)
 SERVER_PORT = int(os.getenv('WHISPER_SERVER_PORT', '4901'))
 
 # Auto-detect best device
@@ -184,40 +185,61 @@ except Exception as e:
 
 class TranscriptionSession:
     """Manages a single transcription session for a user"""
-    
-    def __init__(self, websocket, user_id):
+
+    def __init__(self, websocket, user_id, audio_format='opus'):
         self.websocket = websocket
         self.user_id = user_id
-        
+        self.audio_format = audio_format  # 'opus' (Discord) or 'pcm' (WebRTC)
+
         # Dual buffer system to fix audio clipping
         self.session_buffer = bytearray()    # Keeps ALL audio for final transcription
         self.processing_buffer = bytearray() # For real-time chunks (can be trimmed)
-        
-        self.language = 'en'
+
+        self.language = WHISPERX_LANGUAGE  # Use global config (defaults to 'en')
         self.is_active = True
-        
-        # Opus decoder - Discord uses 48kHz stereo, 20ms frames (960 samples)
-        self.opus_decoder = opuslib.Decoder(48000, 2)
-        
-        logger.info(f"📝 New transcription session for user {user_id}")
-        logger.info(f"🎵 Opus decoder initialized (48kHz stereo)")
+
+        # Initialize Opus decoder only for 'opus' format (Discord)
+        # For 'pcm' format (WebRTC), audio is already decoded by PyAV
+        if audio_format == 'opus':
+            self.opus_decoder = opuslib.Decoder(48000, 2)
+            logger.info(f"📝 New transcription session for user {user_id} (format: opus)")
+            logger.info(f"🎵 Opus decoder initialized (48kHz stereo, 20ms frames)")
+        else:
+            self.opus_decoder = None
+            logger.info(f"📝 New transcription session for user {user_id} (format: pcm)")
+            logger.info(f"🎵 PCM audio path (no Opus decoding, 48kHz stereo)")
+
         logger.info(f"🔄 Dual buffer system: session_buffer (full) + processing_buffer (chunks)")
     
     async def add_audio(self, audio_chunk):
-        """Decode Opus audio chunk and add to both buffers"""
+        """
+        Add audio chunk to buffers with format-specific handling
+
+        For 'opus' format (Discord): Decode Opus frames to PCM
+        For 'pcm' format (WebRTC): Use audio directly (already PCM from PyAV)
+        """
         try:
-            # Decode Opus to PCM (960 samples per 20ms frame at 48kHz)
-            pcm_data = self.opus_decoder.decode(bytes(audio_chunk), frame_size=960)
-            
-            # Add to BOTH buffers
+            if self.audio_format == 'opus':
+                # Discord path: Decode Opus to PCM (960 samples per 20ms frame at 48kHz)
+                pcm_data = self.opus_decoder.decode(bytes(audio_chunk), frame_size=960)
+            else:
+                # WebRTC path: Already PCM from PyAV decode
+                pcm_data = audio_chunk
+
+            # Add to BOTH buffers (same logic for both formats)
             self.session_buffer.extend(pcm_data)    # Keeps ALL audio for final
             self.processing_buffer.extend(pcm_data) # For real-time chunks
-            
+
+            # Enhanced buffer tracking logging
+            logger.info(f"📊 [WHISPERX_BUFFERS] session_buffer: {len(self.session_buffer)} bytes, "
+                       f"processing_buffer: {len(self.processing_buffer)} bytes, "
+                       f"format: {self.audio_format}")
+
             # Process in chunks for real-time transcription
             # Every ~2 seconds of PCM audio (48kHz * 2 bytes * 2 channels * 2 sec = 384KB)
             if len(self.processing_buffer) >= 384000:
                 await self.process_audio_chunk()
-                
+
         except opuslib.OpusError as e:
             logger.error(f"❌ Opus decode error: {e}")
         except Exception as e:
@@ -239,9 +261,9 @@ class TranscriptionSession:
                 wav_file.setframerate(48000)  # 48kHz
                 wav_file.writeframes(bytes(self.processing_buffer))
             
-            # Transcribe with WhisperX
+            # Transcribe with WhisperX (force language to prevent auto-detection)
             audio = whisperx.load_audio(temp_path)
-            result = model.transcribe(audio, batch_size=WHISPERX_BATCH_SIZE)
+            result = model.transcribe(audio, batch_size=WHISPERX_BATCH_SIZE, language=self.language)
             
             # Extract segments
             segments = result.get("segments", [])
@@ -289,9 +311,9 @@ class TranscriptionSession:
                 wav_file.setframerate(48000)  # 48kHz
                 wav_file.writeframes(bytes(self.session_buffer))
             
-            # Transcribe complete audio with WhisperX
+            # Transcribe complete audio with WhisperX (force language to prevent auto-detection)
             audio = whisperx.load_audio(temp_path)
-            result = model.transcribe(audio, batch_size=WHISPERX_BATCH_SIZE)
+            result = model.transcribe(audio, batch_size=WHISPERX_BATCH_SIZE, language=self.language)
             
             # Extract segments
             segments = result.get("segments", [])
@@ -305,13 +327,17 @@ class TranscriptionSession:
             
             # Filter non-word sounds before sending
             final_text = ' '.join(transcript_parts)
-            
+
+            # Log language detection and raw transcript for debugging
+            detected_language = result.get('language', 'unknown')
+            logger.info(f"📝 Raw transcript ({len(transcript_parts)} segments, lang={detected_language}): \"{final_text}\"")
+
             if self.is_valid_speech(final_text):
                 await self.send_result('final', final_text)
                 logger.info(f"✅ Final transcript for {self.user_id}: \"{final_text}\"")
             else:
                 await self.send_result('final', '')
-                logger.info(f"🚫 Filtered non-speech audio for {self.user_id}: \"{final_text}\"")
+                logger.warning(f"🚫 Filtered non-speech audio for {self.user_id}: \"{final_text}\" (validation failed)")
             
             # Clean up
             os.unlink(temp_path)
@@ -346,59 +372,74 @@ class TranscriptionSession:
             logger.error(f"❌ Error sending error message: {e}")
     
     def is_valid_speech(self, text):
-        """Check if transcript contains valid speech vs non-word sounds/silence"""
+        """
+        Check if transcript contains valid speech vs non-word sounds/silence.
+
+        Improved version with better logging and less aggressive filtering.
+        """
         # Filter blank/empty transcripts
         if not text or len(text.strip()) == 0:
+            logger.debug(f"🔍 Validation: Empty transcript")
             return False
-        
+
         text_clean = text.lower().strip()
-        
+
         # Remove punctuation for better matching
         import string
         text_clean = text_clean.translate(str.maketrans('', '', string.punctuation))
-        
+
         # Filter out common non-word sounds and filler words
+        # Relaxed: Only filter extremely obvious non-speech
         non_speech_patterns = [
-            # Filler sounds
-            'hmm', 'uhm', 'uh', 'um', 'er', 'ah', 'eh', 'oh', 'huh',
-            'mhm', 'mm', 'mmm', 'hm',
-            
-            # Single letter/sounds
-            'a', 'i', 'o', 'e', 'u', 'n', 'm', 'k', 'b', 't', 's', 'p',
-            
-            # Noise descriptions  
+            # Filler sounds (only very short ones)
+            'hmm', 'uhm', 'uh', 'um', 'mm', 'mmm', 'hm',
+
+            # Single letter/sounds (only single chars)
+            'a', 'i', 'o', 'e', 'u', 'n', 'm',
+
+            # Noise descriptions
             'cough', 'sneeze', 'sigh', 'breath', 'noise', 'sound',
             'music', 'static', 'inaudible', 'silence'
         ]
-        
+
         words = text_clean.split()
-        
+
         # Must have at least one word
         if len(words) == 0:
+            logger.debug(f"🔍 Validation: No words after cleaning")
             return False
-            
-        # For single words
+
+        # For single words: be more lenient
         if len(words) == 1:
             word = words[0]
-            # Must be at least 3 characters OR 2+ chars but not in filter list
+            # Accept any word >= 2 chars that's not in strict filter list
             if len(word) < 2:
+                logger.debug(f"🔍 Validation: Single word too short: \"{word}\"")
                 return False
-            if len(word) <= 3 and word in non_speech_patterns:
+            if word in non_speech_patterns:
+                logger.debug(f"🔍 Validation: Single word is non-speech pattern: \"{word}\"")
                 return False
+            # Accept it (removed aggressive 3-char minimum)
             return True
-        
+
         # For multi-word: count valid words (not in filter list and 2+ chars)
         valid_words = []
         for word in words:
             if len(word) >= 2 and word not in non_speech_patterns:
                 valid_words.append(word)
-        
-        # Must have at least 2 valid words OR 70%+ valid ratio
-        if len(valid_words) >= 2:
+
+        # Relaxed threshold: accept if at least 1 valid word (was 2)
+        if len(valid_words) >= 1:
             return True
-        
+
+        # Fallback: check validity ratio (60% threshold, was 70%)
         validity_ratio = len(valid_words) / len(words) if len(words) > 0 else 0
-        return validity_ratio >= 0.7
+        accepted = validity_ratio >= 0.6
+
+        if not accepted:
+            logger.debug(f"🔍 Validation: Failed ratio check ({validity_ratio:.0%}): \"{text}\"")
+
+        return accepted
     
     def close(self):
         """Clean up session resources"""
@@ -428,12 +469,13 @@ async def handle_client(websocket, path):
                     msg_type = data.get('type')
                     
                     if msg_type == 'start':
-                        # Initialize new session
+                        # Initialize new session with format support
                         user_id = data.get('userId', 'unknown')
                         language = data.get('language', 'en')
-                        session = TranscriptionSession(websocket, user_id)
+                        audio_format = data.get('audio_format', 'opus')  # Default to 'opus' for backward compatibility
+                        session = TranscriptionSession(websocket, user_id, audio_format=audio_format)
                         session.language = language
-                        logger.info(f"🎤 Started session for user {user_id} (language: {language})")
+                        logger.info(f"🎤 Started session for user {user_id} (language: {language}, format: {audio_format})")
                     
                     elif msg_type == 'finalize':
                         # Finalize transcription

@@ -546,9 +546,9 @@ def _extract_sentences(self) -> list[str]:
     for match in self.sentence_delimiters.finditer(self.buffer):
         end_index = match.end()
         sentence = self.buffer[last_index:end_index].strip()
-        
+
         # Only add if long enough
-        if len(sentence) >= self.min_sentence_length:
+        if len(sentence) >= self.min_chunk_length:
             sentences.append(sentence)
     
     # Keep incomplete sentence in buffer

@@ -1,6 +1,8 @@
 ---
-agent_name: latency-optimizer
+name: latency-optimizer
 description: Analyzes latency logs and recommends performance optimizations
+model: sonnet
+color: blue
 ---
 
 # Latency Optimizer Agent

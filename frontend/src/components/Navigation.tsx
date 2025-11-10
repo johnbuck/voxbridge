@@ -1,5 +1,5 @@
 import { Link, useLocation } from 'wouter';
-import { Home, Bot, Mic, Volume2 } from 'lucide-react';
+import { Home, Brain, Settings } from 'lucide-react';
 import { cn } from '../lib/utils';
 
 export default function Navigation() {
@@ -10,25 +10,19 @@ export default function Navigation() {
       path: '/',
       label: 'Voxbridge',
       icon: Home,
-      description: 'Main Dashboard - Status & Conversation'
+      description: 'Main Dashboard - Analytics, Voice Chat & Conversation'
     },
     {
-      path: '/discord-bot',
-      label: 'Discord Bot',
-      icon: Bot,
-      description: 'Discord Bot Controls & Settings'
+      path: '/agents',
+      label: 'Agents',
+      icon: Brain,
+      description: 'Manage AI Agents'
     },
     {
-      path: '/whisperx',
-      label: 'WhisperX',
-      icon: Mic,
-      description: 'Speech-to-Text Service'
-    },
-    {
-      path: '/chatterbox-tts',
-      label: 'Chatterbox TTS',
-      icon: Volume2,
-      description: 'Text-to-Speech Settings'
+      path: '/settings',
+      label: 'Settings',
+      icon: Settings,
+      description: 'Configure Services & Integrations'
     }
   ];
 

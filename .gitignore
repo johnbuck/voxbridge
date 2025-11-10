@@ -30,3 +30,7 @@ htmlcov/
 
 # Whisper models cache
 ~/.cache/huggingface/
+
+# Claude Code local files (git-ignored working notes)
+CLAUDE.local.md
+.claude/local/

@@ -26,6 +26,10 @@ RUN pip install --no-cache-dir --upgrade pip && \
 # Copy application code
 COPY src/ ./src/
 
+# Copy database migration files (VoxBridge 2.0)
+COPY alembic.ini ./
+COPY alembic/ ./alembic/
+
 # Create non-root user
 RUN adduser --disabled-password --gecos '' --uid 1001 appuser && \
     chown -R appuser:appuser /app

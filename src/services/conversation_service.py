@@ -1,0 +1,689 @@
+"""
+VoxBridge 2.0 Phase 5 - ConversationService
+
+Purpose: Manage conversation sessions with in-memory context caching, session lifecycle,
+and agent configuration loading from PostgreSQL.
+
+Key Features:
+- Session-based routing (UUID session IDs)
+- In-memory conversation context cache (TTL-based, default 15 minutes)
+- Support multiple concurrent sessions (async/await)
+- Load context from PostgreSQL conversations table
+- Cache conversation history (last N messages, default 20)
+- TTL-based cache expiration with background cleanup task
+- Agent configuration loading from database
+- Per-session async locks for concurrency control
+
+Design Patterns:
+- Cache-Aside Pattern: Check cache first, load from DB on miss
+- TTL-based Expiration: Automatic cleanup of inactive sessions
+- Async Locks: Per-session locks prevent race conditions
+- Repository Pattern: Encapsulates database access logic
+"""
+
+import os
+import asyncio
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta
+from typing import Dict, List, Optional
+from uuid import UUID
+
+from sqlalchemy import select, update, and_
+from sqlalchemy.orm import selectinload
+
+from src.config.logging_config import get_logger
+from src.database.models import Agent, Session, Conversation
+from src.database.session import get_db_session
+
+# Configure logging with emoji prefixes
+logger = get_logger(__name__)
+
+# Configuration from environment variables
+CONVERSATION_CACHE_TTL_MINUTES = int(os.getenv('CONVERSATION_CACHE_TTL_MINUTES', '15'))
+MAX_CONTEXT_MESSAGES = int(os.getenv('MAX_CONTEXT_MESSAGES', '20'))
+CACHE_CLEANUP_INTERVAL_SECONDS = int(os.getenv('CACHE_CLEANUP_INTERVAL_SECONDS', '60'))
+
+
+@dataclass
+class Message:
+    """
+    Simplified message format for conversation context.
+
+    Attributes:
+        role: Message role ('user', 'assistant', or 'system')
+        content: Message text content
+        timestamp: When message was created
+        metadata: Optional extra data (latency metrics, etc.)
+    """
+    role: str
+    content: str
+    timestamp: datetime
+    metadata: Optional[Dict] = None
+
+
+@dataclass
+class CachedContext:
+    """
+    In-memory cache entry for a conversation session.
+
+    Attributes:
+        session: SQLAlchemy Session model
+        agent: SQLAlchemy Agent model (eagerly loaded)
+        messages: Recent conversation history (limited by max_context_messages)
+        last_activity: Last cache access time (updated on each access)
+        expires_at: When to evict from cache (last_activity + TTL)
+        lock: Async lock for concurrent access control
+    """
+    session: Session
+    agent: Agent
+    messages: List[Conversation]
+    last_activity: datetime
+    expires_at: datetime
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+
+
+class ConversationService:
+    """
+    Manages conversation sessions with in-memory context caching.
+
+    This service replaces the global speaker lock system with session-based routing,
+    enabling multiple concurrent users (Discord + multiple web users).
+
+    Usage:
+        # Initialize and start background cleanup
+        conv_service = ConversationService(cache_ttl_minutes=15, max_context_messages=20)
+        await conv_service.start()
+
+        # Get or create session
+        session = await conv_service.get_or_create_session(
+            session_id="550e8400-e29b-41d4-a716-446655440000",
+            user_id="discord_123456",
+            agent_id="agent_uuid",
+            channel_type="discord"
+        )
+
+        # Get conversation context
+        context = await conv_service.get_conversation_context(
+            session_id="550e8400-e29b-41d4-a716-446655440000",
+            limit=10,
+            include_system_prompt=True
+        )
+
+        # Add message
+        message = await conv_service.add_message(
+            session_id="550e8400-e29b-41d4-a716-446655440000",
+            role="user",
+            content="Hello, AI!",
+            metadata={"audio_duration_ms": 1500}
+        )
+
+        # End session
+        await conv_service.end_session(session_id="550e8400-e29b-41d4-a716-446655440000")
+
+        # Shutdown
+        await conv_service.stop()
+    """
+
+    def __init__(self, cache_ttl_minutes: int = CONVERSATION_CACHE_TTL_MINUTES,
+                 max_context_messages: int = MAX_CONTEXT_MESSAGES):
+        """
+        Initialize ConversationService.
+
+        Args:
+            cache_ttl_minutes: How long to keep inactive sessions in cache (default: 15)
+            max_context_messages: Maximum messages to cache per session (default: 20)
+        """
+        self._cache: Dict[str, CachedContext] = {}
+        self._cache_ttl = timedelta(minutes=cache_ttl_minutes)
+        self._max_context = max_context_messages
+        self._cleanup_task: Optional[asyncio.Task] = None
+        self._running = False
+
+        logger.info(
+            f"🎤 ConversationService initialized: "
+            f"cache_ttl={cache_ttl_minutes}min, max_context={max_context_messages}"
+        )
+
+    async def start(self) -> None:
+        """
+        Start background cache cleanup task.
+
+        Should be called on application startup (after database initialization).
+        """
+        if self._running:
+            logger.warning("🔄 ConversationService already running")
+            return
+
+        self._running = True
+        self._cleanup_task = asyncio.create_task(self._cleanup_expired_cache())
+        logger.info(f"✅ ConversationService started (cleanup interval: {CACHE_CLEANUP_INTERVAL_SECONDS}s)")
+
+    async def stop(self) -> None:
+        """
+        Stop background tasks and cleanup.
+
+        Should be called on application shutdown.
+        """
+        if not self._running:
+            return
+
+        self._running = False
+
+        if self._cleanup_task:
+            self._cleanup_task.cancel()
+            try:
+                await self._cleanup_task
+            except asyncio.CancelledError:
+                pass
+
+        logger.info("✅ ConversationService stopped")
+
+    async def get_or_create_session(
+        self,
+        session_id: str,
+        user_id: str,
+        agent_id: str,
+        channel_type: str = "webrtc",
+        user_name: Optional[str] = None,
+        title: Optional[str] = None
+    ) -> Session:
+        """
+        Get existing session or create new one.
+
+        Args:
+            session_id: UUID string for the session
+            user_id: User identifier (Discord ID, web user ID, etc.)
+            agent_id: Agent UUID string
+            channel_type: Session type ('webrtc', 'discord', 'extension')
+            user_name: Optional display name for debugging
+            title: Optional conversation title
+
+        Returns:
+            Session: SQLAlchemy Session model
+
+        Raises:
+            ValueError: If agent_id not found in database
+        """
+        # Check cache first
+        if session_id in self._cache:
+            cached = self._cache[session_id]
+            async with cached.lock:
+                # Update activity
+                cached.last_activity = datetime.utcnow()
+                cached.expires_at = cached.last_activity + self._cache_ttl
+                logger.debug(f"🎤 Session {session_id[:8]}... found in cache")
+                return cached.session
+
+        # Load from database or create new
+        try:
+            async with get_db_session() as db:
+                # Try to load existing session
+                result = await db.execute(
+                    select(Session)
+                    .options(selectinload(Session.agent))
+                    .where(Session.id == UUID(session_id))
+                )
+                session = result.scalar_one_or_none()
+
+                if session:
+                    logger.info(f"📡 Loaded existing session {session_id[:8]}... from database")
+                    # Cache it
+                    await self._ensure_session_cached(str(session.id))
+                    return session
+
+                # Create new session
+                # First verify agent exists
+                result = await db.execute(
+                    select(Agent).where(Agent.id == UUID(agent_id))
+                )
+                agent = result.scalar_one_or_none()
+                if not agent:
+                    raise ValueError(f"Agent {agent_id} not found")
+
+                session = Session(
+                    id=UUID(session_id),
+                    user_id=user_id,
+                    user_name=user_name,
+                    agent_id=UUID(agent_id),
+                    session_type=channel_type,
+                    title=title,
+                    active=True
+                )
+                db.add(session)
+                await db.commit()
+                await db.refresh(session)
+
+                logger.info(
+                    f"✅ Created new session {session_id[:8]}... "
+                    f"(user={user_id}, agent={agent.name})"
+                )
+
+                # Cache it
+                await self._ensure_session_cached(str(session.id))
+                return session
+
+        except Exception as e:
+            logger.error(f"💥 Error getting/creating session {session_id[:8]}...: {e}")
+            raise
+
+    async def get_conversation_context(
+        self,
+        session_id: str,
+        limit: int = 10,
+        include_system_prompt: bool = True
+    ) -> List[Message]:
+        """
+        Get conversation context for a session.
+
+        Args:
+            session_id: UUID string for the session
+            limit: Maximum number of recent messages to return (default: 10)
+            include_system_prompt: Prepend agent's system prompt (default: True)
+
+        Returns:
+            List[Message]: Recent conversation history in chronological order (oldest→newest)
+
+        Note:
+            - Returns empty list if session not found (graceful degradation)
+            - System prompt is inserted as first message if include_system_prompt=True
+            - Messages are in chronological order (oldest first, newest last)
+            - ✅ FIX: Messages are now loaded from DB in ASC order to match append() behavior
+        """
+        try:
+            # Ensure session is cached
+            cached = await self._ensure_session_cached(session_id)
+
+            async with cached.lock:
+                # Update activity
+                cached.last_activity = datetime.utcnow()
+                cached.expires_at = cached.last_activity + self._cache_ttl
+
+                # Build message list
+                messages = []
+
+                # Add system prompt if requested
+                if include_system_prompt and cached.agent.system_prompt:
+                    messages.append(Message(
+                        role="system",
+                        content=cached.agent.system_prompt,
+                        timestamp=cached.session.started_at
+                    ))
+
+                # Add conversation messages (convert from Conversation to Message)
+                # ✅ FIX: cached.messages are now in ASC order (oldest first)
+                # No need to reverse - just take last N messages directly
+                for conv in cached.messages[-limit:]:
+                    messages.append(Message(
+                        role=conv.role,
+                        content=conv.content,
+                        timestamp=conv.timestamp,
+                        metadata={
+                            "audio_duration_ms": conv.audio_duration_ms,
+                            "tts_duration_ms": conv.tts_duration_ms,
+                            "llm_latency_ms": conv.llm_latency_ms,
+                            "total_latency_ms": conv.total_latency_ms
+                        }
+                    ))
+
+                # DIAGNOSTIC: Log all messages being returned
+                logger.info(f"📋 [CONVERSATION_CONTEXT] Returning {len(messages)} messages for session {session_id[:8]}:")
+                for idx, msg in enumerate(messages):
+                    content_preview = msg.content[:60] + '...' if len(msg.content) > 60 else msg.content
+                    logger.info(f"   [{idx}] {msg.role}: \"{content_preview}\"")
+
+                return messages
+
+        except Exception as e:
+            logger.error(f"💥 Error getting conversation context {session_id[:8]}...: {e}")
+            # Graceful degradation: return empty context
+            return []
+
+    async def add_message(
+        self,
+        session_id: str,
+        role: str,
+        content: str,
+        metadata: Optional[Dict] = None
+    ) -> Message:
+        """
+        Add message to conversation history.
+
+        Args:
+            session_id: UUID string for the session
+            role: Message role ('user', 'assistant', or 'system')
+            content: Message text content
+            metadata: Optional metrics (audio_duration_ms, tts_duration_ms, etc.)
+
+        Returns:
+            Message: The added message
+
+        Raises:
+            ValueError: If session not found
+        """
+        metadata = metadata or {}
+
+        try:
+            # Ensure session is cached
+            cached = await self._ensure_session_cached(session_id)
+
+            async with cached.lock:
+                # Update activity
+                cached.last_activity = datetime.utcnow()
+                cached.expires_at = cached.last_activity + self._cache_ttl
+
+                # Create conversation entry
+                async with get_db_session() as db:
+                    # ✅ FIX: Check for duplicate messages and PREVENT insertion
+                    ten_seconds_ago = datetime.utcnow() - timedelta(seconds=10)
+                    existing_check = await db.execute(
+                        select(Conversation)
+                        .where(
+                            and_(
+                                Conversation.session_id == UUID(session_id),
+                                Conversation.role == role,
+                                Conversation.content == content,
+                                Conversation.timestamp >= ten_seconds_ago
+                            )
+                        )
+                    )
+                    existing = existing_check.scalar_one_or_none()
+                    if existing:
+                        logger.warning(
+                            f"🚫 [DB_DUPLICATE] Duplicate message detected - returning existing! "
+                            f"session={session_id[:8]}..., role={role}, "
+                            f"existing_id={existing.id}, existing_timestamp={existing.timestamp}"
+                        )
+
+                        # Return existing message instead of creating duplicate
+                        return Message(
+                            role=existing.role,
+                            content=existing.content,
+                            timestamp=existing.timestamp,
+                            metadata=metadata
+                        )
+
+                    # Create and insert new conversation (only if not duplicate)
+                    logger.info(
+                        f"💾 [DB_INSERT] Inserting message: session={session_id[:8]}..., "
+                        f"role={role}, length={len(content)} chars"
+                    )
+
+                    conversation = Conversation(
+                        session_id=UUID(session_id),
+                        role=role,
+                        content=content,
+                        audio_duration_ms=metadata.get("audio_duration_ms"),
+                        tts_duration_ms=metadata.get("tts_duration_ms"),
+                        llm_latency_ms=metadata.get("llm_latency_ms"),
+                        total_latency_ms=metadata.get("total_latency_ms")
+                    )
+                    db.add(conversation)
+                    await db.commit()
+                    await db.refresh(conversation)
+
+                    logger.info(
+                        f"✅ [DB_INSERT] Saved with id={conversation.id}, "
+                        f"timestamp={conversation.timestamp}"
+                    )
+
+                # Add to cache (maintain max_context limit)
+                cached.messages.append(conversation)
+                if len(cached.messages) > self._max_context:
+                    cached.messages = cached.messages[-self._max_context:]
+
+                message = Message(
+                    role=conversation.role,
+                    content=conversation.content,
+                    timestamp=conversation.timestamp,
+                    metadata=metadata
+                )
+
+                logger.debug(
+                    f"💬 Added {role} message to session {session_id[:8]}... "
+                    f"(length={len(content)} chars)"
+                )
+
+                return message
+
+        except Exception as e:
+            logger.error(f"💥 Error adding message to session {session_id[:8]}...: {e}")
+            raise
+
+    async def get_agent_config(self, session_id: str) -> Agent:
+        """
+        Get agent configuration for a session.
+
+        Args:
+            session_id: UUID string for the session
+
+        Returns:
+            Agent: SQLAlchemy Agent model with LLM and TTS settings
+
+        Raises:
+            ValueError: If session not found
+        """
+        try:
+            # Ensure session is cached
+            cached = await self._ensure_session_cached(session_id)
+
+            async with cached.lock:
+                # Update activity
+                cached.last_activity = datetime.utcnow()
+                cached.expires_at = cached.last_activity + self._cache_ttl
+
+                logger.debug(
+                    f"🎤 Retrieved agent config for session {session_id[:8]}... "
+                    f"(agent={cached.agent.name})"
+                )
+                return cached.agent
+
+        except Exception as e:
+            logger.error(f"💥 Error getting agent config for session {session_id[:8]}...: {e}")
+            raise
+
+    async def update_session_activity(self, session_id: str) -> None:
+        """
+        Update session activity timestamp (keepalive).
+
+        Args:
+            session_id: UUID string for the session
+
+        Note:
+            This is a lightweight operation to prevent cache expiration
+            for long-running sessions with infrequent messages.
+        """
+        try:
+            if session_id in self._cache:
+                cached = self._cache[session_id]
+                async with cached.lock:
+                    cached.last_activity = datetime.utcnow()
+                    cached.expires_at = cached.last_activity + self._cache_ttl
+                    logger.debug(f"🔄 Updated activity for session {session_id[:8]}...")
+        except Exception as e:
+            logger.warning(f"⚠️ Error updating session activity {session_id[:8]}...: {e}")
+
+    async def end_session(self, session_id: str, persist: bool = True) -> None:
+        """
+        End a conversation session.
+
+        Args:
+            session_id: UUID string for the session
+            persist: If True, mark session as inactive in database (default: True)
+
+        Note:
+            - Removes session from cache immediately
+            - If persist=True, updates database to set active=False and ended_at
+            - If persist=False, only removes from cache (session remains active in DB)
+        """
+        try:
+            # Remove from cache
+            if session_id in self._cache:
+                del self._cache[session_id]
+                logger.info(f"🎤 Removed session {session_id[:8]}... from cache")
+
+            # Update database if persisting
+            if persist:
+                async with get_db_session() as db:
+                    await db.execute(
+                        update(Session)
+                        .where(Session.id == UUID(session_id))
+                        .values(active=False, ended_at=datetime.utcnow())
+                    )
+                    await db.commit()
+                    logger.info(f"✅ Ended session {session_id[:8]}... in database")
+
+        except Exception as e:
+            logger.error(f"💥 Error ending session {session_id[:8]}...: {e}")
+
+    async def clear_cache(self, session_id: Optional[str] = None) -> None:
+        """
+        Clear conversation cache.
+
+        Args:
+            session_id: Optional session UUID to clear. If None, clears all cache.
+
+        Note:
+            This does not affect database records, only in-memory cache.
+        """
+        try:
+            if session_id:
+                if session_id in self._cache:
+                    del self._cache[session_id]
+                    logger.info(f"🔄 Cleared cache for session {session_id[:8]}...")
+            else:
+                count = len(self._cache)
+                self._cache.clear()
+                logger.info(f"🔄 Cleared all cache ({count} sessions)")
+
+        except Exception as e:
+            logger.error(f"💥 Error clearing cache: {e}")
+
+    async def get_active_sessions(self) -> List[str]:
+        """
+        Get list of active session IDs currently in cache.
+
+        Returns:
+            List[str]: List of session UUID strings
+
+        Note:
+            This only returns sessions currently in cache, not all active
+            sessions in the database.
+        """
+        return list(self._cache.keys())
+
+    async def _load_session_from_db(self, session_id: str) -> Optional[CachedContext]:
+        """
+        Load session from database and create cache entry.
+
+        Args:
+            session_id: UUID string for the session
+
+        Returns:
+            Optional[CachedContext]: Cache entry if session found, None otherwise
+        """
+        try:
+            async with get_db_session() as db:
+                # Load session with agent (eager loading)
+                result = await db.execute(
+                    select(Session)
+                    .options(selectinload(Session.agent))
+                    .where(Session.id == UUID(session_id))
+                )
+                session = result.scalar_one_or_none()
+
+                if not session:
+                    logger.warning(f"⚠️ Session {session_id[:8]}... not found in database")
+                    return None
+
+                # Load recent messages in ASC order (oldest first)
+                # This matches the order when we append() new messages to the cache
+                result = await db.execute(
+                    select(Conversation)
+                    .where(Conversation.session_id == UUID(session_id))
+                    .order_by(Conversation.timestamp.asc())
+                    .limit(self._max_context)
+                )
+                messages = list(result.scalars().all())
+
+                # Create cache entry
+                now = datetime.utcnow()
+                cached = CachedContext(
+                    session=session,
+                    agent=session.agent,
+                    messages=messages,
+                    last_activity=now,
+                    expires_at=now + self._cache_ttl
+                )
+
+                logger.debug(
+                    f"📡 Loaded session {session_id[:8]}... from DB "
+                    f"({len(messages)} messages)"
+                )
+
+                return cached
+
+        except Exception as e:
+            logger.error(f"💥 Error loading session {session_id[:8]}... from DB: {e}")
+            return None
+
+    async def _cleanup_expired_cache(self) -> None:
+        """
+        Background task to remove expired cache entries.
+
+        Runs every CACHE_CLEANUP_INTERVAL_SECONDS seconds.
+        Removes entries where datetime.utcnow() > expires_at.
+        """
+        logger.info(f"🔄 Cache cleanup task started (interval: {CACHE_CLEANUP_INTERVAL_SECONDS}s)")
+
+        while self._running:
+            try:
+                await asyncio.sleep(CACHE_CLEANUP_INTERVAL_SECONDS)
+
+                now = datetime.utcnow()
+                expired = []
+
+                for session_id, cached in list(self._cache.items()):
+                    if now > cached.expires_at:
+                        expired.append(session_id)
+
+                for session_id in expired:
+                    del self._cache[session_id]
+
+                if expired:
+                    logger.info(
+                        f"🔄 Cleaned up {len(expired)} expired sessions from cache "
+                        f"({len(self._cache)} remaining)"
+                    )
+
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"💥 Error in cache cleanup task: {e}")
+
+        logger.info("✅ Cache cleanup task stopped")
+
+    async def _ensure_session_cached(self, session_id: str) -> CachedContext:
+        """
+        Ensure session is in cache, loading from database if needed.
+
+        Args:
+            session_id: UUID string for the session
+
+        Returns:
+            CachedContext: Cache entry for the session
+
+        Raises:
+            ValueError: If session not found in database
+        """
+        # Check cache first
+        if session_id in self._cache:
+            return self._cache[session_id]
+
+        # Load from database
+        cached = await self._load_session_from_db(session_id)
+        if not cached:
+            raise ValueError(f"Session {session_id} not found")
+
+        # Add to cache
+        self._cache[session_id] = cached
+        return cached

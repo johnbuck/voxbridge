@@ -1,6 +1,8 @@
 ---
-agent_name: unit-test-writer
+name: unit-test-writer
 description: Create unit tests for uncovered code paths to increase coverage
+model: sonnet
+color: purple
 ---
 
 # Unit Test Writer Agent
@@ -74,7 +76,9 @@ For each gap:
 - What needs to be mocked?
 - What should be asserted?
 
-### Step 4: Write Tests
+### Step 4: Write Tests (DO NOT RUN - WRITE ONLY)
+**IMPORTANT**: Your job is to WRITE tests, not run them. The orchestrator will run tests at phase completion to avoid system resource issues.
+
 Follow this template:
 
 ```python
@@ -108,17 +112,7 @@ async def test_speaker_manager_handles_n8n_timeout():
         assert manager.active_speaker is None
 ```
 
-### Step 5: Run Tests
-```bash
-# Run specific test file
-./test.sh tests/unit/test_speaker_manager.py -v
-
-# Run specific test
-./test.sh tests/unit/test_speaker_manager.py::test_speaker_manager_handles_n8n_timeout -v
-
-# Check coverage improved
-./test.sh tests/unit --cov=src --cov-report=term-missing
-```
+**NOTE**: DO NOT run tests after writing. The orchestrator will verify tests at phase completion to avoid resource contention.
 
 ## Mocking Patterns
 
@@ -264,10 +258,10 @@ After analyzing coverage and writing tests:
 ```markdown
 # Unit Tests Written - speaker_manager.py
 
-## Coverage Improvement
+## Expected Coverage Improvement
 - Before: 45% (lines 200-550)
-- After: 78% (lines 200-550)
-- Net gain: +33%
+- Expected After: ~78% (lines 200-550)
+- Expected Net Gain: +33%
 
 ## Tests Created (tests/unit/test_speaker_manager.py)
 
@@ -289,7 +283,11 @@ After analyzing coverage and writing tests:
 11. `test_thinking_indicator_stopped_on_error` - Thinking sound stopped on error
 12. `test_cleanup_cancels_timeout_task` - Timeout task cancelled on cleanup
 
-## Test Results
+**Total: 12 new tests written**
+
+**Next Step**: Orchestrator will run `./test.sh tests/unit --cov=src --cov-report=term-missing` at phase completion to verify tests pass and measure actual coverage improvement.
+
+## Test Results (Orchestrator will verify)
 ```bash
 $ ./test.sh tests/unit/test_speaker_manager.py -v
 ========================= test session starts ==========================
@@ -311,9 +309,7 @@ tests/unit/test_speaker_manager.py::test_cleanup_cancels_timeout_task PASSED
 ========================== 12 passed in 0.15s ==========================
 ```
 
-All tests pass! ✅
-
-## Remaining Gaps
+## Remaining Gaps (for next iteration)
 - discord_bot.py lines 980-1020 (WebSocket connection handling)
 - streaming_handler.py lines 350-380 (clause splitting edge cases)
 ```
@@ -332,7 +328,7 @@ All tests pass! ✅
 - **Test behavior, not implementation** - Tests should survive refactoring
 - **Use existing fixtures** - Check tests/fixtures/ before creating new mock data
 - **Follow conventions** - Match existing test style in tests/unit/
-- **Run tests frequently** - Verify each test passes before moving to next
+- **DO NOT RUN TESTS** - Write tests only; orchestrator runs them at phase completion
 - **Document non-obvious tests** - Add docstrings explaining "why" for complex tests
 
 ## When to Use This Agent

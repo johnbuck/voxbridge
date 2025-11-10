@@ -66,16 +66,16 @@ export function StatusSummary({ metrics, isLoadingMetrics, wsConnected }: Status
 
   const uptime = `${formatUptime(metrics.uptime)} uptime`;
 
-  const wsStatusColor = wsConnected ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400';
-  const WsIcon = wsConnected ? Wifi : WifiOff;
-  const wsStatusText = wsConnected ? 'Ready' : 'Not Ready';
+  const statusColor = wsConnected ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400';
+  const StatusIcon = wsConnected ? Wifi : WifiOff;
+  const statusText = wsConnected ? 'Ready' : 'Not Ready';
 
   return (
     <div className="text-center">
       {/* Line 1: Icon + Ready + first 3 metrics */}
-      <div className={`inline-flex items-center gap-2 text-sm ${wsStatusColor}`}>
-        <WsIcon className="w-4 h-4" />
-        <span className="font-medium">{wsStatusText}</span>
+      <div className={`inline-flex items-center gap-2 text-sm ${statusColor}`}>
+        <StatusIcon className="w-4 h-4" />
+        <span className="font-medium">{statusText}</span>
         <span>•</span>
         <span className="text-muted-foreground">
           {transcripts} • {errors} • {firstAudio}

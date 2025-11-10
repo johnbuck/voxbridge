@@ -1,0 +1,3 @@
+# Audio fixtures directory
+# Pre-generated audio files for E2E testing
+# Generate with: python -m tests.fixtures.tts_audio_generator

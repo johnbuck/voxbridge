@@ -1,6 +1,8 @@
 ---
-agent_name: api-documenter
+name: api-documenter
 description: Generates and updates OpenAPI specifications for FastAPI endpoints
+model: sonnet
+color: red
 ---
 
 # API Documenter Agent

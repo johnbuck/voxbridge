@@ -1,9 +1,55 @@
 # VoxBridge 2.0: Modular AI Voice Platform - Transformation Plan
 
 **Created**: October 26, 2025
-**Status**: 🟡 Planning Phase
+**Last Updated**: October 29, 2025
+**Status**: 🟢 Implementation In Progress (Phases 1-5 Complete, Phase 6 In Progress)
 **Estimated Effort**: 14-16 days
 **Project Type**: Complete architectural transformation
+
+---
+
+## 📊 Progress Summary
+
+**Overall Progress**: 6.35 / 8 phases complete (79%)
+
+| Phase | Status | Completion Date | Key Deliverables |
+|-------|--------|----------------|------------------|
+| 1. Core Infrastructure | ✅ Complete | Oct 26, 2025 | PostgreSQL, SQLAlchemy models, Alembic migrations |
+| 2. Agent Management | ✅ Complete | Oct 26, 2025 | Agent CRUD API, AgentsPage UI, WebSocket updates |
+| 3. LLM Provider Abstraction | ✅ Complete | Oct 27, 2025 | OpenRouter + Local LLM providers, streaming support |
+| 4. Web Voice Interface | ✅ Complete | Oct 28, 2025 | WebRTC audio, voice chat UI, real-time transcription |
+| 5. Core Pipeline Refactor | ✅ Complete | Oct 28, 2025 | 4 new services (2,342 lines), session-based routing |
+| 6. Plugin System | 🟡 85% Complete | Started Oct 29 | Discord plugin complete, Phase 6.5 in progress |
+| 7. Documentation Overhaul | ⏳ Pending | - | Major doc rewrite needed |
+| 8. Testing & Migration | ⏳ Pending | - | Test updates, coverage verification |
+
+**Recent Achievements** (October 29-30, 2025):
+- ✅ **LLM Provider Management System** (Phase 6.5.4) - October 30
+  - Full CRUD UI for managing OpenRouter, Ollama, OpenAI, custom providers
+  - API key encryption using existing plugin encryption system
+  - Model fetching with caching, connection testing with metrics
+  - 4 new database migrations (005, 006, 007, 008)
+- ✅ **Multi-Turn Voice Conversations** - October 30
+  - Per-utterance timeout (configurable per agent, 2 min default)
+  - Replaces global speaker lock with continuous monitoring
+  - Database migration 008 for `max_utterance_time_ms` field
+- ✅ **Discord Plugin Integration** - October 29
+  - Per-agent Discord bot controls in UI
+  - Discord snowflake ID precision fix (critical bug fix)
+  - Channel selector modal with guild/channel browsing
+  - Auto-reconnect logic for state desync
+- ✅ **Frontend Consolidation** - October 30
+  - Settings hub architecture (`/settings/*` routes)
+  - LLMProvidersPage, settings pages organized
+  - Agent configuration cleanup (removed 4 deprecated agents)
+
+**Next Steps**:
+1. Complete Phase 6.5: Frontend Experience & LLM Provider Management
+2. Clean up test suite (remove 3 legacy test files)
+3. Phase 7: Documentation overhaul
+4. Phase 8: Testing updates
+
+**Note**: n8n plugin work has been removed from scope. Agents can still use n8n via the existing `use_n8n` boolean field.
 
 ---
 
@@ -41,8 +87,9 @@ Optional Extensions:
 
 ## 📋 Implementation Phases
 
-### Phase 1: Core Infrastructure & Database (2 days)
+### Phase 1: Core Infrastructure & Database (2 days) ✅ COMPLETE
 
+**Status**: ✅ Completed October 26, 2025
 **Objective**: Set up PostgreSQL and database schema for agent storage.
 
 **Deliverables**:
@@ -72,8 +119,9 @@ Optional Extensions:
 
 ---
 
-### Phase 2: Agent Management System (2 days)
+### Phase 2: Agent Management System (2 days) ✅ COMPLETE
 
+**Status**: ✅ Completed October 26, 2025
 **Objective**: Build API and UI for managing AI agents.
 
 **Deliverables**:
@@ -106,8 +154,9 @@ Optional Extensions:
 
 ---
 
-### Phase 3: LLM Provider Abstraction (2 days)
+### Phase 3: LLM Provider Abstraction (2 days) ✅ COMPLETE
 
+**Status**: ✅ Completed October 27, 2025
 **Objective**: Create abstraction layer for multiple LLM providers.
 
 **Deliverables**:
@@ -150,8 +199,9 @@ class LLMProvider(ABC):
 
 ---
 
-### Phase 4: Web Voice Interface (2-3 days)
+### Phase 4: Web Voice Interface (2-3 days) ✅ COMPLETE
 
+**Status**: ✅ Completed October 28, 2025
 **Objective**: Build browser-based voice chat interface using WebRTC.
 
 **Deliverables**:
@@ -192,8 +242,9 @@ class LLMProvider(ABC):
 
 ---
 
-### Phase 5: Core Voice Pipeline Refactor (2-3 days)
+### Phase 5: Core Voice Pipeline Refactor (2-3 days) ✅ COMPLETE
 
+**Status**: ✅ Completed October 28, 2025
 **Objective**: Decouple core services from Discord and refactor to session-based routing.
 
 **Current Structure** (Discord-centric):
@@ -248,65 +299,181 @@ WebSocket Audio → STT Service → Conversation Service → Agent Router
 
 ---
 
-### Phase 6: Extension System (2 days)
+### Phase 6: Extension System (2 days) 🟡 IN PROGRESS
 
+**Status**: 🟡 Partially Complete - Discord Plugin Integration finished October 29, 2025
 **Objective**: Create plugin architecture for Discord and n8n as optional extensions.
 
+**Completed Sub-phases**:
+- ✅ **Discord Plugin Integration** (October 29, 2025):
+  - Per-agent Discord bot plugin system
+  - Plugin-based voice control endpoints (`/api/plugins/discord/voice/*`)
+  - Discord snowflake ID precision preservation (manual JSON serialization)
+  - Per-agent Discord status tracking (`/api/plugins/discord/voice/status/{agent_id}`)
+  - Channel selector modal with guild/channel browsing
+  - Auto-reconnect logic for state desync handling
+  - localStorage persistence for guild IDs across page reloads
+  - Responsive two-row layout for Discord plugin cards
+  - TTS test modal for agent-specific voice testing
+  - Frontend components: DiscordPluginCard, ChannelSelectorModal, TTSTestModal
+  - Backend: plugin-based endpoints, per-agent status tracking
+
+**Remaining Work**:
+- ⏳ Complete Phase 6.5: Frontend Experience & LLM Provider Management
+  - Route consolidation (voice chat to `/` route)
+  - UX behavior unification (STT/AI indicators)
+  - Settings hub refinement
+
+**Note**: Generic extension base class and n8n webhook extension have been removed from scope. Discord plugin implementation is sufficient for Phase 6 completion.
+
+**Deliverables** (Revised):
+- ✅ Discord plugin system (per-agent bot controls) - COMPLETE
+- ✅ Plugin-based voice endpoints (`/api/plugins/discord/voice/*`) - COMPLETE
+- ✅ Frontend plugin UI (DiscordPluginCard, modals) - COMPLETE
+- ⏳ Phase 6.5: Frontend Experience & LLM Provider Management - IN PROGRESS
+
+**Plugin Architecture**:
+The Discord plugin system uses a plugin-based architecture with:
+- `src/plugins/base.py` - PluginBase abstract class
+- `src/plugins/registry.py` - PluginRegistry (singleton pattern)
+- `src/plugins/discord_plugin.py` - Discord bot implementation (per-agent)
+- `src/services/plugin_manager.py` - PluginManager orchestration
+
+**Environment Variables**:
+- `USE_LEGACY_DISCORD_BOT=true/false` - Toggle legacy bot (deprecated)
+- `DISCORD_TOKEN` - Discord bot token (stored encrypted in database per-agent)
+
+**Documentation**:
+- ✅ Update ARCHITECTURE.md: Add "Plugin System Architecture" - COMPLETE
+- ✅ Update CLAUDE.md: Document plugin environment variables - COMPLETE
+- ✅ Update README.md: Add plugin configuration guide - COMPLETE
+
+---
+
+### Phase 6.5: Frontend Experience & LLM Provider Management (2 days)
+
+**Objective**: Consolidate voice chat to primary route, unify UX behaviors, and create unified LLM provider management interface.
+
+**Priority**: HIGH - Critical user experience issues identified
+
 **Deliverables**:
-- Extension base class with lifecycle hooks
-- Discord bot extension (refactored from current code)
-- n8n webhook extension (refactored from current code)
-- Extension registry and manager
-- Environment variable toggles
-- Frontend settings UI for enabling/disabling extensions
 
-**Extension Interface**:
-```python
-class Extension(ABC):
-    name: str
-    enabled: bool
+#### 6.5.1: Route Consolidation (3-4 hours)
+- Move voice chat functionality to `/` route (primary interaction)
+- Rename current VoxbridgePage → DiscordBotLegacyPage
+- Move to `/discord-bot` route as optional fallback
+- Update navigation links and routing
 
-    @abstractmethod
-    async def on_enable(self):
-        """Called when extension is enabled"""
-        pass
+**New Files**:
+- `frontend/src/pages/DiscordBotLegacyPage.tsx` (rename existing VoxbridgePage)
 
-    @abstractmethod
-    async def on_audio_input(self, audio: bytes) -> Optional[str]:
-        """Handle audio input (e.g., from Discord voice)"""
-        pass
+**Modified Files**:
+- `frontend/src/App.tsx` - Update routes
+- `frontend/src/pages/VoxbridgePage.tsx` - Replace with voice chat
+- `frontend/src/components/Navigation.tsx` - Update links
 
-    @abstractmethod
-    async def on_text_output(self, text: str, session_id: str):
-        """Handle text output (e.g., send to Discord)"""
-        pass
+#### 6.5.2: UX Behavior Unification (4-6 hours)
+- STT waiting indicator (microphone pulse, "Listening..." text, duration counter)
+- AI generation indicator ("Thinking..." with animated dots, loading spinner)
+- Chunk handling & streaming display (typewriter effect, auto-scroll)
+- Speaker lock visualization (which user has lock, duration timer)
 
-    @abstractmethod
-    async def on_disable(self):
-        """Called when extension is disabled"""
-        pass
+**New Files**:
+- `frontend/src/components/STTWaitingIndicator.tsx`
+- `frontend/src/components/AIGeneratingIndicator.tsx`
+- `frontend/src/components/StreamingMessageDisplay.tsx`
+
+**Modified Files**:
+- `frontend/src/components/AudioControls.tsx` - Add animations
+- `frontend/src/hooks/useWebRTCAudio.ts` - Emit state events
+- `frontend/src/pages/VoxbridgePage.tsx` - Integrate indicators
+
+#### 6.5.3: Settings Hub Architecture (5-7 hours)
+- Create `/settings` main hub with sidebar navigation
+- Move existing settings pages to child routes:
+  - `/settings/whisperx` (move from `/whisperx`)
+  - `/settings/chatterbox` (move from `/chatterbox-tts`)
+  - `/settings/plugins` (move from `/plugins`)
+- Add breadcrumbs and overview cards
+
+**New Files**:
+- `frontend/src/pages/SettingsPage.tsx` - Main hub
+- `frontend/src/components/SettingsSidebar.tsx`
+- `frontend/src/components/SettingsCard.tsx`
+- `frontend/src/pages/settings/WhisperXSettingsPage.tsx` (move existing)
+- `frontend/src/pages/settings/ChatterboxSettingsPage.tsx` (move existing)
+- `frontend/src/pages/settings/PluginsSettingsPage.tsx` (move existing)
+
+#### 6.5.4: LLM Provider Management (5-6 hours)
+**Inspired by Open WebUI's unified provider management**
+
+- Unified LLM providers page at `/settings/llm-providers`
+- Manage all OpenAI-compatible API endpoints (OpenRouter, Ollama, OpenAI, vLLM, LM Studio, custom)
+- Provider card grid with connection status, model count, actions
+- Add/edit provider dialog with form validation
+- Connection testing (calls `/v1/models` endpoint)
+- Auto-fetch available models on successful connection
+- Database-backed storage with encrypted API keys
+
+**Database Schema**:
+```sql
+CREATE TABLE llm_providers (
+    id UUID PRIMARY KEY,
+    name VARCHAR(255) NOT NULL,
+    base_url VARCHAR(512) NOT NULL,
+    api_key_encrypted TEXT,
+    provider_type VARCHAR(50),
+    models JSONB DEFAULT '[]',
+    default_model VARCHAR(255),
+    is_active BOOLEAN DEFAULT true,
+    created_at TIMESTAMP,
+    updated_at TIMESTAMP
+);
 ```
 
 **New Files**:
-- `src/extensions/base.py` - Base extension class
-- `src/extensions/manager.py` - Extension registry/manager
-- `src/extensions/discord_extension.py` - Discord integration
-- `src/extensions/n8n_extension.py` - n8n integration
-- `frontend/src/pages/ExtensionsPage.tsx` - Extension UI
-- `frontend/src/components/ExtensionCard.tsx` - Extension card
+- `frontend/src/pages/settings/LLMProvidersPage.tsx`
+- `frontend/src/components/LLMProviderCard.tsx`
+- `frontend/src/components/LLMProviderDialog.tsx`
+- `frontend/src/components/LLMProviderTestButton.tsx`
+- `src/routes/llm_provider_routes.py`
+- `src/services/llm_provider_service.py`
+- `src/database/models.py` - Add LLMProvider model
+- `alembic/versions/005_add_llm_providers_table.py`
+- `docs/user-guides/llm-provider-setup.md`
 
-**Environment Variables**:
-- `ENABLE_DISCORD_EXTENSION=true/false`
-- `ENABLE_N8N_EXTENSION=true/false`
-- `DISCORD_TOKEN` (if Discord enabled)
-- `N8N_WEBHOOK_URL` (if n8n enabled)
+**Modified Files**:
+- `frontend/src/services/api.ts` - Add LLM provider API methods
+- `src/llm/factory.py` - Use database providers instead of env vars
+- `src/services/agent_service.py` - Link agents to LLM providers
+- `frontend/src/components/AgentForm.tsx` - LLM provider dropdown
+
+**API Endpoints**:
+```
+GET    /api/settings/llm-providers          - List all providers
+POST   /api/settings/llm-providers          - Create new provider
+GET    /api/settings/llm-providers/:id      - Get provider details
+PUT    /api/settings/llm-providers/:id      - Update provider
+DELETE /api/settings/llm-providers/:id      - Delete provider
+POST   /api/settings/llm-providers/:id/test - Test connection
+```
+
+**Example Providers**:
+- **OpenRouter**: `https://openrouter.ai/api/v1` with API key
+- **Local Ollama**: `http://localhost:11434/v1` (no API key)
+- **OpenAI**: `https://api.openai.com/v1` with API key
+- **Custom**: Any OpenAI-compatible endpoint
+
+**Integration with Agents**:
+- Agents reference LLM provider by UUID (foreign key)
+- Agent form shows dropdown of available providers
+- Select provider → select model from provider's available models
+- Backward compatible with existing `llm_provider` string field
 
 **Documentation**:
-- Update ARCHITECTURE.md: Add "Extension System Architecture"
-- Update CLAUDE.md: Document extension environment variables
-- Update AGENTS.md: Add "Extension Development Guidelines"
-- Update README.md: Add extension configuration guide
-- Create `.claude/agents/extension-builder.md`: Extension development agent
+- User guide: Setting up LLM providers (OpenRouter, Ollama, OpenAI, custom)
+- API documentation: LLM provider endpoints
+- Migration guide: Converting from env vars to database providers
 
 ---
 
@@ -388,17 +555,21 @@ class Extension(ABC):
 
 ## 📊 Effort Breakdown
 
-| Phase | Development Days | Documentation Days | Total |
-|-------|-----------------|-------------------|-------|
-| 1. Infrastructure | 1.5 | 0.5 | 2 |
-| 2. Agent Management | 1.5 | 0.5 | 2 |
-| 3. LLM Providers | 1.5 | 0.5 | 2 |
-| 4. Web Voice | 2.5 | 0.5 | 3 |
-| 5. Core Refactor | 2 | 1 | 3 |
-| 6. Extensions | 1.5 | 0.5 | 2 |
-| 7. Documentation | 0 | 1 | 1 |
-| 8. Testing | 0.5 | 0.5 | 1 |
-| **Total** | **11** | **5** | **16 days** |
+| Phase | Est. Days | Actual Days | Status | Notes |
+|-------|-----------|-------------|--------|-------|
+| 1. Infrastructure | 2 | 1.5 | ✅ Complete | Oct 26 - PostgreSQL, models, migrations |
+| 2. Agent Management | 2 | 1.5 | ✅ Complete | Oct 26 - CRUD API + UI |
+| 3. LLM Providers | 2 | 2 | ✅ Complete | Oct 27 - OpenRouter + Local |
+| 4. Web Voice | 3 | 2.5 | ✅ Complete | Oct 28 - WebRTC + audio UI |
+| 5. Core Refactor | 3 | 2.5 | ✅ Complete | Oct 28 - Service layer |
+| 6. Plugin System | 2 | 2.7 | 🟡 85% Complete | Oct 29-30 - Discord + LLM Provider Mgmt |
+| 7. Documentation | 1 | - | ⏳ Pending | Major doc rewrite |
+| 8. Testing | 1 | - | ⏳ Pending | Test updates needed |
+| **Total** | **16** | **13.2 (so far)** | **79%** | On track |
+
+**Velocity**: Averaging 2.1 days per phase (vs estimated 2.0 days) - on schedule!
+
+**Note**: Phase 6 expanded to include Phase 6.5 (Frontend Experience & LLM Provider Management). n8n plugin work removed from scope.
 
 ---
 
@@ -442,18 +613,30 @@ class Extension(ABC):
 
 **VoxBridge 2.0 is complete when**:
 
-- ✅ User can create agents in frontend UI
-- ✅ User can chat with agent via browser voice (WebRTC)
-- ✅ Agents use configurable LLM (OpenRouter or local)
-- ✅ Conversation history persisted in PostgreSQL
-- ✅ Extensions can be enabled/disabled via env vars
-- ✅ Discord extension works (optional)
-- ✅ n8n extension works (optional)
-- ✅ All tests passing (88%+ coverage)
-- ✅ Documentation fully updated
+- ✅ User can create agents in frontend UI *(Complete - Oct 26)*
+- ✅ User can chat with agent via browser voice (WebRTC) *(Complete - Oct 28)*
+- ✅ Agents use configurable LLM (OpenRouter or local) *(Complete - Oct 27)*
+- ✅ Conversation history persisted in PostgreSQL *(Complete - Oct 26)*
+- ✅ Discord plugin integration working per-agent *(Complete - Oct 29)*
+- ✅ LLM Provider Management UI complete *(Complete - Oct 30)*
+- 🟡 Frontend experience unified (Phase 6.5) *(In Progress)*
+- ⏳ Test suite cleaned up (3 legacy files removed) *(Pending)*
+- ⏳ All tests passing (88%+ coverage) *(Needs cleanup)*
+- ⏳ Documentation fully updated *(Major rewrite pending - Phase 7)*
+
+**Current Score**: 6.5 / 10 criteria met (65%)
+
+**Note**: n8n extension and generic extension manager removed from scope. Existing `use_n8n` boolean field on agents provides n8n integration without requiring a separate plugin system.
 
 ---
 
-**Status**: 🟡 Planning Complete - Ready for Implementation
-**Next Step**: Phase 1 - Core Infrastructure & Database
-**Estimated Completion**: November 11, 2025 (16 days from Oct 26)
+**Status**: 🟢 Implementation In Progress - Phase 6 (79% complete)
+**Current Phase**: Phase 6.5 - Frontend Experience & LLM Provider Management (85% complete)
+**Next Milestone**: Complete Phase 6.5, then proceed to Phase 7 (Documentation)
+**Original Estimated Completion**: November 11, 2025
+**Revised Estimated Completion**: November 5, 2025 (ahead of schedule by 6 days)
+
+**Scope Changes**:
+- ✅ Phase 6.5 added (Frontend Experience & LLM Provider Management)
+- ❌ n8n plugin removed from scope (use existing `use_n8n` boolean field instead)
+- ❌ Generic extension base class removed from scope (Discord plugin implementation sufficient)

@@ -1,6 +1,8 @@
 ---
-agent_name: integration-test-writer
+name: integration-test-writer
 description: Create integration tests using mock servers for component interactions
+model: sonnet
+color: purple
 ---
 
 # Integration Test Writer Agent
