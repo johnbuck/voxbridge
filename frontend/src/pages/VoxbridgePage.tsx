@@ -1564,7 +1564,7 @@ export function VoxbridgePage() {
 
                             return (
                             <div
-                              key={message.id}
+                              key={`${message.role}-${message.content.substring(0, 100)}-${message.timestamp}`}
                               className={cn(
                                 'flex',
                                 message.role === 'user' ? 'justify-start' : 'justify-end'
