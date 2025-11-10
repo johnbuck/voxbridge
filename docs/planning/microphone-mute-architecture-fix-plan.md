@@ -1,8 +1,8 @@
 # Microphone Mute Architecture Fix - Research & Implementation Plan
 
 **Date**: November 8, 2025
-**Branch**: `feature/tts-playback-mic-off-fix` (to be updated)
-**Status**: Planning
+**Branch**: `feature/tts-playback-mic-off-fix`
+**Status**: ✅ **COMPLETED** (2025-11-09)
 
 ---
 
@@ -290,9 +290,11 @@ function unmuteMicrophone() {
 
 ## Implementation Plan
 
-### Phase 1: Critical Fix (Priority 1) ⚡
+### Phase 1: Critical Fix (Priority 1) ⚡ - ✅ COMPLETED
 
 **Goal**: Remove `!isMuted` check from WebSocket auto-reconnect
+
+**Implementation Status**: Superseded by Phase 3 architecture refactor (see below)
 
 **Files Modified**:
 - `frontend/src/hooks/useWebRTCAudio.ts`
@@ -327,9 +329,11 @@ function unmuteMicrophone() {
 
 ---
 
-### Phase 2: Dependency Cleanup (Priority 2) 🧹
+### Phase 2: Dependency Cleanup (Priority 2) 🧹 - ✅ COMPLETED
 
 **Goal**: Remove `isMuted` from all dependency arrays where it's not used
+
+**Implementation Status**: Completed as part of Phase 3 refactor
 
 **Files Modified**:
 - `frontend/src/hooks/useWebRTCAudio.ts`
@@ -361,9 +365,11 @@ function unmuteMicrophone() {
 
 ---
 
-### Phase 3: Architecture Refactor (Priority 3) 🏗️
+### Phase 3: Architecture Refactor (Priority 3) 🏗️ - ✅ COMPLETED
 
 **Goal**: Separate microphone control from session control
+
+**Implementation Status**: Fully implemented in commit 610f368
 
 **Files Modified**:
 - `frontend/src/hooks/useWebRTCAudio.ts`
@@ -441,9 +447,11 @@ const toggleMute = useCallback(() => {
 
 ---
 
-### Phase 4: UI Clarity (Priority 4) 🎨
+### Phase 4: UI Clarity (Priority 4) 🎨 - ✅ COMPLETED
 
 **Goal**: Update UI indicators to be independent of mic state
+
+**Implementation Status**: Completed in commit 397d1e7
 
 **Files Modified**:
 - `frontend/src/pages/VoxbridgePage.tsx`
@@ -527,16 +535,51 @@ const toggleMute = useCallback(() => {
 
 ---
 
-## Success Criteria
+## Success Criteria - ✅ ALL MET
 
 - ✅ No system freeze when clicking mic OFF at any point
 - ✅ AI responses complete even when mic is muted
 - ✅ TTS audio plays regardless of mic state
-- ✅ WebSocket auto-reconnects even when muted
+- ✅ WebSocket auto-reconnects even when muted (now persistent by design)
 - ✅ Multi-turn conversations work smoothly
 - ✅ No "STATE_CONFLICT" warnings in console
 - ✅ Clean separation: mic control independent of session control
 - ✅ Performance: Reduced unnecessary re-renders
+
+## Implementation Summary
+
+**Commit**: 610f368 - `refactor: implement Discord-style persistent WebSocket connection for voice chat`
+
+**Files Modified**:
+1. `frontend/src/hooks/useWebRTCAudio.ts` (major refactor):
+   - New functions: `startMicrophone()`, `stopMicrophone()`, `startSession()`, `endSession()`
+   - `toggleMute()` refactored to use microphone-only functions
+   - WebSocket stays connected when mic is muted (Discord-style)
+   - Old `start()`/`stop()` kept as deprecated aliases
+   - Improved component lifecycle: mount/unmount vs sessionId changes
+   - Changed timeslice: 100ms → 250ms for complete WebM Clusters
+
+2. `frontend/src/components/AudioControls.tsx`:
+   - Removed connection state display (Connected/Connecting badges)
+   - Simplified UI focused on mic control only
+
+3. `frontend/src/components/ConversationList.tsx`:
+   - Added "Leave Voice" button (LogOut icon)
+   - Changed "Active" badge → "Voice Active" (session + voice connected)
+
+4. `src/whisper_server.py`:
+   - Added enhanced buffer tracking logging
+
+**Architecture**: Discord-Style Persistent Connection (Option 1 from plan)
+- WebSocket stays connected across conversation switches
+- Mic mute/unmute only affects audio capture (not WebSocket)
+- Only disconnect on component unmount or explicit "Leave Voice" action
+
+**Benefits Achieved**:
+- Lower latency (no reconnection delay when unmuting)
+- Better UX (Discord-like persistent connection)
+- Cleaner separation of concerns (mic control vs connection state)
+- More complete WebM Clusters (250ms chunks instead of 100ms)
 
 ---
 

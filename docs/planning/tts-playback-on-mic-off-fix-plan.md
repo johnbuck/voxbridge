@@ -2,7 +2,7 @@
 
 **Date**: November 8, 2025
 **Branch**: `feature/tts-playback-mic-off-fix`
-**Status**: Planning
+**Status**: ✅ **SUPERSEDED** - Replaced by Discord-Style Persistent Connection Architecture
 
 ## Problem Statement
 
@@ -283,14 +283,39 @@ if not self.is_active:
 4. **`src/voice/webrtc_handler.py`**
    - Add warning log when TTS completes with closed connection (line ~1370)
 
-## Success Criteria
+## Success Criteria - ✅ ALL MET (Alternative Solution)
 
 - ✅ User can click mic OFF without cancelling AI's TTS audio
 - ✅ TTS audio plays completely even when mic is muted
-- ✅ WebSocket closes after TTS completes (no hanging connections)
+- ✅ WebSocket stays connected (better than closing after TTS - persistent like Discord)
 - ✅ No errors in console/logs during normal flow
 - ✅ Multi-turn conversations still work (mic ON → OFF → ON)
 - ✅ Page close/refresh properly cleans up (no leaks)
+
+---
+
+## ✅ ACTUAL IMPLEMENTATION - Discord-Style Persistent Connection
+
+**Decision**: The original "deferred disconnect" approach was superseded by a more comprehensive architectural solution.
+
+**Why**: Instead of deferring disconnect until TTS completes, we implemented a Discord-style persistent connection where:
+- WebSocket **never disconnects** on mic mute (stays open indefinitely)
+- Mic mute only affects microphone audio capture
+- User explicitly disconnects via "Leave Voice" button or component unmount
+- Lower latency (no reconnection delay when unmuting)
+- Simpler logic (no state tracking for deferred disconnect)
+
+**Implementation**: See commit 610f368 - `refactor: implement Discord-style persistent WebSocket connection for voice chat`
+
+**Files Modified**:
+1. `frontend/src/hooks/useWebRTCAudio.ts` - New lifecycle functions
+2. `frontend/src/components/AudioControls.tsx` - Removed connection state display
+3. `frontend/src/components/ConversationList.tsx` - Added "Leave Voice" button
+4. `src/whisper_server.py` - Enhanced buffer tracking logging
+
+**Result**: This solution achieves all the original goals PLUS additional benefits (lower latency, better UX, simpler code).
+
+**Original Plan Below** (for historical reference - not implemented as written)
 
 ## Rollback Plan
 

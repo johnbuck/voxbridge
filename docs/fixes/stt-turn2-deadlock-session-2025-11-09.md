@@ -251,3 +251,103 @@ Fix is successful when:
 - User local time: 07:26 PM (2025-11-09)
 - Session ID: `9d74349b-c848-4f67-990f-575c4da11a68`
 - AI response ID: 593
+
+---
+
+## ✅ RESOLUTION - COMPLETED (2025-11-09)
+
+**Status**: **FIXED** - Turn 2+ STT deadlock resolved with WebM header preservation
+
+### Final Solution: WebM Header Preservation
+
+**Root Cause Confirmed**:
+- Buffer clear at line 829 discarded WebM EBML+Segment header between turns
+- Turn 2+ chunks contained only Cluster blocks (no header)
+- PyAV rejected all headerless chunks with "InvalidDataError: Incomplete WebM data"
+- Result: 0 frames decoded, complete deadlock
+
+**Implementation** (`src/voice/webrtc_handler.py`):
+
+1. **State Variables Added** (lines 90-91):
+   - `self.header_validated: bool = False` - Track if header captured
+   - `self.turn_number: int = 0` - Track conversation turns
+
+2. **Header Capture Logic** (lines 480-546 in `_extract_new_pcm_audio()`):
+   - Detect EBML header: `has_ebml = self.webm_buffer[:4] == b'\x1a\x45\xdf\xa3'`
+   - On first successful decode: Extract header (EBML+Segment before first Cluster)
+   - Save in `self.webm_header` for reuse
+
+3. **Header Restoration** (lines 487-496):
+   - Turn 2+: If buffer lacks header, prepend saved header to decode buffer
+   - PyAV receives complete WebM container (header + clusters)
+   - Decoding succeeds, frames extracted normally
+
+4. **Auto-Restart Updates** (lines 843-880):
+   - Increment `self.turn_number` for tracking
+   - Clear buffer BUT preserve `self.webm_header`
+   - Remove NO-OP `self.av_container = None` line
+
+### Testing Results
+
+**User Confirmation**: "Ok, that seemst to have worked"
+
+**Verified Behavior**:
+- ✅ Turn 1: Works (header captured)
+- ✅ Turn 2: Works (header prepended, frames decoded)
+- ✅ Turn 3+: Works (header reused indefinitely)
+- ✅ Multi-turn conversations: Stable
+
+### Commits
+
+1. **Backend Fix** (commit 6e6dbb4):
+   ```
+   fix: preserve WebM header across conversation turns to prevent Turn 2+ deadlock
+   ```
+   - File: `src/voice/webrtc_handler.py`
+   - Changes: Header preservation logic, turn tracking, enhanced logging
+
+2. **Documentation** (commit 2c3ff30):
+   ```
+   docs: add comprehensive debugging session notes for Turn 2 STT deadlock
+   ```
+   - File: `docs/fixes/stt-turn2-deadlock-session-2025-11-09.md`
+   - Content: Complete debugging timeline and analysis
+
+### Related Work
+
+**Additional Fixes in Same Branch** (`feature/tts-playback-mic-off-fix`):
+
+3. **Frontend Ellipsis Fix** (commit 397d1e7):
+   - Content-based matching for TTS ellipsis animation
+   - Removed duplicate "AI is speaking" indicators
+   - Survives database refetch race condition
+
+4. **Discord-Style Persistent Connection** (commit 610f368):
+   - New lifecycle: `startMicrophone()`, `stopMicrophone()`, `startSession()`, `endSession()`
+   - WebSocket stays connected when mic is muted (lower latency)
+   - "Leave Voice" button for explicit disconnection
+   - Improved timeslice: 100ms → 250ms for complete WebM Clusters
+
+### Deployment Status
+
+- **Branch**: `feature/tts-playback-mic-off-fix`
+- **Backend**: Rebuilt and deployed (2025-11-09 ~20:00 UTC)
+- **Frontend**: Rebuilt and deployed (2025-11-09 ~20:00 UTC)
+- **Testing**: User confirmed multi-turn conversations working
+
+### Success Metrics
+
+All success criteria met:
+- ✅ Turn 1 works (already working)
+- ✅ Turn 2 works (audio decoded, transcript received, AI responds)
+- ✅ Turn 3+ works (multi-turn conversation stability)
+- ✅ No "InvalidDataError" in Turn 2+ logs
+- ✅ Frames decoded > 0 for every turn
+
+### Lessons Learned
+
+1. **State Variables Matter**: `self.av_container = None` was a NO-OP (variable never existed)
+2. **WebM Format Knowledge Critical**: Understanding EBML header structure was key
+3. **Browser Behavior**: MediaRecorder sends header only on first chunk, then clusters
+4. **PyAV Requirements**: Requires complete WebM container (header + clusters) to decode
+5. **Logging Investment Pays Off**: Enhanced logging revealed exact failure point
