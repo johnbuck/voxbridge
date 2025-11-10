@@ -76,7 +76,7 @@ export function VoxbridgePage() {
   const [voicePartialTranscript, setVoicePartialTranscript] = useState<string>('');
   const [isBotSpeaking, setIsBotSpeaking] = useState(false);  // Bot speaking state (blocks input during TTS)
   const [activeTTSContent, setActiveTTSContent] = useState<string | null>(null);  // Track message content being synthesized for ellipsis animation (survives DB refetch)
-  const [pendingUserTranscript, setPendingUserTranscript] = useState<{ text: string; isFinalizing: boolean; isStreaming: boolean; timestamp?: number } | null>(null);
+  const [pendingUserTranscript, setPendingUserTranscript] = useState<{ text: string; isFinalizing: boolean; isStreaming: boolean } | null>(null);
 
   const queryClient = useQueryClient();
   const toast = useToastHelpers();
@@ -261,21 +261,21 @@ export function VoxbridgePage() {
     return () => clearInterval(checkTimeout);
   }, [isVoiceAIGenerating]);
 
-  // Defensive auto-clear: If DB message loaded while placeholder still visible, clear it
-  // BUG FIX #2: Only clear AFTER AI completes (prevents jerky disappear/reappear)
+  // Defensive auto-clear: If DB message loaded while placeholder still visible, clear it immediately
+  // This ensures seamless transition from optimistic → database message
   useEffect(() => {
     if (pendingUserTranscript && activeSessionId && messages.length > 0) {
       const hasPendingInDB = messages.some(
         m => m.role === 'user' && m.content === pendingUserTranscript.text
       );
 
-      // Only clear when DB message exists AND AI is not generating (seamless transition)
-      if (hasPendingInDB && !isVoiceAIGenerating) {
-        logger.debug('[SAFETY] DB message loaded + AI complete - auto-clearing placeholder');
+      // Clear immediately when DB message exists (no duplicate bubbles)
+      if (hasPendingInDB) {
+        logger.debug('[SAFETY] DB message loaded - auto-clearing placeholder immediately');
         setPendingUserTranscript(null);
       }
     }
-  }, [messages, pendingUserTranscript, activeSessionId, isVoiceAIGenerating]);
+  }, [messages, pendingUserTranscript, activeSessionId]);
 
   // Get active session details
   const activeSession = sessions.find((s) => s.id === activeSessionId);
@@ -311,8 +311,8 @@ export function VoxbridgePage() {
 
         switch (message.event) {
         case 'partial_transcript':
-          // BUG FIX #1: Remove conditional gate - ALWAYS create bubble on partial_transcript
-          // BUG FIX #3: Add timestamp to force React re-renders on every update
+          // Show speech bubble immediately when user starts speaking
+          // React will re-render when text content changes naturally
 
           if (!listeningStartTimeRef.current) {
             logger.debug('🎤', 'LISTENING (WebRTC)', `Started (partial: "${message.data.text?.substring(0, 30) || '(empty)'}...")`, undefined, true);
@@ -330,8 +330,7 @@ export function VoxbridgePage() {
           setPendingUserTranscript({
             text: transcriptText,
             isFinalizing: false,
-            isStreaming: true,
-            timestamp: Date.now() // Force unique object reference for guaranteed re-renders
+            isStreaming: true
           });
           break;
 
@@ -349,8 +348,7 @@ export function VoxbridgePage() {
             setPendingUserTranscript({
               text: message.data.text,
               isFinalizing: true,
-              isStreaming: false,
-              timestamp: Date.now()
+              isStreaming: false
             });
           }
 
@@ -392,9 +390,10 @@ export function VoxbridgePage() {
           // Stop streaming animation
           setIsStreaming(false);
 
-          // Clear user transcript placeholder (AI generation complete, DB query definitely done)
-          logger.debug('[PENDING] Clearing user placeholder - AI response complete');
-          setPendingUserTranscript(null);
+          // Don't clear pending here - let auto-clear effect handle it when DB query returns
+          // This prevents the user message from disappearing during the refetch delay
+          // logger.debug('[PENDING] Clearing user placeholder - AI response complete');
+          // setPendingUserTranscript(null); // ❌ REMOVED: Causes 500ms gap
 
           // ✅ Optimistic UI: Directly update cache with completed message
           if (activeSessionId && message.data.text) {
@@ -432,11 +431,9 @@ export function VoxbridgePage() {
               fullLength: message.data.text.length
             }, true);
 
-            // Background refetch to get real DB IDs (delayed for smooth transition)
-            setTimeout(() => {
-              logger.debug('🔄', 'QUERY (WebRTC)', `Background refetch for DB IDs (session: ${activeSessionId})`, undefined, true);
-              queryClient.invalidateQueries({ queryKey: ['messages', activeSessionId] });
-            }, 500);
+            // Background refetch to get real DB IDs (immediate, React Query handles smooth transition)
+            logger.debug('🔄', 'QUERY (WebRTC)', `Background refetch for DB IDs (session: ${activeSessionId})`, undefined, true);
+            queryClient.invalidateQueries({ queryKey: ['messages', activeSessionId] });
           }
 
           // AI response text is complete, now waiting for TTS audio
@@ -1564,7 +1561,7 @@ export function VoxbridgePage() {
 
                             return (
                             <div
-                              key={`${message.role}-${message.content.substring(0, 100)}-${message.timestamp}`}
+                              key={(message as any).isPending || (message as any).isFinalizing ? 'pending-user-transcript' : `${message.role}-${message.id}`}
                               className={cn(
                                 'flex',
                                 message.role === 'user' ? 'justify-start' : 'justify-end'
