@@ -71,9 +71,19 @@ export interface UseWebRTCAudioReturn {
   connectionState: ConnectionState;
   permissionError: string | null;
   isRecording: boolean;
-  start: () => Promise<void>;
-  stop: () => void;
   isPendingTTS: boolean;  // Whether TTS audio is pending (AI is generating/streaming response)
+
+  // Phase 3 Refactor: Separate mic control from session lifecycle
+  startMicrophone: () => Promise<void>;  // Start mic only (assumes WebSocket connected)
+  stopMicrophone: () => void;            // Stop mic only (leaves WebSocket connected)
+  startSession: () => Promise<void>;     // Start full session (mic + WebSocket)
+  endSession: () => void;                // End full session (stop mic + disconnect WebSocket)
+
+  // Backward compatibility (deprecated)
+  /** @deprecated Use startSession() instead */
+  start: () => Promise<void>;
+  /** @deprecated Use stopMicrophone() instead */
+  stop: () => void;
 }
 
 export function useWebRTCAudio(options: UseWebRTCAudioOptions): UseWebRTCAudioReturn {
@@ -85,7 +95,7 @@ export function useWebRTCAudio(options: UseWebRTCAudioOptions): UseWebRTCAudioRe
     onServiceError,
     onRecordingStop,
     autoStart = false,
-    timeslice = 100, // 100ms chunks for low latency
+    timeslice = 250, // 250ms chunks for complete WebM Clusters (web best practice)
   } = options;
 
   // ✅ DISABLED: Too verbose - only enable when debugging hook initialization
@@ -114,7 +124,7 @@ export function useWebRTCAudio(options: UseWebRTCAudioOptions): UseWebRTCAudioRe
   const reconnectAttemptsRef = useRef(0);
   const audioChunksBufferRef = useRef<Blob[]>([]);
   const lastChunkTimeRef = useRef<number | null>(null); // Track last ondataavailable timestamp
-  const emptyChunkCountRef = useRef(0); // Batch 3.1: Track consecutive empty chunks
+  // emptyChunkCountRef removed - was only used in old start() function
 
   const MAX_RECONNECT_ATTEMPTS = 5;
   const RECONNECT_INTERVAL = 3000;
@@ -326,137 +336,124 @@ export function useWebRTCAudio(options: UseWebRTCAudioOptions): UseWebRTCAudioRe
     audioChunksBufferRef.current = [];
   }, []);
 
-  // Start audio capture
-  const start = useCallback(async () => {
-    logger.info('🎙️ start() called - initiating audio capture');
-    logger.debug('   - Current sessionId:', sessionId);
-    logger.debug('   - Current isMuted:', isMuted);
-    logger.debug('   - Current connectionState:', connectionState);
+  // ============================================================================
+  // OLD start() FUNCTION REMOVED - Replaced by Phase 3 Refactor
+  // See new architecture below: startMicrophone, stopMicrophone, startSession, endSession
+  // ============================================================================
+
+  // ============================================================================
+  // PHASE 3 REFACTOR: Separate Microphone Control from Session/WebSocket Lifecycle
+  // ============================================================================
+  //
+  // Architecture: Discord-Style Persistent Connection (Option 1)
+  // - WebSocket stays connected across all conversation switches
+  // - Mic mute/unmute only affects audio capture (not WebSocket)
+  // - Switching conversations sends session_init message (no reconnect)
+  // - Only disconnect WebSocket on tab close or explicit "Leave Voice"
+  //
+  // Functions:
+  // - startMicrophone() / stopMicrophone() = Mic control only
+  // - startSession() / endSession() = Full lifecycle (mic + WebSocket)
+  // - toggleMute() = Uses startMicrophone/stopMicrophone (no WebSocket interaction)
+  // ============================================================================
+
+  /**
+   * Start microphone capture only (assumes WebSocket already connected)
+   * Used by: toggleMute() when unmuting
+   */
+  const startMicrophone = useCallback(async () => {
+    logger.info('🎙️ startMicrophone() called - enabling microphone input only');
 
     try {
       setPermissionError(null);
 
-      logger.debug('🎤 Requesting microphone access...');
-      // Request microphone access (48kHz stereo to match Discord)
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          channelCount: 2, // Stereo (matching Discord)
-          sampleRate: 48000, // 48kHz (matching Discord)
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-        },
-      });
+      // If we don't have a media stream yet, request microphone access
+      if (!mediaStreamRef.current) {
+        logger.debug('🎤 No existing stream, requesting microphone access...');
+        const stream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            channelCount: 2, // Stereo (matching Discord)
+            sampleRate: 48000, // 48kHz (matching Discord)
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+          },
+        });
+        logger.info('✅ Microphone access GRANTED');
+        mediaStreamRef.current = stream;
 
-      logger.info('✅ Microphone access GRANTED');
-      logger.debug('   - Audio tracks:', stream.getAudioTracks().length);
+        // Create MediaRecorder if it doesn't exist
+        const mimeTypes = [
+          'audio/ogg;codecs=opus',     // OGG/Opus - best for streaming
+          'audio/webm;codecs=opus',    // WebM fallback
+        ];
 
-      mediaStreamRef.current = stream;
-
-      logger.debug('🎬 Creating MediaRecorder (OGG/Opus preferred, 100ms chunks)');
-
-      // Try OGG/Opus first (better streaming), fallback to WebM
-      const mimeTypes = [
-        'audio/ogg;codecs=opus',     // OGG/Opus - best for streaming
-        'audio/webm;codecs=opus',    // WebM fallback
-      ];
-
-      let selectedMimeType = '';
-      for (const mimeType of mimeTypes) {
-        if (MediaRecorder.isTypeSupported(mimeType)) {
-          selectedMimeType = mimeType;
-          logger.debug('✅ Using MIME type:', mimeType);
-          break;
+        let selectedMimeType = '';
+        for (const mimeType of mimeTypes) {
+          if (MediaRecorder.isTypeSupported(mimeType)) {
+            selectedMimeType = mimeType;
+            logger.debug('✅ Using MIME type:', mimeType);
+            break;
+          }
         }
-      }
 
-      if (!selectedMimeType) {
-        throw new Error('No supported audio codec found (OGG/Opus or WebM/Opus required)');
-      }
+        if (!selectedMimeType) {
+          throw new Error('No supported audio codec found (OGG/Opus or WebM/Opus required)');
+        }
 
-      // Create MediaRecorder
-      const mediaRecorder = new MediaRecorder(stream, {
-        mimeType: selectedMimeType,
-        audioBitsPerSecond: 64000, // 64kbps for voice
-      });
+        const mediaRecorder = new MediaRecorder(stream, {
+          mimeType: selectedMimeType,
+        });
 
-      // Handle audio data chunks
-      mediaRecorder.ondataavailable = (event) => {
-        const timestamp = new Date().toISOString();
-        lastChunkTimeRef.current = Date.now(); // Track last chunk time for watchdog
-
-        if (event.data.size > 0) {
-          // Batch 3.1: Reset empty chunk counter on non-empty chunk
-          emptyChunkCountRef.current = 0;
-
-          // ✅ CHECKPOINT 1: Frontend Audio Chunk Available
-          logger.info(`[${timestamp}] [MediaRecorder] 📤 Audio chunk available: ${event.data.size} bytes, connected=${wsRef.current?.readyState === WebSocket.OPEN}`);
-
-          // Send WebM chunk via WebSocket if connected
-          if (wsRef.current?.readyState === WebSocket.OPEN) {
-            // Send as Blob (will be sent as binary data)
-            event.data.arrayBuffer().then((buffer) => {
-              wsRef.current?.send(buffer);
-              // ✅ CHECKPOINT 1: Confirm Send
-              logger.info(`[${timestamp}] [MediaRecorder] ✅ Sent ${buffer.byteLength} bytes to WebSocket`);
-            });
-          } else {
-            // Buffer chunks while disconnected (will be discarded on reconnect)
+        // Set up MediaRecorder event handlers (same as start())
+        mediaRecorder.ondataavailable = (event) => {
+          if (event.data.size > 0) {
+            lastChunkTimeRef.current = Date.now();
             audioChunksBufferRef.current.push(event.data);
-            logger.warn(`[${timestamp}] [MediaRecorder] ⚠️  Audio chunk BUFFERED (WebSocket not connected, state: ${wsRef.current?.readyState}), buffer size: ${audioChunksBufferRef.current.length}`);
+
+            if (wsRef.current?.readyState === WebSocket.OPEN) {
+              wsRef.current.send(event.data);
+            }
           }
-        } else {
-          // Batch 3.1: Track consecutive empty chunks
-          emptyChunkCountRef.current++;
-          logger.warn(`[${timestamp}] [MediaRecorder] ⚠️  Empty audio chunk received (size=0), consecutive count: ${emptyChunkCountRef.current}`);
+        };
 
-          // Batch 3.1: Error after >10 consecutive empty chunks
-          if (emptyChunkCountRef.current > 10) {
-            logger.error(`🚨 [MediaRecorder] CRITICAL: ${emptyChunkCountRef.current} consecutive empty chunks - MediaRecorder may be broken!`);
-            logger.error(`   - MediaRecorder state: ${mediaRecorderRef.current?.state}`);
-            logger.error(`   - Stream active: ${mediaStreamRef.current?.active}`);
-            logger.error(`   - Audio tracks: ${mediaStreamRef.current?.getAudioTracks().length}`);
+        mediaRecorder.onstop = () => {
+          logger.debug('🛑 MediaRecorder stopped');
+          setIsRecording(false);
+          audioChunksBufferRef.current = [];
+        };
+
+        mediaRecorder.onerror = (event) => {
+          logger.error('❌ MediaRecorder ERROR:', event);
+          const errorMsg = 'Audio recording error';
+          setPermissionError(errorMsg);
+          if (onError) {
+            onError(errorMsg);
           }
-        }
-      };
+        };
 
-      mediaRecorder.onstart = () => {
-        logger.info('✅ MediaRecorder STARTED');
-        setIsRecording(true);
-      };
+        mediaRecorderRef.current = mediaRecorder;
+      }
 
-      mediaRecorder.onstop = () => {
-        logger.info('🛑 MediaRecorder STOPPED');
-        setIsRecording(false);
-        audioChunksBufferRef.current = [];
-      };
+      // Enable audio tracks
+      mediaStreamRef.current.getAudioTracks().forEach(track => {
+        track.enabled = true;
+        logger.debug('✅ Enabled audio track');
+      });
 
-      mediaRecorder.onerror = (event) => {
-        logger.error('❌ MediaRecorder ERROR:', event);
-        const errorMsg = 'Audio recording error';
-        setPermissionError(errorMsg);
-        if (onError) {
-          onError(errorMsg);
-        }
-      };
+      // Start MediaRecorder if not already recording
+      if (mediaRecorderRef.current?.state === 'inactive') {
+        logger.debug('🎬 Starting MediaRecorder with timeslice:', timeslice, 'ms');
+        mediaRecorderRef.current.start(timeslice || 100);
+      }
 
-      mediaRecorderRef.current = mediaRecorder;
-
-      // Start recording with 100ms timeslice (good balance of latency vs overhead)
-      logger.debug('🎬 Starting MediaRecorder with timeslice:', timeslice, 'ms');
-      mediaRecorder.start(timeslice || 100);
-
-      // Connect WebSocket
-      logger.debug('🔌 Calling connectWebSocket()...');
-      connectWebSocket();
-
-      // Unmute
-      logger.debug('🔓 Setting isMuted to false');
+      // Update state
       setIsMuted(false);
+      setIsRecording(true);
 
-      logger.debug('✅ start() completed successfully');
+      logger.debug('✅ startMicrophone() completed successfully');
     } catch (err) {
-      logger.error('❌ Failed to start audio capture:', err);
+      logger.error('❌ Failed to start microphone:', err);
 
       let errorMsg = 'Failed to access microphone';
       if (err instanceof Error) {
@@ -474,23 +471,18 @@ export function useWebRTCAudio(options: UseWebRTCAudioOptions): UseWebRTCAudioRe
       if (onError) {
         onError(errorMsg);
       }
-
-      // Clean up
-      if (mediaStreamRef.current) {
-        mediaStreamRef.current.getTracks().forEach((track) => track.stop());
-        mediaStreamRef.current = null;
-      }
     }
-  }, [connectWebSocket, timeslice, onError, sessionId, connectionState]);
+  }, [timeslice, onError]);
 
-  // Stop audio capture
-  const stop = useCallback(() => {
-    logger.info('🛑 stop() called - stopping microphone input');
+  /**
+   * Stop microphone capture only (leaves WebSocket connected)
+   * Used by: toggleMute() when muting
+   */
+  const stopMicrophone = useCallback(() => {
+    logger.info('🛑 stopMicrophone() called - disabling microphone input only');
 
-    // ALWAYS stop microphone input (user wants to stop talking)
     // Stop MediaRecorder
     if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
-      // Batch 3.1: Log MediaRecorder state before stop()
       const state = mediaRecorderRef.current.state;
       const hasStream = !!mediaStreamRef.current;
       const streamActive = mediaStreamRef.current?.active || false;
@@ -506,70 +498,144 @@ export function useWebRTCAudio(options: UseWebRTCAudioOptions): UseWebRTCAudioRe
       mediaStreamRef.current = null;
     }
 
+    // Update state
     setIsMuted(true);
     setIsRecording(false);
     audioChunksBufferRef.current = [];
 
-    // Notify parent component to clear UI state (Fix #2: Listening indicator cleanup)
+    // Notify parent component to clear UI state
     if (onRecordingStop) {
       logger.debug('   - Calling onRecordingStop callback');
       onRecordingStop();
     }
 
-    // ✅ MULTI-TURN CONVERSATION MODE: Never auto-disconnect WebSocket
+    // ✅ DISCORD-STYLE PERSISTENT CONNECTION: WebSocket stays alive
     // Philosophy: Mic OFF = "stop listening to me", NOT "end conversation"
-    // - WebSocket stays alive for TTS audio to complete
-    // - User can click mic ON again for next question (multi-turn like Discord)
-    // - Connection only closes when user leaves page or explicitly disconnects
-    logger.info('✅ Microphone stopped - WebSocket stays open for multi-turn conversation');
+    // - WebSocket remains connected for TTS audio and conversation switching
+    // - User can unmute and speak again immediately (no reconnection delay)
+    // - Connection only closes when user leaves page (endSession) or explicit disconnect
+    logger.info('✅ Microphone stopped - WebSocket stays open for persistent connection');
 
-    logger.debug('✅ stop() completed');
+    logger.debug('✅ stopMicrophone() completed');
   }, [onRecordingStop]);
 
-  // Toggle mute (stop/start recording but keep WebSocket connection)
+  /**
+   * Start full session (microphone + WebSocket connection)
+   * Used by: Auto-start effect, initial page load
+   */
+  const startSession = useCallback(async () => {
+    logger.info('🚀 startSession() called - starting full voice session');
+
+    // Connect WebSocket first
+    connectWebSocket();
+
+    // Then start microphone
+    await startMicrophone();
+
+    logger.debug('✅ startSession() completed');
+  }, [connectWebSocket, startMicrophone]);
+
+  /**
+   * End full session (stop microphone + disconnect WebSocket)
+   * Used by: Component unmount, explicit "Leave Voice" action
+   */
+  const endSession = useCallback(() => {
+    logger.info('🛑 endSession() called - ending full voice session');
+
+    // Stop microphone
+    stopMicrophone();
+
+    // Disconnect WebSocket
+    disconnectWebSocket();
+
+    logger.debug('✅ endSession() completed');
+  }, [stopMicrophone, disconnectWebSocket]);
+
+  // ============================================================================
+  // BACKWARD COMPATIBILITY: Keep old function names as aliases
+  // ============================================================================
+
+  /**
+   * @deprecated Use startSession() instead
+   * Kept for backward compatibility
+   */
+  const start = startSession;
+
+  /**
+   * @deprecated Use stopMicrophone() instead
+   * Kept for backward compatibility
+   */
+  const stop = stopMicrophone;
+
+  /**
+   * Toggle microphone mute state
+   * If WebSocket is disconnected (e.g., after "Leave Voice"), reconnect everything
+   * Otherwise, only toggle mic (Discord-style: WebSocket stays connected)
+   */
   const toggleMute = useCallback(() => {
     logger.debug('🔄 toggleMute() called (current isMuted:', isMuted, ')');
 
-    // ✅ DEBUG: Print stack trace to see who called toggleMute
-    console.trace('🔍 toggleMute() stack trace:');
-
     if (isMuted) {
-      logger.debug('   - Currently muted, calling start()...');
-      start();
+      // Unmuting - check if WebSocket is disconnected
+      const wsState = wsRef.current?.readyState;
+      logger.debug('   - Currently muted, checking WebSocket state:', wsState);
+
+      if (wsState !== WebSocket.OPEN && wsState !== WebSocket.CONNECTING) {
+        // WebSocket is disconnected (e.g., after "Leave Voice") - start full session
+        logger.info('   - WebSocket disconnected, starting full session (WebSocket + mic)');
+        startSession();
+      } else {
+        // WebSocket is connected - just unmute mic
+        logger.debug('   - WebSocket connected, just starting microphone');
+        startMicrophone();
+      }
     } else {
-      logger.debug('   - Currently unmuted, calling stop()...');
-      stop();
+      logger.debug('   - Currently unmuted, calling stopMicrophone()...');
+      stopMicrophone();   // ✅ Only affects mic, WebSocket stays connected
     }
-  }, [isMuted, start, stop]);
+  }, [isMuted, startMicrophone, stopMicrophone, startSession]);
 
-  // Auto-start if enabled
+  // Component mount/unmount lifecycle
   useEffect(() => {
-    logger.debug('🔄 useEffect[autoStart, sessionId] triggered');
-    logger.debug('   - autoStart:', autoStart);
-    logger.debug('   - sessionId:', sessionId);
+    logger.debug('🔄 useEffect[mount] - Component mounted');
 
+    // Auto-start if enabled
     if (autoStart && sessionId) {
-      logger.debug('   - Calling start() due to autoStart');
-      start();
+      logger.debug('   - Calling startSession() due to autoStart (mic + WebSocket)');
+      startSession();
     }
 
-    // Cleanup on unmount
+    // Cleanup on unmount ONLY - not on sessionId changes
     return () => {
-      logger.debug('🧹 useEffect cleanup - stopping microphone and disconnecting WebSocket');
-      stop();
-      disconnectWebSocket();  // Disconnect when component unmounts (user leaving page)
+      logger.debug('🧹 useEffect[mount] cleanup - Component unmounting, calling endSession()');
+      endSession();  // ✅ Proper cleanup when component unmounts (user leaving page)
     };
-  }, [autoStart, sessionId, stop, disconnectWebSocket]); // Include deps for cleanup
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // Run once on mount, cleanup once on unmount
 
-  // Update WebSocket session when sessionId changes
+  // Session switching - handle sessionId changes after mount
   useEffect(() => {
     logger.debug('🔄 useEffect[sessionId] triggered - session ID changed to:', sessionId);
 
-    if (wsRef.current?.readyState === WebSocket.OPEN && sessionId) {
-      logger.debug('   - Sending session_init message to WebSocket');
-      wsRef.current.send(JSON.stringify({ event: 'session_init', session_id: sessionId }));
+    if (!sessionId) {
+      logger.debug('   - No session ID, skipping');
+      return;
     }
-  }, [sessionId]);
+
+    // If WebSocket is already connected, just send session_init
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      logger.debug('   - WebSocket already open, sending session_init message');
+      wsRef.current.send(JSON.stringify({ event: 'session_init', session_id: sessionId }));
+      return;
+    }
+
+    // If WebSocket is disconnected, auto-connect (Discord-style persistent connection)
+    if (wsRef.current?.readyState !== WebSocket.CONNECTING) {
+      logger.info('🚀 Session selected - auto-connecting WebSocket (Discord-style)');
+      connectWebSocket();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionId]); // Only depend on sessionId, not connectWebSocket (stable via useCallback)
 
   // Watchdog: Detect if MediaRecorder stops sending chunks (silent failure)
   useEffect(() => {
@@ -579,11 +645,12 @@ export function useWebRTCAudio(options: UseWebRTCAudioOptions): UseWebRTCAudioRe
       if (lastChunkTimeRef.current) {
         const timeSinceLastChunk = Date.now() - lastChunkTimeRef.current;
         if (timeSinceLastChunk > 5000) { // 5 seconds without chunks = problem
-          logger.error(`🚨 [WATCHDOG] MediaRecorder ondataavailable stopped firing! Last chunk: ${timeSinceLastChunk}ms ago`);
+          logger.error(`🚨 [WATCHDOG] MediaRecorder ondataavailable stopped firing!`);
+          logger.error(`   - Last chunk: ${timeSinceLastChunk}ms ago`);
           logger.error(`   - MediaRecorder state: ${mediaRecorderRef.current?.state}`);
           logger.error(`   - WebSocket state: ${wsRef.current?.readyState}`);
-          logger.error(`   - isRecording: ${isRecording}`);
-          logger.error(`   - isMuted: ${isMuted}`);
+          logger.error(`   - isRecording: ${isRecording}, isMuted: ${isMuted}`);
+          logger.error(`   - Chunk count: ${audioChunksBufferRef.current.length}`);
         }
       }
     }, 2000); // Check every 2 seconds
@@ -605,8 +672,16 @@ export function useWebRTCAudio(options: UseWebRTCAudioOptions): UseWebRTCAudioRe
     connectionState,
     permissionError,
     isRecording,
-    start,
-    stop,
     isPendingTTS,  // Export for UI indicators
+
+    // Phase 3 Refactor: New lifecycle functions
+    startMicrophone,   // Start mic only (assumes WebSocket connected)
+    stopMicrophone,    // Stop mic only (leaves WebSocket connected)
+    startSession,      // Start full session (mic + WebSocket)
+    endSession,        // End full session (stop mic + disconnect WebSocket)
+
+    // Backward compatibility (deprecated)
+    start,  // @deprecated Use startSession() instead
+    stop,   // @deprecated Use stopMicrophone() instead
   };
 }

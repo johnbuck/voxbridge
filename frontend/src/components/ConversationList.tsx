@@ -1,14 +1,15 @@
 /**
  * ConversationList Component
  * ChatGPT-style sidebar showing past conversations
- * VoxBridge 2.0 Phase 4: Web Voice Interface
+ * VoxBridge 2.0: Discord-style persistent connection with "Leave Voice" button
  */
 
 import type { Session } from '@/services/api';
+import type { ConnectionState } from '@/types/webrtc';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { Plus, MessageSquare, Trash2, Calendar, Hash, Globe, MessageCircle } from 'lucide-react';
+import { Plus, MessageSquare, Trash2, Calendar, Hash, Globe, MessageCircle, LogOut } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 interface ConversationListProps {
@@ -18,6 +19,9 @@ interface ConversationListProps {
   onCreateSession: () => void;
   onDeleteSession: (sessionId: string) => void;
   isLoading?: boolean;
+  // Discord-style: Connection state and Leave Voice button
+  connectionState: ConnectionState;
+  onLeaveVoice: () => void;
 }
 
 export function ConversationList({
@@ -27,6 +31,8 @@ export function ConversationList({
   onCreateSession,
   onDeleteSession,
   isLoading = false,
+  connectionState,
+  onLeaveVoice,
 }: ConversationListProps) {
   // Hover state removed - delete button now always visible for debugging
 
@@ -86,16 +92,29 @@ export function ConversationList({
 
   return (
     <div className="flex flex-col h-full w-full bg-card border-r border-border">
-      {/* Header with New Conversation Button */}
-      <div className="p-4 border-b border-border w-full">
+      {/* Header with New Conversation + Leave Voice Buttons */}
+      <div className="p-4 border-b border-border w-full flex gap-2">
         <Button
           onClick={onCreateSession}
-          className="w-full gap-2"
+          className="flex-1 gap-2"
           size="sm"
         >
           <Plus className="h-4 w-4" />
           New Conversation
         </Button>
+
+        {/* Discord-style: Leave Voice button (icon-only, right side) */}
+        {connectionState === 'connected' && (
+          <Button
+            onClick={onLeaveVoice}
+            variant="destructive"
+            className="shrink-0"
+            size="sm"
+            title="Leave Voice - End voice session and disconnect"
+          >
+            <LogOut className="h-4 w-4" />
+          </Button>
+        )}
       </div>
 
       {/* Conversation List */}
@@ -170,7 +189,7 @@ export function ConversationList({
                       </Button>
                     </div>
 
-                    {/* Row 2: Metadata + Active Badge */}
+                    {/* Row 2: Metadata + Voice Active Badge */}
                     <div className="flex items-center gap-2 text-xs text-muted-foreground">
                       <div className="flex items-center gap-1">
                         <Hash className="h-3 w-3" />
@@ -180,10 +199,11 @@ export function ConversationList({
                         <Calendar className="h-3 w-3" />
                         <span>{formatDate(session.started_at)}</span>
                       </div>
-                      {session.active && (
+                      {/* Discord-style: Voice Active only when this session is selected AND voice is connected */}
+                      {activeSessionId === session.id && connectionState === 'connected' && (
                         <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-xs bg-green-500/10 text-green-400 border border-green-500/20">
                           <div className="w-1 h-1 bg-green-500 rounded-full animate-pulse" />
-                          Active
+                          Voice Active
                         </span>
                       )}
                     </div>

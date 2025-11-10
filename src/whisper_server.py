@@ -230,6 +230,11 @@ class TranscriptionSession:
             self.session_buffer.extend(pcm_data)    # Keeps ALL audio for final
             self.processing_buffer.extend(pcm_data) # For real-time chunks
 
+            # Enhanced buffer tracking logging
+            logger.info(f"📊 [WHISPERX_BUFFERS] session_buffer: {len(self.session_buffer)} bytes, "
+                       f"processing_buffer: {len(self.processing_buffer)} bytes, "
+                       f"format: {self.audio_format}")
+
             # Process in chunks for real-time transcription
             # Every ~2 seconds of PCM audio (48kHz * 2 bytes * 2 channels * 2 sec = 384KB)
             if len(self.processing_buffer) >= 384000:
