@@ -76,7 +76,7 @@ export function VoxbridgePage() {
   const [voicePartialTranscript, setVoicePartialTranscript] = useState<string>('');
   const [isBotSpeaking, setIsBotSpeaking] = useState(false);  // Bot speaking state (blocks input during TTS)
   const [activeTTSContent, setActiveTTSContent] = useState<string | null>(null);  // Track message content being synthesized for ellipsis animation (survives DB refetch)
-  const [pendingUserTranscript, setPendingUserTranscript] = useState<{ text: string; isFinalizing: boolean; isStreaming: boolean } | null>(null);
+  const [pendingUserTranscript, setPendingUserTranscript] = useState<{ text: string; isFinalizing: boolean; isStreaming: boolean; timestamp?: number } | null>(null);
 
   const queryClient = useQueryClient();
   const toast = useToastHelpers();
@@ -262,18 +262,20 @@ export function VoxbridgePage() {
   }, [isVoiceAIGenerating]);
 
   // Defensive auto-clear: If DB message loaded while placeholder still visible, clear it
+  // BUG FIX #2: Only clear AFTER AI completes (prevents jerky disappear/reappear)
   useEffect(() => {
     if (pendingUserTranscript && activeSessionId && messages.length > 0) {
       const hasPendingInDB = messages.some(
         m => m.role === 'user' && m.content === pendingUserTranscript.text
       );
 
-      if (hasPendingInDB) {
-        logger.debug('[SAFETY] DB message loaded - auto-clearing stale placeholder');
+      // Only clear when DB message exists AND AI is not generating (seamless transition)
+      if (hasPendingInDB && !isVoiceAIGenerating) {
+        logger.debug('[SAFETY] DB message loaded + AI complete - auto-clearing placeholder');
         setPendingUserTranscript(null);
       }
     }
-  }, [messages, pendingUserTranscript, activeSessionId]);
+  }, [messages, pendingUserTranscript, activeSessionId, isVoiceAIGenerating]);
 
   // Get active session details
   const activeSession = sessions.find((s) => s.id === activeSessionId);
@@ -309,23 +311,28 @@ export function VoxbridgePage() {
 
         switch (message.event) {
         case 'partial_transcript':
-          // Show speech bubble immediately when user starts speaking (even if text is empty)
-          if (connectionState === 'connected') {
-            if (!listeningStartTimeRef.current) {
-              logger.debug('🎤', 'LISTENING (WebRTC)', `Started (partial: "${message.data.text?.substring(0, 30) || '(empty)'}...")`, undefined, true);
-              listeningStartTimeRef.current = Date.now();
-            }
+          // BUG FIX #1: Remove conditional gate - ALWAYS create bubble on partial_transcript
+          // BUG FIX #3: Add timestamp to force React re-renders on every update
 
-            // Update voice chat partial transcript
-            setVoicePartialTranscript(message.data.text || '');
-            setIsListening(true);
-
-            // Create optimistic user message placeholder (shows immediately in conversation)
-            // Bubble will show "Listening..." if text is empty, or streaming text if available
-            const transcriptText = message.data.text || '';
-            logger.debug(`[PENDING] Creating user placeholder with text: "${transcriptText.substring(0, 30) || '(empty)'}..."`);
-            setPendingUserTranscript({ text: transcriptText, isFinalizing: false, isStreaming: true });
+          if (!listeningStartTimeRef.current) {
+            logger.debug('🎤', 'LISTENING (WebRTC)', `Started (partial: "${message.data.text?.substring(0, 30) || '(empty)'}...")`, undefined, true);
+            listeningStartTimeRef.current = Date.now();
           }
+
+          // Update voice chat partial transcript
+          setVoicePartialTranscript(message.data.text || '');
+          setIsListening(true);
+
+          // Create optimistic user message placeholder (shows immediately in conversation)
+          // Bubble will show "Listening..." if text is empty, or streaming text if available
+          const transcriptText = message.data.text || '';
+          logger.debug(`[PENDING] Creating user placeholder with text: "${transcriptText.substring(0, 30) || '(empty)'}..."`);
+          setPendingUserTranscript({
+            text: transcriptText,
+            isFinalizing: false,
+            isStreaming: true,
+            timestamp: Date.now() // Force unique object reference for guaranteed re-renders
+          });
           break;
 
         case 'final_transcript':
@@ -339,7 +346,12 @@ export function VoxbridgePage() {
           // Update pending transcript to show finalizing state (bouncing dots)
           if (message.data.text) {
             logger.debug(`[PENDING] Setting finalizing state for: "${message.data.text.substring(0, 30)}..."`);
-            setPendingUserTranscript({ text: message.data.text, isFinalizing: true, isStreaming: false });
+            setPendingUserTranscript({
+              text: message.data.text,
+              isFinalizing: true,
+              isStreaming: false,
+              timestamp: Date.now()
+            });
           }
 
           // Backend already saved user message - frontend only updates UI
@@ -1579,21 +1591,14 @@ export function VoxbridgePage() {
                                     {formatTimestamp(message.timestamp)}
                                   </span>
                                 </div>
-                                {/* User message: Show streaming state with bouncing dots + text */}
-                                {message.role === 'user' && (message as any).isStreaming && (
+                                {/* User message: Show streaming/finalizing state (dots + text) */}
+                                {/* BUG FIX #4: Merge streaming and finalizing - seamless visual transition */}
+                                {message.role === 'user' && ((message as any).isStreaming || (message as any).isFinalizing) && (
                                   <div className="flex items-center gap-2">
                                     <BouncingDots size="sm" className="text-primary/60" />
                                     <p className="text-sm whitespace-pre-line leading-relaxed opacity-75">
                                       {message.content || 'Listening...'}
                                     </p>
-                                  </div>
-                                )}
-
-                                {/* User message: Show finalizing state (bouncing dots only) */}
-                                {message.role === 'user' && (message as any).isFinalizing && !(message as any).isStreaming && (
-                                  <div className="flex items-center gap-2 text-xs text-primary/70">
-                                    <BouncingDots size="sm" className="text-primary/60" />
-                                    <span>finalizing...</span>
                                   </div>
                                 )}
 
