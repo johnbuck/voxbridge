@@ -87,6 +87,8 @@ class WebRTCVoiceHandler:
         self.chunks_received = 0
         self.webm_header: Optional[bytes] = None  # Saved WebM header for continuation chunks
         self.header_frame_count: int = 0  # Number of frames in header
+        self.header_validated: bool = False  # Flag: WebM header captured and validated
+        self.turn_number: int = 0  # Track conversation turns for logging
 
         # VAD settings (reuse from Discord configuration)
         self.silence_threshold_ms = int(os.getenv('SILENCE_THRESHOLD_MS', '600'))
@@ -358,12 +360,23 @@ class WebRTCVoiceHandler:
                     has_cluster = b'\x1f\x43\xb6\x75' in webm_chunk
                     logger.info(f"📦 WebM structure: EBML={has_ebml}, Segment={has_segment}, Cluster={has_cluster}")
                 else:
-                    logger.info(f"🎤 Received audio chunk #{self.chunks_received} ({len(webm_chunk)} bytes)")
+                    # Enhanced chunk logging: Detect header presence for Turn 2+ diagnosis
+                    has_ebml = webm_chunk[:4] == b'\x1a\x45\xdf\xa3'
+                    logger.info(f"🎤 Received audio chunk #{self.chunks_received} ({len(webm_chunk)} bytes, "
+                               f"Turn {self.turn_number}, has_EBML={has_ebml})")
 
                 # Accumulate all chunks to maintain Opus codec state across the entire stream
                 # Opus is stateful - each frame depends on previous frames' decoder state
+                chunk_start_time = time.time()
                 self.webm_buffer.extend(webm_chunk)
-                logger.debug(f"📦 [WS_RECV] WebM buffer size: {len(self.webm_buffer)} bytes")
+                processing_ms = (time.time() - chunk_start_time) * 1000
+
+                # Enhanced audio chunk metrics logging
+                logger.info(f"📊 [AUDIO_METRICS] Chunk #{self.chunks_received}, WebM size: {len(webm_chunk)} bytes, "
+                           f"Buffer total: {len(self.webm_buffer)} bytes, "
+                           f"Frames sent: {self.frames_sent_to_whisperx}, "
+                           f"Processing time: {processing_ms:.2f}ms, "
+                           f"header_validated={self.header_validated}")
 
                 # Buffer management: Prevent memory leak from unbounded growth
                 # Max ~60 seconds of continuous audio before finalizing
@@ -459,12 +472,37 @@ class WebRTCVoiceHandler:
         if not self.webm_buffer:
             return b''
 
+        # Enhanced buffer state logging
+        logger.debug(f"🎬 [BUFFER_STATE] webm_buffer: {len(self.webm_buffer)} bytes, "
+                    f"frames_sent: {self.frames_sent_to_whisperx}, "
+                    f"utterance_active: {self.utterance_start_time is not None}")
+
+        # ✅ CRITICAL FIX: WebM Header Preservation for Multi-Turn Conversations
+        # Detect if buffer has WebM EBML header (required for PyAV to parse)
+        has_ebml = self.webm_buffer[:4] == b'\x1a\x45\xdf\xa3'
+
+        # Turn 2+: If buffer lacks header but we have saved one, prepend it
+        if not has_ebml and self.webm_header and self.header_validated:
+            logger.info(f"🔧 [HEADER_FIX] Turn {self.turn_number} buffer lacks EBML header - "
+                       f"prepending saved header ({len(self.webm_header)} bytes)")
+            decode_buffer = bytearray(self.webm_header)
+            decode_buffer.extend(self.webm_buffer)
+            logger.info(f"📦 [HEADER_FIX] Decode buffer: {len(decode_buffer)} bytes "
+                       f"(header: {len(self.webm_header)}, clusters: {len(self.webm_buffer)})")
+        else:
+            decode_buffer = self.webm_buffer
+            if has_ebml:
+                logger.debug(f"✅ [HEADER] Buffer has EBML header - decoding normally")
+            elif not self.header_validated:
+                logger.debug(f"⏳ [HEADER] Waiting for first complete WebM container to capture header")
+
         # ✅ CHECKPOINT 3: PyAV Decode Attempt
-        logger.debug(f"🎵 [DECODE] Attempting PyAV decode, buffer={len(self.webm_buffer)} bytes")
+        logger.debug(f"🎵 [DECODE] Attempting PyAV decode, buffer={len(decode_buffer)} bytes, "
+                    f"has_header={has_ebml or (self.header_validated and self.webm_header is not None)}")
 
         try:
-            # Decode entire accumulated buffer (maintains codec state)
-            buffer = BytesIO(bytes(self.webm_buffer))
+            # Decode buffer (with prepended header if needed)
+            buffer = BytesIO(bytes(decode_buffer))
             container = av.open(buffer, 'r')
             audio_stream = container.streams.audio[0]
 
@@ -491,6 +529,21 @@ class WebRTCVoiceHandler:
                 all_pcm_chunks.append(pcm_bytes)
 
             container.close()
+
+            # ✅ CRITICAL FIX: Save WebM header on first successful decode (Turn 1)
+            # This header will be prepended to Turn 2+ buffers that lack it
+            if not self.header_validated and has_ebml:
+                # Find first Cluster block (marks end of header)
+                cluster_offset = bytes(self.webm_buffer).find(b'\x1f\x43\xb6\x75')
+                if cluster_offset > 0:
+                    self.webm_header = bytes(self.webm_buffer[:cluster_offset])
+                    self.header_validated = True
+                    logger.info(f"✅ [HEADER_CAPTURE] Saved WebM header for Turn 2+ reuse: "
+                               f"{len(self.webm_header)} bytes (EBML + Segment)")
+                    logger.debug(f"📦 [HEADER_CAPTURE] Cluster starts at byte {cluster_offset}")
+                else:
+                    logger.warning(f"⚠️ [HEADER_CAPTURE] Could not find Cluster block in buffer "
+                                 f"({len(self.webm_buffer)} bytes) - will retry next decode")
 
             # Skip frames we've already sent, extract only NEW frames
             new_pcm_chunks = all_pcm_chunks[self.frames_sent_to_whisperx:]
@@ -742,11 +795,38 @@ class WebRTCVoiceHandler:
         iteration = 0
         finalized = False
         last_finalization_time = None
+        finalize_start_time = None  # Watchdog: Track finalization duration
 
         try:
             while self.is_active:
                 await asyncio.sleep(0.1)  # Check every 100ms
                 iteration += 1
+
+                # Watchdog: Reset stuck finalization after 30s
+                if self.is_finalizing:
+                    if finalize_start_time is None:
+                        finalize_start_time = time.time()
+                    elif (time.time() - finalize_start_time) > 30.0:
+                        logger.warning("⚠️ [WATCHDOG] Resetting stuck finalization state after 30s")
+                        logger.warning(f"   - Session: {self.session_id}")
+                        logger.warning(f"   - Current transcript: \"{self.current_transcript[:50]}...\"")
+                        logger.warning(f"   - LLM task: {self.llm_task}")
+                        self.is_finalizing = False
+                        self.final_transcript_ready = False
+                        self.final_transcript = ""
+                        finalize_start_time = None
+                else:
+                    finalize_start_time = None
+
+                # Watchdog: Reset stale t_first_audio (stuck utterance_start_time)
+                if self.t_first_audio and self.utterance_start_time:
+                    utterance_age_s = time.time() - self.utterance_start_time
+                    if utterance_age_s > 300.0:  # 5 minutes - clearly stale
+                        logger.warning(f"⚠️ [WATCHDOG] Stale utterance_start_time detected ({utterance_age_s:.1f}s old) - resetting t_first_audio")
+                        logger.warning(f"   - Session: {self.session_id}")
+                        logger.warning(f"   - Current transcript: \"{self.current_transcript[:50]}...\"")
+                        self.t_first_audio = None
+                        self.utterance_start_time = None
 
                 # Heartbeat log every 50 iterations (5 seconds)
                 if iteration % 50 == 0:
@@ -760,7 +840,9 @@ class WebRTCVoiceHandler:
                     # If audio is recent (less than silence threshold), user started speaking again
                     if elapsed_ms < self.silence_threshold_ms:
                         # ✅ CHECKPOINT 5: State Transition (Auto-Restart)
-                        logger.info(f"🔄 [STATE] New audio detected after finalization ({elapsed_ms:.0f}ms ago) - auto-restarting for new conversation turn!")
+                        self.turn_number += 1  # Increment turn counter
+                        logger.info(f"🔄 [STATE] New audio detected after finalization ({elapsed_ms:.0f}ms ago) - "
+                                   f"auto-restarting for Turn {self.turn_number}!")
 
                         # Reset state for new turn
                         finalized = False
@@ -776,6 +858,7 @@ class WebRTCVoiceHandler:
 
                         # ✅ FIX: Reset per-turn timing metrics for accurate latency tracking
                         # These timestamps must be reset between conversation turns, not just on connection
+                        self.t_first_audio = None  # ← FIX: Reset to allow Turn 2+ utterance_start_time update
                         self.t_first_partial = None
                         self.t_transcription_complete = None
                         self.t_ai_start = None
@@ -783,10 +866,23 @@ class WebRTCVoiceHandler:
                         self.t_llm_complete = None
                         self.t_audio_complete = None
                         logger.debug(f"🔄 [TIMING] Reset per-turn timing metrics for new conversation")
+
+                        # ✅ CRITICAL FIX: Clear WebM buffer BUT preserve header for Turn 2+
+                        # SAFE LOCATION: Turn 2 audio already detected (elapsed_ms < silence_threshold_ms)
+                        # WebM header is preserved in self.webm_header (captured on Turn 1)
+                        logger.info(f"🧹 [BUFFER_CLEAR] Pre-clear state: buffer={len(self.webm_buffer)} bytes, "
+                                   f"frames={self.frames_sent_to_whisperx}, header_validated={self.header_validated}")
+                        self.webm_buffer = bytearray()
+                        self.frames_sent_to_whisperx = 0
+                        # NOTE: Removed self.av_container = None (was NO-OP - variable never used)
+                        # Header preservation happens in _extract_new_pcm_audio() via self.webm_header
+                        logger.info(f"✅ [BUFFER_CLEAR] Cleared WebM buffer for Turn {self.turn_number} "
+                                   f"(header preserved: {len(self.webm_header) if self.webm_header else 0} bytes)")
+
                         logger.debug(f"🔄 [STATE] Utterance start time reset: {old_utterance_start} → {self.utterance_start_time}")
                         iteration = 0
 
-                        logger.info(f"✅ [STATE] Auto-restart complete - ready to accept new utterance (monitoring active)")
+                        logger.info(f"✅ [STATE] Auto-restart complete - ready for Turn {self.turn_number} (monitoring active)")
 
                 # Check max utterance timeout (absolute limit) - only if not finalized
                 if not finalized and self.utterance_start_time:
@@ -967,10 +1063,11 @@ class WebRTCVoiceHandler:
                 raise
             finally:
                 self.llm_task = None  # Clear task reference
+                # Always reset finalization flags (even on cancellation/error)
+                self.is_finalizing = False
 
             # Reset state for next turn
             self.current_transcript = ""
-            self.is_finalizing = False
             # ✅ FIX: Reset final transcript flags for next turn
             self.final_transcript_ready = False
             self.final_transcript = ""
@@ -1459,6 +1556,11 @@ class WebRTCVoiceHandler:
                 logger.info(f"✅ LLM task cancelled successfully")
             except Exception as e:
                 logger.warning(f"⚠️ Error awaiting cancelled LLM task: {e}")
+            # Reset finalization flags to prevent state machine deadlock
+            self.is_finalizing = False
+            self.final_transcript_ready = False
+            self.final_transcript = ""
+            logger.debug(f"✅ Reset finalization flags after task cancellation")
 
         # Cancel silence monitoring
         if self.silence_task and not self.silence_task.done():
