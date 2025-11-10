@@ -226,7 +226,7 @@ export function VoxbridgePage() {
     }
 
     return dbMessages;
-  }, [messages, streamingChunks, activeSessionId, pendingUserTranscript]);
+  }, [messages, streamingChunks, activeSessionId, pendingUserTranscript, pendingUserTranscript?.text]);
 
   // State conflict detection: Detect invalid state combinations
   useEffect(() => {
