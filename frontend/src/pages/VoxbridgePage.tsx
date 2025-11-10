@@ -1599,7 +1599,7 @@ export function VoxbridgePage() {
                                     {formatTimestamp(message.timestamp)}
                                   </span>
                                 </div>
-                                <p className="text-sm whitespace-pre-wrap leading-relaxed">
+                                <p className="text-sm whitespace-pre-line leading-relaxed">
                                   {message.content}
                                 </p>
 

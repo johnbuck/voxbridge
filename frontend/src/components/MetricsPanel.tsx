@@ -119,7 +119,7 @@ export function MetricsPanel() {
   }, [metrics]);
 
   return (
-    <Card className="w-full max-w-6xl">
+    <Card className="w-full">
       <CardHeader className="pb-3">
         <CardTitle className="text-sm font-medium flex items-center gap-2">
           <BarChart3 className="w-4 h-4" />
