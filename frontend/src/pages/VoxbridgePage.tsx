@@ -76,6 +76,7 @@ export function VoxbridgePage() {
   const [isSpeakerMuted, setIsSpeakerMuted] = useState(false);
   const [voicePartialTranscript, setVoicePartialTranscript] = useState<string>('');
   const [isBotSpeaking, setIsBotSpeaking] = useState(false);  // Bot speaking state (blocks input during TTS)
+  const [activeTTSContent, setActiveTTSContent] = useState<string | null>(null);  // Track message content being synthesized for ellipsis animation (survives DB refetch)
   const [pendingUserTranscript, setPendingUserTranscript] = useState<{ text: string; isFinalizing: boolean } | null>(null);
 
   const queryClient = useQueryClient();
@@ -386,12 +387,15 @@ export function VoxbridgePage() {
           if (activeSessionId && message.data.text) {
             logger.debug('💾', 'CACHE (WebRTC)', `Adding optimistic message to cache`, undefined, true);
 
+            // Store temporary message ID for TTS tracking (ellipsis animation)
+            const tempMessageId = Date.now();
+
             // Update cache immediately with new message
             queryClient.setQueryData<Message[]>(['messages', activeSessionId], (oldMessages = []) => {
               return [
                 ...oldMessages,
                 {
-                  id: Date.now(), // Temporary ID until background refetch gets real DB ID
+                  id: tempMessageId, // Temporary ID until background refetch gets real DB ID
                   session_id: activeSessionId,
                   role: 'assistant',
                   content: message.data.text,
@@ -406,6 +410,14 @@ export function VoxbridgePage() {
 
             // Clear streaming chunks AFTER cache update (prevents visual gap)
             setStreamingChunks([]);
+
+            // Track this message for TTS animation (ellipsis continues until TTS complete)
+            // Using content (not ID) because DB refetch will change ID but content persists
+            setActiveTTSContent(message.data.text);
+            logger.debug('🎯 [TTS_TRACKING] Set activeTTSContent', {
+              contentPreview: message.data.text.substring(0, 50),
+              fullLength: message.data.text.length
+            }, true);
 
             // Background refetch to get real DB IDs (delayed for smooth transition)
             setTimeout(() => {
@@ -425,6 +437,14 @@ export function VoxbridgePage() {
         case 'bot_speaking_state_changed':
           logger.debug(`🤖 Bot speaking state changed: ${message.data.is_speaking ? 'SPEAKING' : 'LISTENING'}`);
           setIsBotSpeaking(message.data.is_speaking ?? false);
+
+          // Clear TTS animation when speaking stops (TTS playback complete)
+          if (!message.data.is_speaking) {
+            logger.debug('🎯 [TTS_TRACKING] Cleared activeTTSContent', {
+              wasContent: activeTTSContent?.substring(0, 50)
+            }, true);
+            setActiveTTSContent(null);
+          }
           break;
 
         case 'tts_complete':
@@ -495,7 +515,8 @@ export function VoxbridgePage() {
     connectionState,
     permissionError,
     isRecording,
-    isPendingTTS,
+    // isPendingTTS removed - no longer used (ellipsis now controlled by activeTTSMessageId)
+    endSession,    // Discord-style: Explicit "Leave Voice" button to end session
   } = useWebRTCAudio({
     sessionId: activeSessionId, // Use active session ID from conversation management
     onMessage: handleWebRTCAudioMessage,
@@ -513,6 +534,7 @@ export function VoxbridgePage() {
   });
 
   // Fix #2 (Enhancement): Clear listening state when WebRTC connection drops
+  // Discord-style: Show toast notifications for errors only (no connection badges)
   useEffect(() => {
     if (connectionState === 'disconnected' || connectionState === 'error') {
       // Connection lost - clear any stale listening state
@@ -520,8 +542,13 @@ export function VoxbridgePage() {
       setVoicePartialTranscript('');
       listeningStartTimeRef.current = null;
       setListeningDuration(0);
+
+      // Show toast notification for connection errors (Discord-style: toast only, no persistent badge)
+      if (connectionState === 'error') {
+        toast.error('Voice connection error', 'Failed to connect to voice server. Retrying...');
+      }
     }
-  }, [connectionState]);
+  }, [connectionState, toast]);
 
   // REMOVED: 60-second timeout safety net
   // This timeout was causing issues in multi-turn conversations where users might
@@ -813,6 +840,19 @@ export function VoxbridgePage() {
   const handleCreateConversation = useCallback(
     async (agentId: string, title?: string) => {
       try {
+        // Step 1: Deactivate all current sessions (Discord-style: only one active at a time)
+        if (sessions.length > 0) {
+          logger.debug(`🔄 Deactivating ${sessions.length} existing sessions`);
+          await Promise.all(
+            sessions.map((session) =>
+              api.updateSession(session.id, { active: false }).catch((err) => {
+                logger.warn(`⚠️  Failed to deactivate session ${session.id}:`, err);
+              })
+            )
+          );
+        }
+
+        // Step 2: Create new session (will be active=true by default)
         const newSession = await api.createSession({
           user_id: WEB_USER_ID,
           agent_id: agentId,
@@ -820,16 +860,22 @@ export function VoxbridgePage() {
           session_type: 'web',
         });
 
-        // Refetch sessions and select new one
+        logger.info(`✅ Created new session ${newSession.id}, deactivated ${sessions.length} old sessions`);
+
+        // Step 3: Refetch sessions and select new one
         await refetchSessions();
         setActiveSessionId(newSession.id);
+
+        // Step 4: WebSocket auto-connects via useEffect[sessionId] in useWebRTCAudio (Discord-style)
+        // No manual startSession() needed - React will trigger connection when activeSessionId updates
+
         toast.success('Conversation created', `Started new conversation with agent`);
       } catch (error) {
         toast.error('Failed to create conversation', error instanceof Error ? error.message : 'Unknown error');
         throw error;
       }
     },
-    [refetchSessions, toast]
+    [sessions, refetchSessions, toast]
   );
 
   // Handle delete conversation
@@ -857,10 +903,41 @@ export function VoxbridgePage() {
     [activeSessionId, sessions, refetchSessions, toast]
   );
 
-  // Handle select session
-  const handleSelectSession = useCallback((sessionId: string) => {
-    setActiveSessionId(sessionId);
-  }, []);
+  // Handle select session (Discord-style: voice follows selected conversation)
+  const handleSelectSession = useCallback(
+    async (sessionId: string) => {
+      try {
+        // Step 1: Deactivate currently active session (if any)
+        const currentlyActive = sessions.find((s) => s.active);
+        if (currentlyActive && currentlyActive.id !== sessionId) {
+          logger.debug(`🔄 Deactivating previous session ${currentlyActive.id}`);
+          await api.updateSession(currentlyActive.id, { active: false }).catch((err) => {
+            logger.warn(`⚠️  Failed to deactivate session ${currentlyActive.id}:`, err);
+          });
+        }
+
+        // Step 2: Activate the newly selected session
+        logger.debug(`✅ Activating selected session ${sessionId}`);
+        await api.updateSession(sessionId, { active: true }).catch((err) => {
+          logger.warn(`⚠️  Failed to activate session ${sessionId}:`, err);
+        });
+
+        // Step 3: Update UI state (triggers useEffect[sessionId] which auto-connects WebSocket)
+        setActiveSessionId(sessionId);
+
+        // Step 4: WebSocket auto-connects or switches via useEffect[sessionId] in useWebRTCAudio
+        // Discord-style: Voice follows selected conversation automatically
+        logger.info(`🔄 Switched to conversation ${sessionId} (voice follows selected conversation)`);
+
+        // Step 5: Refetch sessions to update UI badges
+        await refetchSessions();
+      } catch (error) {
+        logger.error('❌ Failed to switch conversation:', error);
+        toast.error('Failed to switch conversation', error instanceof Error ? error.message : 'Unknown error');
+      }
+    },
+    [sessions, refetchSessions, toast]
+  );
 
   // Handle unlock speaker
   const handleUnlockSpeaker = useCallback(async () => {
@@ -1221,6 +1298,8 @@ export function VoxbridgePage() {
                   onCreateSession={() => setNewConversationDialogOpen(true)}
                   onDeleteSession={handleDeleteSession}
                   isLoading={isLoadingSessions}
+                  connectionState={connectionState}
+                  onLeaveVoice={endSession}
                 />
               )}
             </div>
@@ -1266,10 +1345,19 @@ export function VoxbridgePage() {
                 <div className="flex items-center gap-4">
                   {activeSessionId && (
                     <div className="flex items-center gap-2">
+                      {/* Debug logging for mic button investigation */}
+                      {(() => {
+                        logger.debug('[AudioControls Debug]', {
+                          isMuted,
+                          connectionState,
+                          permissionError,
+                          isRecording,
+                        });
+                        return null;
+                      })()}
                       <AudioControls
                         isMuted={isMuted}
                         onToggleMute={toggleMute}
-                        connectionState={connectionState}
                         permissionError={permissionError}
                         isRecording={isRecording}
                       />
@@ -1285,20 +1373,7 @@ export function VoxbridgePage() {
                           <Volume2 className="h-5 w-5" />
                         )}
                       </Button>
-                      {/* Bot Speaking Indicator */}
-                      {isBotSpeaking && (
-                        <Badge variant="secondary" className="animate-pulse">
-                          <Volume2 className="h-3 w-3 mr-1" />
-                          AI Speaking...
-                        </Badge>
-                      )}
-                      {/* TTS Pending Indicator (multi-turn conversation mode) */}
-                      {isMuted && isPendingTTS && (
-                        <div className="text-xs text-amber-500 flex items-center gap-1">
-                          <Volume2 className="w-3 h-3 animate-pulse" />
-                          AI is speaking - mic off
-                        </div>
-                      )}
+                      {/* REMOVED: Bot speaking indicators now shown as ellipsis in message bubble */}
                     </div>
                   )}
                 </div>
@@ -1468,14 +1543,7 @@ export function VoxbridgePage() {
                         />
                       )}
 
-                      {/* Ready for Next Question Indicator (Multi-Turn Mode) - Text removed but functionality kept */}
-                      {activeSessionId && connectionState === 'connected' && !isListening && !isVoiceAIGenerating && !isBotSpeaking && !isStreaming && (
-                        <div className="flex items-center justify-center py-4">
-                          <Badge variant="outline" className="text-sm bg-green-500/10 text-green-400 border-green-500/30">
-                            <CircleCheckBig className="h-4 w-4" />
-                          </Badge>
-                        </div>
-                      )}
+                      {/* Discord-style: No "ready" indicator - system is always ready for next input */}
 
                       {/* Messages (Database + Optimistic Streaming) */}
                       {isLoadingMessages ? (
@@ -1490,7 +1558,19 @@ export function VoxbridgePage() {
                         </div>
                       ) : (
                         <>
-                          {displayMessages.slice().reverse().map((message) => (
+                          {displayMessages.slice().reverse().map((message) => {
+                            // Debug logging for TTS ellipsis matching
+                            if (message.role === 'assistant' && activeTTSContent) {
+                              const matchesContent = message.content === activeTTSContent;
+                              logger.debug('🎯 [RENDER] AI message check', {
+                                messageId: message.id,
+                                contentPreview: message.content.substring(0, 30),
+                                activeTTSContent: activeTTSContent.substring(0, 30),
+                                matchesContent
+                              }, true);
+                            }
+
+                            return (
                             <div
                               key={message.id}
                               className={cn(
@@ -1535,15 +1615,12 @@ export function VoxbridgePage() {
                                   </div>
                                 )}
 
-                                {/* Streaming indicator for optimistic messages */}
-                                {(message as any).isStreaming && (
-                                  <div className="mt-2 flex items-center gap-2 text-xs text-purple-400">
-                                    <span className="inline-flex gap-1">
-                                      <span className="animate-pulse">●</span>
-                                      <span className="animate-pulse delay-100">●</span>
-                                      <span className="animate-pulse delay-200">●</span>
-                                    </span>
-                                    <span>streaming...</span>
+                                {/* AI Speaking Indicator - Show bouncing dots while TTS is active */}
+                                {message.role === 'assistant' && message.content === activeTTSContent && (
+                                  <div className="mt-2 flex gap-1">
+                                    <div className="w-2 h-2 rounded-full bg-purple-400/60 animate-bounce" style={{ animationDelay: '0ms' }} />
+                                    <div className="w-2 h-2 rounded-full bg-purple-400/60 animate-bounce" style={{ animationDelay: '150ms' }} />
+                                    <div className="w-2 h-2 rounded-full bg-purple-400/60 animate-bounce" style={{ animationDelay: '300ms' }} />
                                   </div>
                                 )}
 
@@ -1563,7 +1640,8 @@ export function VoxbridgePage() {
                                 )}
                               </div>
                             </div>
-                          ))}
+                            );
+                          })}
                         </>
                       )}
                     </div>
