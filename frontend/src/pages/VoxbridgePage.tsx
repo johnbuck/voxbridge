@@ -329,34 +329,9 @@ export function VoxbridgePage() {
     }
   }, [messages, pendingUserTranscript, activeSessionId]);
 
-  // BUG FIX: Clear streaming chunks AFTER cache update reflects in messages query
-  // This prevents AI responses from disappearing due to race condition
-  useEffect(() => {
-    if (streamingChunks.length > 0 && activeSessionId && Array.isArray(messages) && messages.length > 0) {
-      // Check if the streaming content has been added to the messages array
-      const streamingContent = streamingChunks.join('');
-      const hasStreamingInDB = messages.some(
-        (m: Message) => m.role === 'assistant' && m.content === streamingContent
-      );
-
-      if (hasStreamingInDB) {
-        logger.debug('🧹 [AUTO_CLEAR_AI] Cache update reflected - clearing streamingChunks', {
-          streamingContent: streamingContent.substring(0, 50),
-          chunksCount: streamingChunks.length,
-          messagesCount: messages.length,
-          timestamp: Date.now(),
-        });
-        setStreamingChunks([]);
-      } else {
-        logger.debug('⏳ [AUTO_CLEAR_AI] Streaming message not in cache yet, keeping chunks', {
-          streamingContent: streamingContent.substring(0, 30),
-          chunksCount: streamingChunks.length,
-          dbAIMessagesCount: messages.filter((m: Message) => m.role === 'assistant').length,
-          timestamp: Date.now(),
-        });
-      }
-    }
-  }, [messages, streamingChunks, activeSessionId]);
+  // ✅ RACE CONDITION FIX #2: Streaming chunks cleanup is now handled deterministically
+  // in the message_saved event handler (line ~608), not via timing-dependent useEffect.
+  // This ensures chunks are cleared only after database confirmation, eliminating race conditions.
 
   // Get active session details
   const activeSession = sessions.find((s) => s.id === activeSessionId);
