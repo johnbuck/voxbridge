@@ -88,6 +88,36 @@ export function VoxbridgePage() {
   const isHandlingMessageRef = useRef(false); // Batch 3.3: Re-entrance detection
   const scrollAreaRef = useRef<HTMLDivElement>(null);
 
+  // ✅ RACE CONDITION FIX #3: Debounced query invalidation to batch multiple events
+  const invalidationTimersRef = useRef<Map<string, number>>(new Map());
+
+  /**
+   * Debounced query invalidation - batches multiple invalidation calls within 100ms window
+   * This prevents redundant refetches when multiple events fire in rapid succession
+   * (e.g., final_transcript + message_saved, or ai_response_complete for both messages and metrics)
+   */
+  const debouncedInvalidateQueries = useCallback((queryKey: readonly unknown[]) => {
+    const keyString = JSON.stringify(queryKey);
+
+    // Clear any existing timeout for this query key
+    const existingTimer = invalidationTimersRef.current.get(keyString);
+    if (existingTimer) {
+      window.clearTimeout(existingTimer);
+    }
+
+    // Set new timeout to invalidate after 100ms
+    const timer = window.setTimeout(() => {
+      logger.debug('🔄 [DEBOUNCED_INVALIDATE] Invalidating query (batched)', {
+        queryKey: keyString,
+        timestamp: Date.now(),
+      });
+      queryClient.invalidateQueries({ queryKey: queryKey as string[] });
+      invalidationTimersRef.current.delete(keyString);
+    }, 100);
+
+    invalidationTimersRef.current.set(keyString, timer);
+  }, [queryClient]);
+
   // Service error handling
   const { handleServiceError } = useServiceErrors({
     onError: (error) => {
@@ -428,7 +458,7 @@ export function VoxbridgePage() {
           // This ensures user message stays visible during AI generation
           if (activeSessionId) {
             logger.debug('🔄', 'QUERY (WebRTC)', `Invalidating messages query (session: ${activeSessionId})`, undefined, true);
-            queryClient.invalidateQueries({ queryKey: ['messages', activeSessionId] });
+            debouncedInvalidateQueries(['messages', activeSessionId]);
             logger.debug('✅ [PENDING_USER] Keeping placeholder visible - will clear after AI completes');
           }
 
@@ -573,7 +603,7 @@ export function VoxbridgePage() {
                 sessionId: activeSessionId,
                 correlationId: message.data.correlation_id.substring(0, 8) + '...',
               });
-              queryClient.invalidateQueries({ queryKey: ['messages', activeSessionId] });
+              debouncedInvalidateQueries(['messages', activeSessionId]);
 
               // Clear streaming chunks now that message is in database
               if (streamingChunks.length > 0) {
@@ -736,7 +766,7 @@ export function VoxbridgePage() {
 
     // VoxBridge 2.0: Handle agent CRUD events (real-time updates)
     if (message.event === 'agent_created' || message.event === 'agent_updated' || message.event === 'agent_deleted') {
-      queryClient.invalidateQueries({ queryKey: ['agents'] });
+      debouncedInvalidateQueries(['agents']);
       return;
     }
 
@@ -797,7 +827,7 @@ export function VoxbridgePage() {
       // Refresh message list to show backend-saved message
       if (activeSessionId) {
         logger.debug('🔄', 'QUERY', `Invalidating messages query (session: ${activeSessionId})`, undefined, true);
-        queryClient.invalidateQueries({ queryKey: ['messages', activeSessionId] });
+        debouncedInvalidateQueries(['messages', activeSessionId]);
       }
     } else if (message.event === 'ai_response_chunk') {
       // Discord AI response chunks - no action needed
@@ -822,16 +852,16 @@ export function VoxbridgePage() {
       // No optimistic updates to remove - just fetch from database
       if (activeSessionId) {
         logger.debug('🔄', 'QUERY', `Invalidating messages query (session: ${activeSessionId})`, undefined, true);
-        queryClient.invalidateQueries({ queryKey: ['messages', activeSessionId] });
+        debouncedInvalidateQueries(['messages', activeSessionId]);
       }
 
       // Refetch metrics after AI response completes
-      queryClient.invalidateQueries({ queryKey: ['metrics'] });
+      debouncedInvalidateQueries(['metrics']);
     } else if (message.event === 'ai_response' && message.data.isFinal) {
       // Legacy event handler - refetch metrics after AI response completes
-      queryClient.invalidateQueries({ queryKey: ['metrics'] });
+      debouncedInvalidateQueries(['metrics']);
     }
-  }, [queryClient, handleServiceError, activeSessionId]);
+  }, [queryClient, handleServiceError, activeSessionId, debouncedInvalidateQueries]);
 
   // WebSocket for real-time updates (Discord conversation monitoring)
   const { isConnected: wsConnected } = useWebSocket('/ws/events', {
