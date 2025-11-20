@@ -165,26 +165,14 @@ export function VoxbridgePage() {
     staleTime: Infinity, // ✅ Optimistic UI: Never auto-refetch, only invalidate on explicit events
     refetchOnWindowFocus: false, // ✅ Don't refetch on window focus
     // refetchInterval removed - WebSocket provides real-time updates, explicit invalidation on completion
-
-    // Lifecycle callbacks for logging
-    onSuccess: (data) => {
-      logger.debug('📦 [QUERY_SUCCESS] Cache updated', {
-        messagesCount: data.length,
-        timestamp: Date.now(),
-      });
-    },
-    onError: (error) => {
-      logger.error('❌ [QUERY_ERROR] Failed to fetch messages', {
-        error: String(error),
-        timestamp: Date.now(),
-      });
-    },
+    // NOTE: onSuccess/onError removed (deprecated in React Query v5)
+    // Cache update monitoring now handled by dataUpdatedAt useEffect
   });
 
   // ✅ Optimistic UI: Merge database messages + streaming chunks for seamless display
   const displayMessages = useMemo(() => {
     // BUG FIX #3: Removed debug logging spam (was causing 150+ logs per 3-second utterance)
-    const dbMessages = [...messages];
+    const dbMessages = Array.isArray(messages) ? [...messages] : [];
 
     // Add pending user transcript placeholder (shows immediately before DB fetch)
     // Only show if the message isn't already in the database (prevents duplicates)
