@@ -197,6 +197,7 @@ class TranscriptionSession:
 
         self.language = WHISPERX_LANGUAGE  # Use global config (defaults to 'en')
         self.is_active = True
+        self.is_finalizing = False  # Prevent late partials during finalization
 
         # Initialize Opus decoder only for 'opus' format (Discord)
         # For 'pcm' format (WebRTC), audio is already decoded by PyAV
@@ -218,6 +219,11 @@ class TranscriptionSession:
         For 'opus' format (Discord): Decode Opus frames to PCM
         For 'pcm' format (WebRTC): Use audio directly (already PCM from PyAV)
         """
+        # Guard: Skip buffering if finalization is in progress
+        if self.is_finalizing:
+            logger.info(f"⏭️ [LATE_AUDIO] Skipping audio chunk - finalization in progress (user={self.user_id})")
+            return
+
         try:
             if self.audio_format == 'opus':
                 # Discord path: Decode Opus to PCM (960 samples per 20ms frame at 48kHz)
@@ -247,6 +253,11 @@ class TranscriptionSession:
     
     async def process_audio_chunk(self):
         """Process accumulated PCM audio and send partial results"""
+        # Guard: Skip processing if finalization is in progress
+        if self.is_finalizing:
+            logger.debug(f"⏭️ [FINALIZE_GUARD] Skipping partial transcript - finalization in progress (user={self.user_id})")
+            return
+
         if len(self.processing_buffer) == 0:
             return
         
@@ -293,38 +304,41 @@ class TranscriptionSession:
     
     async def finalize(self):
         """Process all session audio and send final result"""
-        if len(self.session_buffer) == 0:
-            await self.send_result('final', '')
-            return
-        
+        # Set finalization flag to block late partials
+        self.is_finalizing = True
+        logger.info(f"🏁 [FINALIZE_START] Finalization started - blocking late partials (user={self.user_id})")
+
         try:
-            logger.info(f"🏁 Finalizing transcription for user {self.user_id}")
+            if len(self.session_buffer) == 0:
+                await self.send_result('final', '')
+                return
+
             logger.info(f"📊 Session buffer size: {len(self.session_buffer)} bytes ({len(self.session_buffer)/192000:.1f}s of audio)")
-            
+
             # Save ALL session audio as WAV file
             with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as temp_file:
                 temp_path = temp_file.name
-            
+
             with wave.open(temp_path, 'wb') as wav_file:
                 wav_file.setnchannels(2)  # Stereo
                 wav_file.setsampwidth(2)  # 16-bit
                 wav_file.setframerate(48000)  # 48kHz
                 wav_file.writeframes(bytes(self.session_buffer))
-            
+
             # Transcribe complete audio with WhisperX (force language to prevent auto-detection)
             audio = whisperx.load_audio(temp_path)
             result = model.transcribe(audio, batch_size=WHISPERX_BATCH_SIZE, language=self.language)
-            
+
             # Extract segments
             segments = result.get("segments", [])
-            
+
             # Collect all text
             transcript_parts = []
             for segment in segments:
                 text = segment.get("text", "").strip()
                 if text:
                     transcript_parts.append(text)
-            
+
             # Filter non-word sounds before sending
             final_text = ' '.join(transcript_parts)
 
@@ -338,14 +352,21 @@ class TranscriptionSession:
             else:
                 await self.send_result('final', '')
                 logger.warning(f"🚫 Filtered non-speech audio for {self.user_id}: \"{final_text}\" (validation failed)")
-            
+
             # Clean up
             os.unlink(temp_path)
             self.session_buffer.clear()
-            
+
         except Exception as e:
-            logger.error(f"❌ Error finalizing transcription: {e}")
+            # ERROR RECOVERY: Reset flag if finalization fails
+            logger.error(f"🚨 [FINALIZE_ERROR] Finalization failed for user {self.user_id}: {e}")
             await self.send_error(str(e))
+            raise  # Re-raise for upstream error handling
+
+        finally:
+            # Reset flag after finalization completes (success or error)
+            self.is_finalizing = False
+            logger.debug(f"🏁 [FINALIZE_END] Finalization completed (user={self.user_id})")
     
     async def send_result(self, result_type, text):
         """Send transcription result to client"""
