@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, act } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { VoxbridgePage } from '../VoxbridgePage';
@@ -135,6 +135,8 @@ describe('VoxbridgePage', () => {
   ];
 
   beforeEach(() => {
+    // Note: NOT using fake timers due to React Query compatibility issues
+
     // Create a new QueryClient for each test
     queryClient = new QueryClient({
       defaultOptions: {
@@ -183,11 +185,11 @@ describe('VoxbridgePage', () => {
       expect(api.getSessions).toHaveBeenCalled();
     });
 
-    // Select the session by clicking on it (findAllByText since title may appear multiple times)
+    // Select the session by clicking on it
     const sessionElements = await screen.findAllByText('Test Session');
-    await user.click(sessionElements[0]); // Click the first match (the session list item)
+    await user.click(sessionElements[0]);
 
-    // Wait for messages to load for the selected session
+    // Wait for messages to load
     await waitFor(() => {
       expect(api.getSessionMessages).toHaveBeenCalledWith('session-456');
     });
@@ -203,7 +205,9 @@ describe('VoxbridgePage', () => {
     const newAIResponse = 'This is a new AI response that should appear immediately!';
 
     // Emit ai_response_complete event
-    mockWebSocket.emitAIResponseComplete(newAIResponse, correlationId);
+    await act(async () => {
+      mockWebSocket.emitAIResponseComplete(newAIResponse, correlationId);
+    });
 
     // Update the mock to include the new message after database save
     const updatedMessages: Message[] = [
@@ -220,14 +224,14 @@ describe('VoxbridgePage', () => {
         total_latency_ms: 630,
       },
     ];
-
     vi.mocked(api.getSessionMessages).mockResolvedValue(updatedMessages);
 
     // Emit message_saved event to confirm database persistence
-    mockWebSocket.emitMessageSaved('3', 'session-456', 'assistant', correlationId);
-
-    // Wait for debounced query invalidation (100ms) + refetch
-    await new Promise(resolve => setTimeout(resolve, 150));
+    await act(async () => {
+      mockWebSocket.emitMessageSaved('3', 'session-456', 'assistant', correlationId);
+      // Wait for debounced query invalidation (100ms) + refetch
+      await new Promise(resolve => setTimeout(resolve, 200));
+    });
 
     // Wait for the new message to appear (without page refresh!)
     await waitFor(
@@ -264,7 +268,9 @@ describe('VoxbridgePage', () => {
     const correlationId = 'streaming-test-456';
 
     // Emit multiple streaming chunks
-    mockWebSocket.emitAIResponseChunk('This is ', correlationId);
+    await act(async () => {
+      mockWebSocket.emitAIResponseChunk('This is ', correlationId);
+    });
 
     // First chunk should appear
     await waitFor(() => {
@@ -273,8 +279,10 @@ describe('VoxbridgePage', () => {
     });
 
     // Emit more chunks
-    mockWebSocket.emitAIResponseChunk('a streaming ', correlationId);
-    mockWebSocket.emitAIResponseChunk('response!', correlationId);
+    await act(async () => {
+      mockWebSocket.emitAIResponseChunk('a streaming ', correlationId);
+      mockWebSocket.emitAIResponseChunk('response!', correlationId);
+    });
 
     // All chunks should be combined and visible
     await waitFor(() => {
@@ -284,7 +292,9 @@ describe('VoxbridgePage', () => {
 
     // Emit completion event
     const fullResponse = 'This is a streaming response!';
-    mockWebSocket.emitAIResponseComplete(fullResponse, correlationId);
+    await act(async () => {
+      mockWebSocket.emitAIResponseComplete(fullResponse, correlationId);
+    });
 
     // Update messages to include the complete response
     const updatedMessages: Message[] = [
@@ -305,10 +315,11 @@ describe('VoxbridgePage', () => {
     vi.mocked(api.getSessionMessages).mockResolvedValue(updatedMessages);
 
     // Emit message_saved to confirm persistence
-    mockWebSocket.emitMessageSaved('4', 'session-456', 'assistant', correlationId);
-
-    // Wait for debounced query invalidation (100ms) + refetch
-    await new Promise(resolve => setTimeout(resolve, 150));
+    await act(async () => {
+      mockWebSocket.emitMessageSaved('4', 'session-456', 'assistant', correlationId);
+      // Wait for debounced query invalidation (100ms) + refetch
+      await new Promise(resolve => setTimeout(resolve, 200));
+    });
 
     // Verify streaming chunks are replaced by database message
     await waitFor(() => {
@@ -345,7 +356,9 @@ describe('VoxbridgePage', () => {
     // Simulate rapid sequence of events that could cause race condition
 
     // 1. ai_response_complete arrives
-    mockWebSocket.emitAIResponseComplete(aiResponse, correlationId);
+    await act(async () => {
+      mockWebSocket.emitAIResponseComplete(aiResponse, correlationId);
+    });
 
     // 2. Simulate database save delay (message not yet in DB)
     vi.mocked(api.getSessionMessages).mockResolvedValue(mockMessages); // Old messages only
@@ -372,10 +385,11 @@ describe('VoxbridgePage', () => {
     vi.mocked(api.getSessionMessages).mockResolvedValue(updatedMessages);
 
     // 4. message_saved event arrives
-    mockWebSocket.emitMessageSaved('5', 'session-456', 'assistant', correlationId);
-
-    // Wait for debounced query invalidation (100ms) + refetch
-    await new Promise(resolve => setTimeout(resolve, 150));
+    await act(async () => {
+      mockWebSocket.emitMessageSaved('5', 'session-456', 'assistant', correlationId);
+      // Wait for debounced query invalidation (100ms) + refetch
+      await new Promise(resolve => setTimeout(resolve, 200));
+    });
 
     // Verify the message appears exactly once (no duplicates from race condition)
     await waitFor(() => {
@@ -412,20 +426,26 @@ describe('VoxbridgePage', () => {
     const correlationId = 'transition-test-abc';
 
     // Start streaming
-    mockWebSocket.emitAIResponseChunk('Smooth ', correlationId);
+    await act(async () => {
+      mockWebSocket.emitAIResponseChunk('Smooth ', correlationId);
+    });
 
     await waitFor(() => {
       const elements = screen.queryAllByText(/Smooth/);
       expect(elements.length).toBeGreaterThan(0);
     });
 
-    mockWebSocket.emitAIResponseChunk('transition ', correlationId);
-    mockWebSocket.emitAIResponseChunk('test', correlationId);
+    await act(async () => {
+      mockWebSocket.emitAIResponseChunk('transition ', correlationId);
+      mockWebSocket.emitAIResponseChunk('test', correlationId);
+    });
 
     const fullResponse = 'Smooth transition test';
 
     // Complete the response
-    mockWebSocket.emitAIResponseComplete(fullResponse, correlationId);
+    await act(async () => {
+      mockWebSocket.emitAIResponseComplete(fullResponse, correlationId);
+    });
 
     // Update database
     const updatedMessages: Message[] = [
@@ -446,10 +466,11 @@ describe('VoxbridgePage', () => {
     vi.mocked(api.getSessionMessages).mockResolvedValue(updatedMessages);
 
     // Confirm database save
-    mockWebSocket.emitMessageSaved('6', 'session-456', 'assistant', correlationId);
-
-    // Wait for debounced query invalidation (100ms) + refetch
-    await new Promise(resolve => setTimeout(resolve, 150));
+    await act(async () => {
+      mockWebSocket.emitMessageSaved('6', 'session-456', 'assistant', correlationId);
+      // Wait for debounced query invalidation (100ms) + refetch
+      await new Promise(resolve => setTimeout(resolve, 200));
+    });
 
     // Verify message appears (streaming chunks should be replaced by DB message)
     await waitFor(() => {
@@ -502,7 +523,9 @@ describe('VoxbridgePage', () => {
     const correlationId = 'after-error-def';
     const recoveryResponse = 'System recovered successfully';
 
-    mockWebSocket.emitAIResponseComplete(recoveryResponse, correlationId);
+    await act(async () => {
+      mockWebSocket.emitAIResponseComplete(recoveryResponse, correlationId);
+    });
 
     const updatedMessages: Message[] = [
       ...mockMessages,
@@ -520,14 +543,17 @@ describe('VoxbridgePage', () => {
     ];
 
     vi.mocked(api.getSessionMessages).mockResolvedValue(updatedMessages);
-    mockWebSocket.emitMessageSaved('7', 'session-456', 'assistant', correlationId);
 
-    // Wait for debounced query invalidation (100ms) + refetch
-    await new Promise(resolve => setTimeout(resolve, 150));
+    await act(async () => {
+      mockWebSocket.emitMessageSaved('7', 'session-456', 'assistant', correlationId);
+      // Wait for debounced query invalidation (100ms) + refetch
+      await new Promise(resolve => setTimeout(resolve, 200));
+    });
 
     // Verify recovery message appears
     await waitFor(() => {
       expect(screen.getByText(recoveryResponse)).toBeInTheDocument();
     });
   });
+
 });

@@ -830,8 +830,23 @@ export function VoxbridgePage() {
         debouncedInvalidateQueries(['messages', activeSessionId]);
       }
     } else if (message.event === 'ai_response_chunk') {
-      // Discord AI response chunks - no action needed
-      // Backend saves chunks to database, frontend just waits for ai_response_complete
+      // Discord AI response chunks - stream them to UI for real-time display
+      logger.debug(`🌊 [STREAMING_AI] Adding chunk to streamingChunks (Discord)`, {
+        chunkText: message.data.text?.substring(0, 50),
+        chunkLength: message.data.text?.length,
+        currentChunksCount: streamingChunks.length,
+        timestamp: Date.now(),
+      });
+      setStreamingChunks((prev) => {
+        const newChunks = [...prev, message.data.text || ''];
+        logger.debug(`🌊 [STREAMING_AI] Updated streamingChunks (Discord)`, {
+          totalChunks: newChunks.length,
+          totalLength: newChunks.join('').length,
+          contentPreview: newChunks.join('').substring(0, 50),
+        });
+        return newChunks;
+      });
+      setIsStreaming(true);
     } else if (message.event === 'ai_response_complete') {
       const aiDuration = aiStartTimeRef.current ? Date.now() - aiStartTimeRef.current : 0;
       logger.debug('💭', 'THINKING', `Complete (duration: ${aiDuration}ms)`, undefined, true);
@@ -857,11 +872,28 @@ export function VoxbridgePage() {
 
       // Refetch metrics after AI response completes
       debouncedInvalidateQueries(['metrics']);
+    } else if (message.event === 'message_saved') {
+      // Clear streaming chunks now that message is saved to database (Discord)
+      if (streamingChunks.length > 0) {
+        logger.debug('🧹 [STREAMING_CLEANUP] Clearing streaming chunks - message saved to database (Discord)', {
+          chunksCount: streamingChunks.length,
+        });
+        setStreamingChunks([]);
+        setIsStreaming(false);
+      }
+
+      // Trigger refetch to show database-saved message
+      if (activeSessionId && message.data.session_id === activeSessionId) {
+        logger.debug('🔄 [QUERY] Invalidating messages query after message_saved (Discord)', {
+          sessionId: activeSessionId,
+        });
+        debouncedInvalidateQueries(['messages', activeSessionId]);
+      }
     } else if (message.event === 'ai_response' && message.data.isFinal) {
       // Legacy event handler - refetch metrics after AI response completes
       debouncedInvalidateQueries(['metrics']);
     }
-  }, [queryClient, handleServiceError, activeSessionId, debouncedInvalidateQueries]);
+  }, [queryClient, handleServiceError, activeSessionId, debouncedInvalidateQueries, streamingChunks.length]);
 
   // WebSocket for real-time updates (Discord conversation monitoring)
   const { isConnected: wsConnected } = useWebSocket('/ws/events', {

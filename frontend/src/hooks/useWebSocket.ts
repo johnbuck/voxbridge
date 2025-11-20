@@ -49,6 +49,16 @@ export function useWebSocket(
   const reconnectAttemptsRef = useRef(0);
   const reconnectTimeoutRef = useRef<number | null>(null);
 
+  // FIX: Store callback in ref to prevent stale closures
+  // When activeSessionId changes in parent, this ref gets the latest callback
+  // without requiring WebSocket reconnection
+  const onMessageRef = useRef(options.onMessage);
+
+  // Update ref when callback changes (prevents stale closure bug)
+  useEffect(() => {
+    onMessageRef.current = options.onMessage;
+  }, [options.onMessage]);
+
   const connect = useCallback(() => {
     try {
       const ws = new WebSocket(`${WS_URL}${endpoint}`);
@@ -64,9 +74,10 @@ export function useWebSocket(
         try {
           const message: WebSocketMessage = JSON.parse(event.data);
           setLastMessage(message);
-          // Call onMessage callback immediately (bypasses React batching)
-          if (options.onMessage) {
-            options.onMessage(message);
+          // FIX: Use ref to get latest callback (prevents stale closure)
+          // This ensures we always call the current callback with current activeSessionId
+          if (onMessageRef.current) {
+            onMessageRef.current(message);
           }
         } catch (err) {
           console.error('[WebSocket] Failed to parse message:', err);
