@@ -79,6 +79,7 @@ export function VoxbridgePage() {
   const [isBotSpeaking, setIsBotSpeaking] = useState(false);  // Bot speaking state (blocks input during TTS)
   const [activeTTSContent, setActiveTTSContent] = useState<string | null>(null);  // Track message content being synthesized for ellipsis animation (survives DB refetch)
   const [pendingUserTranscript, setPendingUserTranscript] = useState<{ text: string; isFinalizing: boolean; isStreaming: boolean } | null>(null);
+  const [pendingAIResponse, setPendingAIResponse] = useState<{ text: string; correlationId: string } | null>(null);
 
   const queryClient = useQueryClient();
   const toast = useToastHelpers();
@@ -220,6 +221,29 @@ export function VoxbridgePage() {
       } as unknown as Message);
     }
 
+    // ✅ RACE CONDITION FIX #1: Display pending AI response while waiting for database confirmation
+    if (pendingAIResponse && activeSessionId && streamingChunks.length === 0) {
+      // Only show if not already in database and not currently streaming
+      const hasPendingInDB = dbMessages.some(
+        m => m.role === 'assistant' && m.content === pendingAIResponse.text
+      );
+
+      if (!hasPendingInDB) {
+        dbMessages.push({
+          id: 'pending-ai-message', // Stable string ID
+          session_id: activeSessionId,
+          role: 'assistant',
+          content: pendingAIResponse.text,
+          timestamp: new Date().toISOString(),
+          audio_duration_ms: null,
+          tts_duration_ms: null,
+          llm_latency_ms: null,
+          total_latency_ms: null,
+          isPending: true, // Mark as pending for UI indication
+        } as unknown as Message);
+      }
+    }
+
     return dbMessages;
   }, [
     messages,
@@ -228,7 +252,9 @@ export function VoxbridgePage() {
     // BUG FIX #4: Destructure to prevent re-renders on object reference changes
     pendingUserTranscript?.text,
     pendingUserTranscript?.isFinalizing,
-    pendingUserTranscript?.isStreaming
+    pendingUserTranscript?.isStreaming,
+    // RACE CONDITION FIX #1: Add pending AI response to dependencies
+    pendingAIResponse?.text,
   ]);
 
   // Monitor React Query cache updates via dataUpdatedAt
@@ -484,81 +510,109 @@ export function VoxbridgePage() {
           // logger.debug('[PENDING] Clearing user placeholder - AI response complete');
           // setPendingUserTranscript(null); // ❌ REMOVED: Causes 500ms gap
 
-          // ✅ Optimistic UI: Directly update cache with completed message
+          // ✅ RACE CONDITION FIX #1: Store pending state, wait for database confirmation
           if (activeSessionId && message.data.text) {
-            logger.debug('💾 [CACHE_UPDATE] Updating React Query cache with completed AI message', {
+            const correlationId = message.data.correlation_id || `temp-${Date.now()}`;
+
+            logger.debug('⏳ [PENDING_AI] Storing pending AI response - waiting for database confirmation', {
               sessionId: activeSessionId,
+              correlationId: correlationId.substring(0, 8) + '...',
               textLength: message.data.text.length,
               textPreview: message.data.text.substring(0, 50),
               timestamp: Date.now(),
             });
 
-            // Store temporary message ID for TTS tracking (ellipsis animation)
-            const tempMessageId = Date.now();
-
-            logger.debug('💾 [CACHE_SET] Updating cache with optimistic AI message', {
-              sessionId: activeSessionId,
-              textLength: message.data.text.length,
-              tempMessageId,
-              timestamp: Date.now(),
-            });
-
-            // Update cache immediately with new message
-            queryClient.setQueryData<Message[]>(['messages', activeSessionId], (oldMessages = []) => {
-              logger.debug('💾 [CACHE_SET] setQueryData callback executing', {
-                oldMessagesCount: oldMessages.length,
-                timestamp: Date.now(),
-              });
-
-              const newMessages = [
-                ...oldMessages,
-                {
-                  id: tempMessageId, // Temporary ID until background refetch gets real DB ID
-                  session_id: activeSessionId,
-                  role: 'assistant',
-                  content: message.data.text,
-                  timestamp: new Date().toISOString(),
-                  audio_duration_ms: null,
-                  tts_duration_ms: null,
-                  llm_latency_ms: null,
-                  total_latency_ms: null,
-                } as Message
-              ];
-              logger.debug('💾 [CACHE_SET] Cache update complete', {
-                oldMessagesCount: oldMessages.length,
-                newMessagesCount: newMessages.length,
-                addedMessage: true,
-                timestamp: Date.now(),
-              });
-              return newMessages;
-            });
-
-            // ✅ BUG FIX: Don't clear streamingChunks here - let useEffect handle it
-            // The useEffect will clear chunks AFTER the cache update reflects in the messages query
-            // This prevents AI responses from disappearing due to race condition
-            logger.debug(`✅ [STREAMING_AI] Cache updated - waiting for useEffect to clear chunks`, {
-              chunksCount: streamingChunks.length,
-              timestamp: Date.now(),
+            // Store pending AI response with correlation ID
+            setPendingAIResponse({
+              text: message.data.text,
+              correlationId,
             });
 
             // Track this message for TTS animation (ellipsis continues until TTS complete)
             // Using content (not ID) because DB refetch will change ID but content persists
             setActiveTTSContent(message.data.text);
-            logger.debug('🎯 [TTS_TRACKING] Set activeTTSContent', {
+            logger.debug('🎯 [TTS_TRACKING] Set activeTTSContent for pending AI response', {
               contentPreview: message.data.text.substring(0, 50),
-              fullLength: message.data.text.length
+              fullLength: message.data.text.length,
+              correlationId: correlationId.substring(0, 8) + '...',
             }, true);
 
-            // Background refetch to get real DB IDs (immediate, React Query handles smooth transition)
-            logger.debug('🔄 [QUERY_INVALIDATE] Invalidating messages query for background refetch', {
-              sessionId: activeSessionId,
-              timestamp: Date.now(),
-            });
-            queryClient.invalidateQueries({ queryKey: ['messages', activeSessionId] });
+            // NOTE: Cache update and query invalidation now happen in message_saved handler
+            // This prevents race condition where refetch happens before database save completes
           }
 
           // AI response text is complete, now waiting for TTS audio
           logger.debug('✅ [AI_COMPLETE] Handler complete - waiting for TTS audio...');
+          break;
+
+        case 'message_saved':
+          // ✅ RACE CONDITION FIX #1: Database confirmed - now safe to update cache
+          logger.debug('💾 [DB_CONFIRMED] Received message_saved event', {
+            messageId: message.data.message_id,
+            sessionId: message.data.session_id,
+            role: message.data.role,
+            correlationId: message.data.correlation_id?.substring(0, 8) + '...',
+            timestamp: Date.now(),
+          });
+
+          // Only process if this is the AI response we're waiting for
+          if (
+            message.data.role === 'assistant' &&
+            message.data.correlation_id &&
+            pendingAIResponse?.correlationId === message.data.correlation_id
+          ) {
+            logger.debug('✅ [DB_CONFIRMED] Correlation ID matches - updating cache with database-confirmed message', {
+              pendingText: pendingAIResponse.text.substring(0, 50),
+              correlationId: message.data.correlation_id.substring(0, 8) + '...',
+            });
+
+            // Update cache with the confirmed message
+            if (activeSessionId) {
+              queryClient.setQueryData<Message[]>(['messages', activeSessionId], (oldMessages = []) => {
+                const newMessages = [
+                  ...oldMessages,
+                  {
+                    id: parseInt(message.data.message_id || '0'),
+                    session_id: activeSessionId,
+                    role: 'assistant',
+                    content: pendingAIResponse!.text,
+                    timestamp: message.data.timestamp || new Date().toISOString(),
+                    audio_duration_ms: null,
+                    tts_duration_ms: null,
+                    llm_latency_ms: null,
+                    total_latency_ms: null,
+                  } as Message
+                ];
+
+                logger.debug('💾 [CACHE_SET] Cache updated with database-confirmed message', {
+                  oldCount: oldMessages.length,
+                  newCount: newMessages.length,
+                  messageId: message.data.message_id,
+                });
+
+                return newMessages;
+              });
+
+              // Now safe to invalidate - database save is confirmed
+              logger.debug('🔄 [QUERY_INVALIDATE] Invalidating messages query - database save confirmed', {
+                sessionId: activeSessionId,
+                correlationId: message.data.correlation_id.substring(0, 8) + '...',
+              });
+              queryClient.invalidateQueries({ queryKey: ['messages', activeSessionId] });
+
+              // Clear streaming chunks now that message is in database
+              if (streamingChunks.length > 0) {
+                logger.debug('🧹 [STREAMING_CLEANUP] Clearing streaming chunks - message saved to database', {
+                  chunksCount: streamingChunks.length,
+                });
+                setStreamingChunks([]);
+              }
+
+              // Clear pending AI response
+              setPendingAIResponse(null);
+              logger.debug('✅ [DB_CONFIRMED] Pending AI response cleared - message now in database');
+            }
+          }
           break;
 
         case 'tts_start':

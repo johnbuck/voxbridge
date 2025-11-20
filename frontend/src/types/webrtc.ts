@@ -17,6 +17,7 @@ export type WebRTCAudioEventType =
   | 'ai_response_start'  // AI response generation started (TTS pending)
   | 'ai_response_chunk'
   | 'ai_response_complete'
+  | 'message_saved'       // Phase 3: Database persistence confirmation
   | 'tts_start'
   | 'tts_complete'
   | 'bot_speaking_state_changed'  // Multi-turn: Bot speaking state for input blocking
@@ -42,6 +43,11 @@ export interface WebRTCAudioMessage {
     silence_duration_ms?: number;  // Duration of silence detected
     elapsed_ms?: number;          // Total elapsed time for max_utterance_timeout
     max_ms?: number;              // Max utterance limit for max_utterance_timeout
+    // Database persistence confirmation (message_saved event) - Phase 3
+    message_id?: string;          // Database message ID
+    role?: 'user' | 'assistant';  // Message role
+    correlation_id?: string;      // Correlation ID for tracing
+    timestamp?: string;           // ISO timestamp from database
   };
 }
 
