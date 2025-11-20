@@ -20,7 +20,7 @@ export class WebSocketMock {
   static readonly CLOSING = 2;
   static readonly CLOSED = 3;
 
-  constructor(url: string, protocols?: string | string[]) {
+  constructor(url: string, _protocols?: string | string[]) {
     this.url = url;
     this.readyState = WebSocketMock.CONNECTING;
 
@@ -100,7 +100,7 @@ export class WebSocketMock {
   /**
    * Simulate a WebSocket error
    */
-  simulateError(error?: Error): void {
+  simulateError(_error?: Error): void {
     const event = new Event('error');
     if (this.onerror) {
       this.onerror(event);

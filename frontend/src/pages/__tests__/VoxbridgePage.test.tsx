@@ -149,7 +149,7 @@ describe('VoxbridgePage', () => {
 
     // Install WebSocket mock globally - IMPORTANT: Always return the same instance
     // so that events emitted in tests reach the component
-    global.WebSocket = vi.fn().mockImplementation((url: string) => {
+    global.WebSocket = vi.fn().mockImplementation((_url: string) => {
       // Return our mock instance regardless of URL
       return mockWebSocket;
     }) as any;

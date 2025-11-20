@@ -92,7 +92,7 @@ export function useWebSocket(
             `[WebSocket] Reconnecting... (${reconnectAttemptsRef.current}/${maxReconnectAttempts})`
           );
 
-          reconnectTimeoutRef.current = setTimeout(() => {
+          reconnectTimeoutRef.current = window.setTimeout(() => {
             connect();
           }, reconnectInterval);
         }
@@ -107,7 +107,7 @@ export function useWebSocket(
 
   const disconnect = useCallback(() => {
     if (reconnectTimeoutRef.current) {
-      clearTimeout(reconnectTimeoutRef.current);
+      window.clearTimeout(reconnectTimeoutRef.current);
     }
 
     if (wsRef.current) {
