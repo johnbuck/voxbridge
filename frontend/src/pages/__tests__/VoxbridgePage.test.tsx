@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { VoxbridgePage } from '../VoxbridgePage';
 import { WebSocketMock } from '../../__tests__/mocks/WebSocketMock';
@@ -174,11 +175,21 @@ describe('VoxbridgePage', () => {
    * it appears in the UI immediately without requiring a page refresh.
    */
   it('should render AI response without page refresh', async () => {
+    const user = userEvent.setup();
     renderWithProviders();
 
-    // Wait for initial messages to load
+    // Wait for sessions to load
     await waitFor(() => {
-      expect(api.getSessionMessages).toHaveBeenCalled();
+      expect(api.getSessions).toHaveBeenCalled();
+    });
+
+    // Select the session by clicking on it (findAllByText since title may appear multiple times)
+    const sessionElements = await screen.findAllByText('Test Session');
+    await user.click(sessionElements[0]); // Click the first match (the session list item)
+
+    // Wait for messages to load for the selected session
+    await waitFor(() => {
+      expect(api.getSessionMessages).toHaveBeenCalledWith('session-456');
     });
 
     // Verify initial messages are displayed
@@ -215,6 +226,9 @@ describe('VoxbridgePage', () => {
     // Emit message_saved event to confirm database persistence
     mockWebSocket.emitMessageSaved('3', 'session-456', 'assistant', correlationId);
 
+    // Wait for debounced query invalidation (100ms) + refetch
+    await new Promise(resolve => setTimeout(resolve, 150));
+
     // Wait for the new message to appear (without page refresh!)
     await waitFor(
       () => {
@@ -231,11 +245,20 @@ describe('VoxbridgePage', () => {
    * incrementally as they arrive via WebSocket.
    */
   it('should display streaming AI response chunks correctly', async () => {
+    const user = userEvent.setup();
     renderWithProviders();
 
-    // Wait for initial load
+    // Wait for sessions to load and select the session
     await waitFor(() => {
-      expect(api.getSessionMessages).toHaveBeenCalled();
+      expect(api.getSessions).toHaveBeenCalled();
+    });
+
+    const sessionElements = await screen.findAllByText('Test Session');
+    await user.click(sessionElements[0]);
+
+    // Wait for messages to load
+    await waitFor(() => {
+      expect(api.getSessionMessages).toHaveBeenCalledWith('session-456');
     });
 
     const correlationId = 'streaming-test-456';
@@ -284,6 +307,9 @@ describe('VoxbridgePage', () => {
     // Emit message_saved to confirm persistence
     mockWebSocket.emitMessageSaved('4', 'session-456', 'assistant', correlationId);
 
+    // Wait for debounced query invalidation (100ms) + refetch
+    await new Promise(resolve => setTimeout(resolve, 150));
+
     // Verify streaming chunks are replaced by database message
     await waitFor(() => {
       expect(screen.getByText(fullResponse)).toBeInTheDocument();
@@ -297,10 +323,20 @@ describe('VoxbridgePage', () => {
    * between optimistic cache updates and database refetches.
    */
   it('should handle race condition between cache update and database refetch', async () => {
+    const user = userEvent.setup();
     renderWithProviders();
 
+    // Wait for sessions to load and select the session
     await waitFor(() => {
-      expect(api.getSessionMessages).toHaveBeenCalled();
+      expect(api.getSessions).toHaveBeenCalled();
+    });
+
+    const sessionElements = await screen.findAllByText('Test Session');
+    await user.click(sessionElements[0]);
+
+    // Wait for messages to load
+    await waitFor(() => {
+      expect(api.getSessionMessages).toHaveBeenCalledWith('session-456');
     });
 
     const correlationId = 'race-condition-789';
@@ -338,6 +374,9 @@ describe('VoxbridgePage', () => {
     // 4. message_saved event arrives
     mockWebSocket.emitMessageSaved('5', 'session-456', 'assistant', correlationId);
 
+    // Wait for debounced query invalidation (100ms) + refetch
+    await new Promise(resolve => setTimeout(resolve, 150));
+
     // Verify the message appears exactly once (no duplicates from race condition)
     await waitFor(() => {
       const matches = screen.queryAllByText(aiResponse);
@@ -354,10 +393,20 @@ describe('VoxbridgePage', () => {
    * database-persisted messages without flickering or duplication.
    */
   it('should smoothly transition from streaming to database message', async () => {
+    const user = userEvent.setup();
     renderWithProviders();
 
+    // Wait for sessions to load and select the session
     await waitFor(() => {
-      expect(api.getSessionMessages).toHaveBeenCalled();
+      expect(api.getSessions).toHaveBeenCalled();
+    });
+
+    const sessionElements = await screen.findAllByText('Test Session');
+    await user.click(sessionElements[0]);
+
+    // Wait for messages to load
+    await waitFor(() => {
+      expect(api.getSessionMessages).toHaveBeenCalledWith('session-456');
     });
 
     const correlationId = 'transition-test-abc';
@@ -399,6 +448,9 @@ describe('VoxbridgePage', () => {
     // Confirm database save
     mockWebSocket.emitMessageSaved('6', 'session-456', 'assistant', correlationId);
 
+    // Wait for debounced query invalidation (100ms) + refetch
+    await new Promise(resolve => setTimeout(resolve, 150));
+
     // Verify message appears (streaming chunks should be replaced by DB message)
     await waitFor(() => {
       expect(screen.getByText(fullResponse)).toBeInTheDocument();
@@ -416,10 +468,20 @@ describe('VoxbridgePage', () => {
    * don't crash the application.
    */
   it('should handle service error events gracefully', async () => {
+    const user = userEvent.setup();
     renderWithProviders();
 
+    // Wait for sessions to load and select the session
     await waitFor(() => {
-      expect(api.getSessionMessages).toHaveBeenCalled();
+      expect(api.getSessions).toHaveBeenCalled();
+    });
+
+    const sessionElements = await screen.findAllByText('Test Session');
+    await user.click(sessionElements[0]);
+
+    // Wait for messages to load
+    await waitFor(() => {
+      expect(api.getSessionMessages).toHaveBeenCalledWith('session-456');
     });
 
     // Simulate a service error
@@ -459,6 +521,9 @@ describe('VoxbridgePage', () => {
 
     vi.mocked(api.getSessionMessages).mockResolvedValue(updatedMessages);
     mockWebSocket.emitMessageSaved('7', 'session-456', 'assistant', correlationId);
+
+    // Wait for debounced query invalidation (100ms) + refetch
+    await new Promise(resolve => setTimeout(resolve, 150));
 
     // Verify recovery message appears
     await waitFor(() => {
