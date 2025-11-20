@@ -245,16 +245,16 @@ export function VoxbridgePage() {
 
   // Monitor React Query cache updates via dataUpdatedAt
   useEffect(() => {
-    if (dataUpdatedAt && messages.length > 0) {
+    if (dataUpdatedAt && Array.isArray(messages) && messages.length > 0) {
       logger.debug('📦 [CACHE_UPDATED] Cache reflected new data', {
         messagesCount: messages.length,
-        userCount: messages.filter(m => m.role === 'user').length,
-        assistantCount: messages.filter(m => m.role === 'assistant').length,
+        userCount: messages.filter((m: Message) => m.role === 'user').length,
+        assistantCount: messages.filter((m: Message) => m.role === 'assistant').length,
         dataUpdatedAt,
         timestamp: Date.now(),
       });
     }
-  }, [dataUpdatedAt, messages.length]);
+  }, [dataUpdatedAt, messages]);
 
   // State conflict detection: Detect invalid state combinations
   useEffect(() => {
@@ -292,9 +292,9 @@ export function VoxbridgePage() {
   // Defensive auto-clear: If DB message loaded while placeholder still visible, clear it immediately
   // This ensures seamless transition from optimistic → database message
   useEffect(() => {
-    if (pendingUserTranscript && activeSessionId && messages.length > 0) {
+    if (pendingUserTranscript && activeSessionId && Array.isArray(messages) && messages.length > 0) {
       const hasPendingInDB = messages.some(
-        m => m.role === 'user' && m.content === pendingUserTranscript.text
+        (m: Message) => m.role === 'user' && m.content === pendingUserTranscript.text
       );
 
       // Clear immediately when DB message exists (no duplicate bubbles)
@@ -308,7 +308,7 @@ export function VoxbridgePage() {
       } else {
         logger.debug('⏳ [AUTO_CLEAR] Pending message not in DB yet, keeping placeholder', {
           pendingText: pendingUserTranscript.text.substring(0, 30),
-          dbUserMessagesCount: messages.filter(m => m.role === 'user').length,
+          dbUserMessagesCount: messages.filter((m: Message) => m.role === 'user').length,
           timestamp: Date.now(),
         });
       }
@@ -318,11 +318,11 @@ export function VoxbridgePage() {
   // BUG FIX: Clear streaming chunks AFTER cache update reflects in messages query
   // This prevents AI responses from disappearing due to race condition
   useEffect(() => {
-    if (streamingChunks.length > 0 && activeSessionId && messages.length > 0) {
+    if (streamingChunks.length > 0 && activeSessionId && Array.isArray(messages) && messages.length > 0) {
       // Check if the streaming content has been added to the messages array
       const streamingContent = streamingChunks.join('');
       const hasStreamingInDB = messages.some(
-        m => m.role === 'assistant' && m.content === streamingContent
+        (m: Message) => m.role === 'assistant' && m.content === streamingContent
       );
 
       if (hasStreamingInDB) {
@@ -337,7 +337,7 @@ export function VoxbridgePage() {
         logger.debug('⏳ [AUTO_CLEAR_AI] Streaming message not in cache yet, keeping chunks', {
           streamingContent: streamingContent.substring(0, 30),
           chunksCount: streamingChunks.length,
-          dbAIMessagesCount: messages.filter(m => m.role === 'assistant').length,
+          dbAIMessagesCount: messages.filter((m: Message) => m.role === 'assistant').length,
           timestamp: Date.now(),
         });
       }
