@@ -46,6 +46,15 @@ const logger = createLogger('VoxbridgePage');
 // Use for creating new web sessions (can be changed when auth is added)
 const WEB_USER_ID = 'web_user_default';
 
+// DisplayMessage extends Message with additional UI-specific properties
+interface DisplayMessage extends Omit<Message, 'id'> {
+  id: string | number;       // Allow string IDs for optimistic messages ('pending-user-message', etc.)
+  isPending?: boolean;       // Message not yet saved to database
+  isFinalizing?: boolean;    // User message being finalized (dots animation)
+  isStreaming?: boolean;     // AI message being streamed (dots animation)
+  _sequence?: number;        // Stable insertion order (prevents reordering on optimistic → database transition)
+}
+
 export function VoxbridgePage() {
   // Analytics state (Discord conversation monitoring) - kept for future Discord transcript integration
   const [activeSpeaker, setActiveSpeaker] = useState<string | null>(null);
@@ -80,6 +89,7 @@ export function VoxbridgePage() {
   const [activeTTSContent, setActiveTTSContent] = useState<string | null>(null);  // Track message content being synthesized for ellipsis animation (survives DB refetch)
   const [pendingUserTranscript, setPendingUserTranscript] = useState<{ text: string; isFinalizing: boolean; isStreaming: boolean } | null>(null);
   const [pendingAIResponse, setPendingAIResponse] = useState<{ text: string; correlationId: string } | null>(null);
+  const [messageSequence, setMessageSequence] = useState(0);  // Stable insertion order counter (prevents reordering)
 
   const queryClient = useQueryClient();
   const toast = useToastHelpers();
@@ -201,21 +211,32 @@ export function VoxbridgePage() {
   });
 
   // ✅ Optimistic UI: Merge database messages + streaming chunks for seamless display
+  // ✅ REORDERING FIX: Use stable insertion order (_sequence) instead of timestamps
   const displayMessages = useMemo(() => {
-    // BUG FIX #3: Removed debug logging spam (was causing 150+ logs per 3-second utterance)
-    const dbMessages = Array.isArray(messages) ? [...messages] : [];
+    const allMessages: DisplayMessage[] = [];
+    let sequence = 0;
+
+    // Add database messages with sequence numbers (stable order)
+    if (Array.isArray(messages)) {
+      messages.forEach((msg) => {
+        allMessages.push({
+          ...msg,
+          _sequence: sequence++,
+        });
+      });
+    }
 
     // Add pending user transcript placeholder (shows immediately before DB fetch)
     // Only show if the message isn't already in the database (prevents duplicates)
     if (pendingUserTranscript && activeSessionId) {
-      const hasPendingInDB = dbMessages.some(
+      const hasPendingInDB = messages?.some(
         m => m.role === 'user' && m.content === pendingUserTranscript.text
       );
 
       if (!hasPendingInDB) {
         // Add optimistic user message to display
-        dbMessages.push({
-          id: 'pending-user-message', // Stable string ID (BUG FIX: was Date.now() - 1)
+        allMessages.push({
+          id: 'pending-user-message', // Stable string ID
           session_id: activeSessionId,
           role: 'user',
           content: pendingUserTranscript.text,
@@ -227,18 +248,17 @@ export function VoxbridgePage() {
           isPending: !pendingUserTranscript.isFinalizing,
           isFinalizing: pendingUserTranscript.isFinalizing,
           isStreaming: pendingUserTranscript.isStreaming,
-        } as unknown as Message);
+          _sequence: sequence++,
+        });
       }
-      // else: Pending message already in DB, skip placeholder
-
     }
 
     // If streaming, append optimistic message (not yet in database)
     if (streamingChunks.length > 0 && activeSessionId) {
       const streamingContent = streamingChunks.join('');
       // Add optimistic AI streaming message to display
-      dbMessages.push({
-        id: 'streaming-ai-message', // Stable string ID (BUG FIX: was Date.now())
+      allMessages.push({
+        id: 'streaming-ai-message', // Stable string ID
         session_id: activeSessionId,
         role: 'assistant',
         content: streamingContent,
@@ -248,18 +268,19 @@ export function VoxbridgePage() {
         llm_latency_ms: null,
         total_latency_ms: null,
         isStreaming: true,
-      } as unknown as Message);
+        _sequence: sequence++,
+      });
     }
 
     // ✅ RACE CONDITION FIX #1: Display pending AI response while waiting for database confirmation
     if (pendingAIResponse && activeSessionId && streamingChunks.length === 0) {
       // Only show if not already in database and not currently streaming
-      const hasPendingInDB = dbMessages.some(
+      const hasPendingInDB = messages?.some(
         m => m.role === 'assistant' && m.content === pendingAIResponse.text
       );
 
       if (!hasPendingInDB) {
-        dbMessages.push({
+        allMessages.push({
           id: 'pending-ai-message', // Stable string ID
           session_id: activeSessionId,
           role: 'assistant',
@@ -270,11 +291,19 @@ export function VoxbridgePage() {
           llm_latency_ms: null,
           total_latency_ms: null,
           isPending: true, // Mark as pending for UI indication
-        } as unknown as Message);
+          _sequence: sequence++,
+        });
       }
     }
 
-    return dbMessages;
+    // Update sequence counter for next render (only when sequence changes)
+    if (sequence !== messageSequence) {
+      setMessageSequence(sequence);
+    }
+
+    // Sort by sequence (stable insertion order - no timestamp comparison)
+    // This prevents reordering when transitioning optimistic → database messages
+    return allMessages.sort((a, b) => (a._sequence || 0) - (b._sequence || 0));
   }, [
     messages,
     streamingChunks,
@@ -285,6 +314,7 @@ export function VoxbridgePage() {
     pendingUserTranscript?.isStreaming,
     // RACE CONDITION FIX #1: Add pending AI response to dependencies
     pendingAIResponse?.text,
+    messageSequence,
   ]);
 
   // Monitor React Query cache updates via dataUpdatedAt
@@ -873,8 +903,17 @@ export function VoxbridgePage() {
       // Refetch metrics after AI response completes
       debouncedInvalidateQueries(['metrics']);
     } else if (message.event === 'message_saved') {
-      // Clear streaming chunks now that message is saved to database (Discord)
-      if (streamingChunks.length > 0) {
+      // Clear pending user transcript when user message is saved to database
+      if (message.data.role === 'user' && pendingUserTranscript) {
+        logger.debug('🧹 [AUTO_CLEAR] Clearing pendingUserTranscript after user message saved', {
+          messageId: message.data.message_id,
+          sessionId: message.data.session_id,
+        });
+        setPendingUserTranscript(null);
+      }
+
+      // Clear streaming chunks when AI message is saved to database (Discord)
+      if (message.data.role === 'assistant' && streamingChunks.length > 0) {
         logger.debug('🧹 [STREAMING_CLEANUP] Clearing streaming chunks - message saved to database (Discord)', {
           chunksCount: streamingChunks.length,
         });
@@ -1029,15 +1068,17 @@ export function VoxbridgePage() {
   }, [activeSessionId]);
 
   // Batch 3.3: 10s timeout for pending transcript placeholder (safety net)
+  // ✅ Failsafe timeout: Clear pending user transcript if message_saved event is missed
+  // Reduced from 10s to 2s since message_saved handler now clears explicitly
   useEffect(() => {
     if (!pendingUserTranscript) return;
 
     const timeoutId = setTimeout(() => {
-      logger.warn(`⚠️ [PENDING_TIMEOUT] Pending user transcript not cleared after 10s - forcing clear`);
+      logger.warn(`⚠️ [AUTO_CLEAR] Failsafe timeout triggered - message_saved event may have been missed`);
       logger.warn(`   - Text: "${pendingUserTranscript.text.substring(0, 50)}..."`);
       logger.warn(`   - isFinalizing: ${pendingUserTranscript.isFinalizing}`);
       setPendingUserTranscript(null);
-    }, 10000); // 10 seconds
+    }, 2000); // 2 seconds (reduced from 10s - message_saved should clear within 200ms)
 
     return () => clearTimeout(timeoutId);
   }, [pendingUserTranscript]);
@@ -1760,21 +1801,22 @@ export function VoxbridgePage() {
                       ) : (
                         <>
                           {displayMessages.slice().reverse().map((message) => {
-                            // Calculate React key for this message
-                            // BUG FIX #1: Stable keys across state transitions (prevents remounting/disappearing)
-                            const reactKey = message.role === 'user'
-                              ? `user-${(message as any).isPending || (message as any).isFinalizing
-                                  ? 'pending'
-                                  : message.id}`
-                              : `assistant-${(message as any).isStreaming
-                                  ? 'streaming'
-                                  : message.id}`;
+                            // Generate stable React key (no 'pending' → ID transition)
+                            // ✅ REORDERING FIX: Keys remain constant across optimistic → database transitions
+                            // This prevents React from remounting DOM elements and causing visual jumps
+                            const stableKey = message.id === 'pending-user-message'
+                              ? `msg-pending-user-${activeSessionId}`
+                              : message.id === 'streaming-ai-message'
+                              ? `msg-streaming-ai-${activeSessionId}`
+                              : message.id === 'pending-ai-message'
+                              ? `msg-pending-ai-${activeSessionId}`
+                              : `msg-${message.id}`;
 
                             // BUG FIX #3: Removed render debug logs (was causing 10+ logs per frame)
 
                             return (
                             <div
-                              key={reactKey}
+                              key={stableKey}
                               className={cn(
                                 'flex',
                                 message.role === 'user' ? 'justify-start' : 'justify-end'
