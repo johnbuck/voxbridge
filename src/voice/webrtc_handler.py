@@ -1037,17 +1037,34 @@ class WebRTCVoiceHandler:
             logger.info("🤖 Sent ai_response_start event to frontend (TTS pipeline starting)")
 
             # Save user message to conversation
-            logger.info(f"💾 [DB_SAVE] Saving user message to database: session={self.session_id}, role=user, length={len(transcript)} chars")
-            await self.conversation_service.add_message(
+            import uuid
+            user_correlation_id = str(uuid.uuid4())
+
+            logger.info(f"💾 [DB_SAVE] Saving user message to database: session={self.session_id}, role=user, length={len(transcript)} chars, correlation_id={user_correlation_id[:8]}...")
+            user_message = await self.conversation_service.add_message(
                 session_id=self.session_id,
                 role="user",
                 content=transcript,
                 metadata={
                     'source': 'webrtc',
                     'user_id': self.user_id
-                }
+                },
+                correlation_id=user_correlation_id
             )
             logger.info(f"✅ [DB_SAVE] Saved user message to database")
+
+            # Emit message_saved confirmation event
+            await ws_manager.broadcast({
+                "event": "message_saved",
+                "data": {
+                    "message_id": str(user_message.metadata.get('id')) if hasattr(user_message, 'metadata') else None,
+                    "session_id": self.session_id,
+                    "role": "user",
+                    "correlation_id": user_correlation_id,
+                    "timestamp": user_message.timestamp.isoformat()
+                }
+            })
+            logger.info(f"📡 [WS_EVENT] Sent message_saved event (role=user, correlation_id={user_correlation_id[:8]}...)")
 
             # Get agent configuration
             agent = await self.conversation_service.get_agent_config(self.session_id)
@@ -1215,10 +1232,14 @@ class WebRTCVoiceHandler:
                 # Success - break out of retry loop
                 break
 
+            # Generate correlation ID for this AI response (used for both event and database)
+            import uuid
+            ai_correlation_id = str(uuid.uuid4())
+
             # Send completion event
             # DIAGNOSTIC: Log complete response before saving
-            logger.info(f"💾 [AI_COMPLETE] AI response complete: \"{full_response[:100]}{'...' if len(full_response) > 100 else ''}\" (length={len(full_response)} chars)")
-            await self._send_ai_response_complete(full_response)
+            logger.info(f"💾 [AI_COMPLETE] AI response complete: \"{full_response[:100]}{'...' if len(full_response) > 100 else ''}\" (length={len(full_response)} chars, correlation_id={ai_correlation_id[:8]}...)")
+            await self._send_ai_response_complete(full_response, ai_correlation_id)
 
             # Record latency
             t_llm_complete = time.time()
@@ -1235,9 +1256,9 @@ class WebRTCVoiceHandler:
             if not full_response.strip():
                 logger.warning(f"🚫 [DB_SAVE] Skipping save of empty AI response (session={self.session_id})")
             else:
-                # Save AI message to conversation
-                logger.info(f"💾 [DB_SAVE] Saving AI response to database: session={self.session_id}, role=assistant, length={len(full_response)} chars")
-                await self.conversation_service.add_message(
+                # Save AI message to conversation (using same correlation ID as event)
+                logger.info(f"💾 [DB_SAVE] Saving AI response to database: session={self.session_id}, role=assistant, length={len(full_response)} chars, correlation_id={ai_correlation_id[:8]}...")
+                ai_message = await self.conversation_service.add_message(
                     session_id=self.session_id,
                     role="assistant",
                     content=full_response,
@@ -1245,9 +1266,23 @@ class WebRTCVoiceHandler:
                         'llm_provider': agent.llm_provider,
                         'llm_model': agent.llm_model,
                         'latency_s': latency_s
-                    }
+                    },
+                    correlation_id=ai_correlation_id
                 )
                 logger.info(f"✅ [DB_SAVE] Saved AI message to database (ID will be assigned by DB)")
+
+                # Emit message_saved confirmation event
+                await ws_manager.broadcast({
+                    "event": "message_saved",
+                    "data": {
+                        "message_id": str(ai_message.metadata.get('id')) if hasattr(ai_message, 'metadata') else None,
+                        "session_id": self.session_id,
+                        "role": "assistant",
+                        "correlation_id": ai_correlation_id,
+                        "timestamp": ai_message.timestamp.isoformat()
+                    }
+                })
+                logger.info(f"📡 [WS_EVENT] Sent message_saved event (role=assistant, correlation_id={ai_correlation_id[:8]}...)")
 
             # Note: Full metrics snapshot broadcast moved to end of _generate_tts() after total_pipeline_latency
             # This ensures all metrics (including TTS) are included in the broadcast
@@ -1325,18 +1360,21 @@ class WebRTCVoiceHandler:
         except Exception as e:
             logger.debug(f"⏭️ Could not send AI response chunk (connection likely closed): {e}")
 
-    async def _send_ai_response_complete(self, text: str):
-        """Send AI response complete event to browser"""
+    async def _send_ai_response_complete(self, text: str, correlation_id: str):
+        """Send AI response complete event to browser with correlation ID"""
         if not self.is_active:
             logger.debug(f"⏭️ Skipping AI response complete send (connection closed)")
             return
 
         try:
+            import time
             message = {
                 "event": "ai_response_complete",
                 "data": {
                     "text": text,
-                    "session_id": str(self.session_id)
+                    "session_id": str(self.session_id),
+                    "correlation_id": correlation_id,
+                    "timestamp": time.time()
                 }
             }
             # Send to active voice WebSocket

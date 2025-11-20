@@ -40,6 +40,8 @@ import { createLogger } from '@/utils/logger';
 
 // Initialize logger for VoxbridgePage
 const logger = createLogger('VoxbridgePage');
+// BUG FIX #5: Debug logs removed for performance. To re-enable for troubleshooting:
+// Set VITE_LOG_LEVEL_UI=DEBUG in frontend/.env and rebuild frontend container
 
 // Use for creating new web sessions (can be changed when auth is added)
 const WEB_USER_ID = 'web_user_default';
@@ -133,38 +135,29 @@ export function VoxbridgePage() {
   });
 
   // Fetch messages for active session
-  const { data: messages = [], isLoading: isLoadingMessages } = useQuery<Message[]>({
+  const { data: messages = [], isLoading: isLoadingMessages, dataUpdatedAt } = useQuery<Message[]>({
     queryKey: ['messages', activeSessionId],
     queryFn: async () => {
       if (!activeSessionId) return [];
 
-      // ✅ DISABLED: Too verbose - only enable when debugging message fetching
-      // const fetchStart = Date.now();
-      // logger.debug(`[QUERY] Starting message fetch at ${fetchStart} for session ${activeSessionId}`);
+      const fetchStart = Date.now();
+      logger.debug('🔄 [QUERY_START] Fetching messages', {
+        sessionId: activeSessionId,
+        timestamp: fetchStart,
+      });
 
       const result = await api.getSessionMessages(activeSessionId);
 
-      // ✅ DISABLED: Too verbose - only enable when debugging message fetching
-      // const fetchEnd = Date.now();
-      // const fetchDuration = fetchEnd - fetchStart;
-      // logger.debug(`[QUERY] Fetch complete in ${fetchDuration}ms, received ${result.length} messages`);
+      const fetchEnd = Date.now();
+      const fetchDuration = fetchEnd - fetchStart;
 
-      // ✅ DISABLED: Too verbose - only enable when debugging message fetching
-      // logger.debug('📥', 'QUERY', `Fetched ${result.length} messages from database (session: ${activeSessionId})`, undefined, true);
-      // result.forEach((m, i) => {
-      //   if (m.role === 'assistant') {
-      //     logger.debug('  ', '  ', `- DB message[${i}]: id=${m.id}, role=${m.role}, length=${m.content.length} chars`, undefined, true);
-      //   }
-      // });
-
-      // ✅ DISABLED: Too verbose - only enable when debugging duplicates
-      // const assistantMessages = result.filter(m => m.role === 'assistant');
-      // if (assistantMessages.length > 1) {
-      //   logger.warn(`[QUERY] ⚠️ Received ${assistantMessages.length} assistant messages from database!`);
-      //   assistantMessages.forEach((m, i) => {
-      //     logger.warn(`  - Assistant[${i}]: id=${m.id}, length=${m.content.length} chars, timestamp=${m.timestamp}`);
-      //   });
-      // }
+      logger.debug('✅ [QUERY_COMPLETE] Fetched messages', {
+        count: result.length,
+        userCount: result.filter(m => m.role === 'user').length,
+        assistantCount: result.filter(m => m.role === 'assistant').length,
+        duration: fetchDuration,
+        timestamp: fetchEnd,
+      });
 
       return result;
     },
@@ -172,10 +165,25 @@ export function VoxbridgePage() {
     staleTime: Infinity, // ✅ Optimistic UI: Never auto-refetch, only invalidate on explicit events
     refetchOnWindowFocus: false, // ✅ Don't refetch on window focus
     // refetchInterval removed - WebSocket provides real-time updates, explicit invalidation on completion
+
+    // Lifecycle callbacks for logging
+    onSuccess: (data) => {
+      logger.debug('📦 [QUERY_SUCCESS] Cache updated', {
+        messagesCount: data.length,
+        timestamp: Date.now(),
+      });
+    },
+    onError: (error) => {
+      logger.error('❌ [QUERY_ERROR] Failed to fetch messages', {
+        error: String(error),
+        timestamp: Date.now(),
+      });
+    },
   });
 
   // ✅ Optimistic UI: Merge database messages + streaming chunks for seamless display
   const displayMessages = useMemo(() => {
+    // BUG FIX #3: Removed debug logging spam (was causing 150+ logs per 3-second utterance)
     const dbMessages = [...messages];
 
     // Add pending user transcript placeholder (shows immediately before DB fetch)
@@ -186,9 +194,9 @@ export function VoxbridgePage() {
       );
 
       if (!hasPendingInDB) {
-        logger.debug(`[DISPLAY] Adding pending user message to display (isFinalizing: ${pendingUserTranscript.isFinalizing})`);
+        // Add optimistic user message to display
         dbMessages.push({
-          id: Date.now() - 1, // Temporary ID (earlier than streaming message)
+          id: 'pending-user-message', // Stable string ID (BUG FIX: was Date.now() - 1)
           session_id: activeSessionId,
           role: 'user',
           content: pendingUserTranscript.text,
@@ -197,36 +205,56 @@ export function VoxbridgePage() {
           tts_duration_ms: null,
           llm_latency_ms: null,
           total_latency_ms: null,
-          // @ts-ignore - Add flag for styling
           isPending: !pendingUserTranscript.isFinalizing,
           isFinalizing: pendingUserTranscript.isFinalizing,
           isStreaming: pendingUserTranscript.isStreaming,
-        } as Message);
-      } else {
-        logger.debug('[DISPLAY] Pending message already in DB, skipping placeholder');
+        } as unknown as Message);
       }
+      // else: Pending message already in DB, skip placeholder
 
     }
 
     // If streaming, append optimistic message (not yet in database)
     if (streamingChunks.length > 0 && activeSessionId) {
+      const streamingContent = streamingChunks.join('');
+      // Add optimistic AI streaming message to display
       dbMessages.push({
-        id: Date.now(), // Temporary ID (number)
+        id: 'streaming-ai-message', // Stable string ID (BUG FIX: was Date.now())
         session_id: activeSessionId,
         role: 'assistant',
-        content: streamingChunks.join(''),
+        content: streamingContent,
         timestamp: new Date().toISOString(),
         audio_duration_ms: null,
         tts_duration_ms: null,
         llm_latency_ms: null,
         total_latency_ms: null,
-        // @ts-ignore - Add flag for styling
         isStreaming: true,
-      } as Message);
+      } as unknown as Message);
     }
 
     return dbMessages;
-  }, [messages, streamingChunks, activeSessionId, pendingUserTranscript, pendingUserTranscript?.text]);
+  }, [
+    messages,
+    streamingChunks,
+    activeSessionId,
+    // BUG FIX #4: Destructure to prevent re-renders on object reference changes
+    pendingUserTranscript?.text,
+    pendingUserTranscript?.isFinalizing,
+    pendingUserTranscript?.isStreaming
+  ]);
+
+  // Monitor React Query cache updates via dataUpdatedAt
+  useEffect(() => {
+    if (dataUpdatedAt && messages.length > 0) {
+      logger.debug('📦 [CACHE_UPDATED] Cache reflected new data', {
+        messagesCount: messages.length,
+        userCount: messages.filter(m => m.role === 'user').length,
+        assistantCount: messages.filter(m => m.role === 'assistant').length,
+        dataUpdatedAt,
+        timestamp: Date.now(),
+      });
+    }
+  }, [dataUpdatedAt, messages.length]);
 
   // State conflict detection: Detect invalid state combinations
   useEffect(() => {
@@ -271,11 +299,50 @@ export function VoxbridgePage() {
 
       // Clear immediately when DB message exists (no duplicate bubbles)
       if (hasPendingInDB) {
-        logger.debug('[SAFETY] DB message loaded - auto-clearing placeholder immediately');
+        logger.debug('🧹 [AUTO_CLEAR] DB message loaded - clearing pendingUserTranscript', {
+          pendingText: pendingUserTranscript.text.substring(0, 50),
+          messagesCount: messages.length,
+          timestamp: Date.now(),
+        });
         setPendingUserTranscript(null);
+      } else {
+        logger.debug('⏳ [AUTO_CLEAR] Pending message not in DB yet, keeping placeholder', {
+          pendingText: pendingUserTranscript.text.substring(0, 30),
+          dbUserMessagesCount: messages.filter(m => m.role === 'user').length,
+          timestamp: Date.now(),
+        });
       }
     }
   }, [messages, pendingUserTranscript, activeSessionId]);
+
+  // BUG FIX: Clear streaming chunks AFTER cache update reflects in messages query
+  // This prevents AI responses from disappearing due to race condition
+  useEffect(() => {
+    if (streamingChunks.length > 0 && activeSessionId && messages.length > 0) {
+      // Check if the streaming content has been added to the messages array
+      const streamingContent = streamingChunks.join('');
+      const hasStreamingInDB = messages.some(
+        m => m.role === 'assistant' && m.content === streamingContent
+      );
+
+      if (hasStreamingInDB) {
+        logger.debug('🧹 [AUTO_CLEAR_AI] Cache update reflected - clearing streamingChunks', {
+          streamingContent: streamingContent.substring(0, 50),
+          chunksCount: streamingChunks.length,
+          messagesCount: messages.length,
+          timestamp: Date.now(),
+        });
+        setStreamingChunks([]);
+      } else {
+        logger.debug('⏳ [AUTO_CLEAR_AI] Streaming message not in cache yet, keeping chunks', {
+          streamingContent: streamingContent.substring(0, 30),
+          chunksCount: streamingChunks.length,
+          dbAIMessagesCount: messages.filter(m => m.role === 'assistant').length,
+          timestamp: Date.now(),
+        });
+      }
+    }
+  }, [messages, streamingChunks, activeSessionId]);
 
   // Get active session details
   const activeSession = sessions.find((s) => s.id === activeSessionId);
@@ -326,7 +393,13 @@ export function VoxbridgePage() {
           // Create optimistic user message placeholder (shows immediately in conversation)
           // Bubble will show "Listening..." if text is empty, or streaming text if available
           const transcriptText = message.data.text || '';
-          logger.debug(`[PENDING] Creating user placeholder with text: "${transcriptText.substring(0, 30) || '(empty)'}..."`);
+          logger.debug(`📝 [PENDING_USER] Setting pendingUserTranscript (partial)`, {
+            text: transcriptText.substring(0, 50),
+            length: transcriptText.length,
+            isStreaming: true,
+            isFinalizing: false,
+            timestamp: Date.now(),
+          });
           setPendingUserTranscript({
             text: transcriptText,
             isFinalizing: false,
@@ -344,7 +417,13 @@ export function VoxbridgePage() {
 
           // Update pending transcript to show finalizing state (bouncing dots)
           if (message.data.text) {
-            logger.debug(`[PENDING] Setting finalizing state for: "${message.data.text.substring(0, 30)}..."`);
+            logger.debug(`📝 [PENDING_USER] Setting pendingUserTranscript (final)`, {
+              text: message.data.text.substring(0, 50),
+              length: message.data.text.length,
+              isStreaming: false,
+              isFinalizing: true,
+              timestamp: Date.now(),
+            });
             setPendingUserTranscript({
               text: message.data.text,
               isFinalizing: true,
@@ -361,7 +440,7 @@ export function VoxbridgePage() {
           if (activeSessionId) {
             logger.debug('🔄', 'QUERY (WebRTC)', `Invalidating messages query (session: ${activeSessionId})`, undefined, true);
             queryClient.invalidateQueries({ queryKey: ['messages', activeSessionId] });
-            logger.debug('[PENDING] Keeping placeholder visible - will clear after AI completes');
+            logger.debug('✅ [PENDING_USER] Keeping placeholder visible - will clear after AI completes');
           }
 
           // Start AI generation indicator for voice chat
@@ -374,13 +453,35 @@ export function VoxbridgePage() {
           // Stream AI response chunks for voice chat
           // Use StreamingMessageDisplay component for real-time display
           // No optimistic updates needed - backend saves to database
-          setStreamingChunks((prev) => [...prev, message.data.text || '']);
+          logger.debug(`🌊 [STREAMING_AI] Adding chunk to streamingChunks`, {
+            chunkText: message.data.text?.substring(0, 50),
+            chunkLength: message.data.text?.length,
+            currentChunksCount: streamingChunks.length,
+            timestamp: Date.now(),
+          });
+          setStreamingChunks((prev) => {
+            const newChunks = [...prev, message.data.text || ''];
+            logger.debug(`🌊 [STREAMING_AI] Updated streamingChunks`, {
+              totalChunks: newChunks.length,
+              totalLength: newChunks.join('').length,
+              contentPreview: newChunks.join('').substring(0, 50),
+            });
+            return newChunks;
+          });
           setIsStreaming(true);
           break;
 
         case 'ai_response_complete':
           const aiDuration = aiStartTimeRef.current ? Date.now() - aiStartTimeRef.current : 0;
           logger.debug('💭', 'THINKING (WebRTC)', `Complete (duration: ${aiDuration}ms)`, undefined, true);
+
+          logger.debug(`🏁 [AI_COMPLETE] Starting ai_response_complete handler`, {
+            activeSessionId,
+            messageText: message.data.text?.substring(0, 50),
+            currentStreamingChunksCount: streamingChunks.length,
+            currentMessagesCount: messages.length,
+            timestamp: Date.now(),
+          });
 
           // Stop AI generating animation
           setIsVoiceAIGenerating(false);
@@ -397,14 +498,31 @@ export function VoxbridgePage() {
 
           // ✅ Optimistic UI: Directly update cache with completed message
           if (activeSessionId && message.data.text) {
-            logger.debug('💾', 'CACHE (WebRTC)', `Adding optimistic message to cache`, undefined, true);
+            logger.debug('💾 [CACHE_UPDATE] Updating React Query cache with completed AI message', {
+              sessionId: activeSessionId,
+              textLength: message.data.text.length,
+              textPreview: message.data.text.substring(0, 50),
+              timestamp: Date.now(),
+            });
 
             // Store temporary message ID for TTS tracking (ellipsis animation)
             const tempMessageId = Date.now();
 
+            logger.debug('💾 [CACHE_SET] Updating cache with optimistic AI message', {
+              sessionId: activeSessionId,
+              textLength: message.data.text.length,
+              tempMessageId,
+              timestamp: Date.now(),
+            });
+
             // Update cache immediately with new message
             queryClient.setQueryData<Message[]>(['messages', activeSessionId], (oldMessages = []) => {
-              return [
+              logger.debug('💾 [CACHE_SET] setQueryData callback executing', {
+                oldMessagesCount: oldMessages.length,
+                timestamp: Date.now(),
+              });
+
+              const newMessages = [
                 ...oldMessages,
                 {
                   id: tempMessageId, // Temporary ID until background refetch gets real DB ID
@@ -418,10 +536,22 @@ export function VoxbridgePage() {
                   total_latency_ms: null,
                 } as Message
               ];
+              logger.debug('💾 [CACHE_SET] Cache update complete', {
+                oldMessagesCount: oldMessages.length,
+                newMessagesCount: newMessages.length,
+                addedMessage: true,
+                timestamp: Date.now(),
+              });
+              return newMessages;
             });
 
-            // Clear streaming chunks AFTER cache update (prevents visual gap)
-            setStreamingChunks([]);
+            // ✅ BUG FIX: Don't clear streamingChunks here - let useEffect handle it
+            // The useEffect will clear chunks AFTER the cache update reflects in the messages query
+            // This prevents AI responses from disappearing due to race condition
+            logger.debug(`✅ [STREAMING_AI] Cache updated - waiting for useEffect to clear chunks`, {
+              chunksCount: streamingChunks.length,
+              timestamp: Date.now(),
+            });
 
             // Track this message for TTS animation (ellipsis continues until TTS complete)
             // Using content (not ID) because DB refetch will change ID but content persists
@@ -432,12 +562,15 @@ export function VoxbridgePage() {
             }, true);
 
             // Background refetch to get real DB IDs (immediate, React Query handles smooth transition)
-            logger.debug('🔄', 'QUERY (WebRTC)', `Background refetch for DB IDs (session: ${activeSessionId})`, undefined, true);
+            logger.debug('🔄 [QUERY_INVALIDATE] Invalidating messages query for background refetch', {
+              sessionId: activeSessionId,
+              timestamp: Date.now(),
+            });
             queryClient.invalidateQueries({ queryKey: ['messages', activeSessionId] });
           }
 
           // AI response text is complete, now waiting for TTS audio
-          logger.debug('✅ AI response complete - waiting for TTS audio...');
+          logger.debug('✅ [AI_COMPLETE] Handler complete - waiting for TTS audio...');
           break;
 
         case 'tts_start':
@@ -1548,20 +1681,21 @@ export function VoxbridgePage() {
                       ) : (
                         <>
                           {displayMessages.slice().reverse().map((message) => {
-                            // Debug logging for TTS ellipsis matching
-                            if (message.role === 'assistant' && activeTTSContent) {
-                              const matchesContent = message.content === activeTTSContent;
-                              logger.debug('🎯 [RENDER] AI message check', {
-                                messageId: message.id,
-                                contentPreview: message.content.substring(0, 30),
-                                activeTTSContent: activeTTSContent.substring(0, 30),
-                                matchesContent
-                              }, true);
-                            }
+                            // Calculate React key for this message
+                            // BUG FIX #1: Stable keys across state transitions (prevents remounting/disappearing)
+                            const reactKey = message.role === 'user'
+                              ? `user-${(message as any).isPending || (message as any).isFinalizing
+                                  ? 'pending'
+                                  : message.id}`
+                              : `assistant-${(message as any).isStreaming
+                                  ? 'streaming'
+                                  : message.id}`;
+
+                            // BUG FIX #3: Removed render debug logs (was causing 10+ logs per frame)
 
                             return (
                             <div
-                              key={(message as any).isPending || (message as any).isFinalizing ? 'pending-user-transcript' : `${message.role}-${message.id}`}
+                              key={reactKey}
                               className={cn(
                                 'flex',
                                 message.role === 'user' ? 'justify-start' : 'justify-end'
@@ -1606,8 +1740,18 @@ export function VoxbridgePage() {
                                   </p>
                                 )}
 
-                                {/* Assistant message: Always show content (streaming handled elsewhere) */}
-                                {message.role === 'assistant' && (
+                                {/* Assistant message: Show streaming state with dots (BUG FIX #2) */}
+                                {message.role === 'assistant' && (message as any).isStreaming && (
+                                  <div className="flex items-center gap-2">
+                                    <BouncingDots size="sm" className="text-purple-400/60" />
+                                    <p className="text-sm whitespace-pre-line leading-relaxed opacity-75">
+                                      {message.content || 'Generating...'}
+                                    </p>
+                                  </div>
+                                )}
+
+                                {/* Assistant message: Show final content */}
+                                {message.role === 'assistant' && !(message as any).isStreaming && (
                                   <p className="text-sm whitespace-pre-line leading-relaxed">
                                     {message.content}
                                   </p>

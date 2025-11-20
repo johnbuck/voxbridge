@@ -343,7 +343,8 @@ class ConversationService:
         session_id: str,
         role: str,
         content: str,
-        metadata: Optional[Dict] = None
+        metadata: Optional[Dict] = None,
+        correlation_id: Optional[str] = None
     ) -> Message:
         """
         Add message to conversation history.
@@ -353,6 +354,7 @@ class ConversationService:
             role: Message role ('user', 'assistant', or 'system')
             content: Message text content
             metadata: Optional metrics (audio_duration_ms, tts_duration_ms, etc.)
+            correlation_id: Optional correlation ID for end-to-end tracing
 
         Returns:
             Message: The added message
@@ -361,6 +363,21 @@ class ConversationService:
             ValueError: If session not found
         """
         metadata = metadata or {}
+        import time
+        import uuid
+
+        # Generate correlation ID if not provided
+        if not correlation_id:
+            correlation_id = str(uuid.uuid4())
+
+        # Start timing
+        t_start = time.time()
+
+        logger.info(
+            f"💾 [DB_SAVE_START] Saving message "
+            f"(role={role}, session={session_id[:8]}..., "
+            f"length={len(content)} chars, correlation_id={correlation_id[:8]}...)"
+        )
 
         try:
             # Ensure session is cached
@@ -372,6 +389,7 @@ class ConversationService:
                 cached.expires_at = cached.last_activity + self._cache_ttl
 
                 # Create conversation entry
+                t_db_start = time.time()
                 async with get_db_session() as db:
                     # ✅ FIX: Check for duplicate messages and PREVENT insertion
                     ten_seconds_ago = datetime.utcnow() - timedelta(seconds=10)
@@ -421,6 +439,10 @@ class ConversationService:
                     await db.commit()
                     await db.refresh(conversation)
 
+                    # Calculate database transaction duration
+                    t_db_end = time.time()
+                    db_duration_ms = (t_db_end - t_db_start) * 1000
+
                     logger.info(
                         f"✅ [DB_INSERT] Saved with id={conversation.id}, "
                         f"timestamp={conversation.timestamp}"
@@ -436,6 +458,18 @@ class ConversationService:
                     content=conversation.content,
                     timestamp=conversation.timestamp,
                     metadata=metadata
+                )
+
+                # Calculate total duration
+                t_end = time.time()
+                total_duration_ms = (t_end - t_start) * 1000
+
+                logger.info(
+                    f"💾 [DB_SAVE_COMPLETE] Message saved "
+                    f"(id={conversation.id}, role={role}, "
+                    f"db_duration={db_duration_ms:.2f}ms, "
+                    f"total_duration={total_duration_ms:.2f}ms, "
+                    f"correlation_id={correlation_id[:8]}...)"
                 )
 
                 logger.debug(

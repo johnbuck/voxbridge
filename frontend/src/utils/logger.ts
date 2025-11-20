@@ -88,6 +88,63 @@ function getLogLevel(moduleName: string): LogLevel {
   return LogLevel.INFO;
 }
 
+// Global log buffer for batching backend logs
+const logBuffer: Array<{
+  level: string;
+  module: string;
+  message: string;
+  data?: any;
+  timestamp: number;
+}> = [];
+
+// Debounced backend log sender
+let sendTimeout: number | null = null;
+const BATCH_INTERVAL_MS = 1000; // Send logs every 1 second
+const MAX_BUFFER_SIZE = 50; // Send immediately if buffer exceeds this
+
+/**
+ * Send buffered logs to backend
+ */
+async function sendLogsToBackend(): Promise<void> {
+  if (logBuffer.length === 0) return;
+
+  // Extract logs to send (avoid mutation during async operation)
+  const logsToSend = logBuffer.splice(0, logBuffer.length);
+
+  try {
+    await fetch('/api/frontend-logs', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(logsToSend),
+    });
+  } catch (error) {
+    // Silently fail - don't spam console if backend unavailable
+    // console.error('[Logger] Failed to send logs to backend:', error);
+  }
+}
+
+/**
+ * Schedule log send (debounced)
+ */
+function scheduleLogSend(): void {
+  // Clear existing timeout
+  if (sendTimeout !== null) {
+    clearTimeout(sendTimeout);
+  }
+
+  // If buffer is full, send immediately
+  if (logBuffer.length >= MAX_BUFFER_SIZE) {
+    sendLogsToBackend();
+    return;
+  }
+
+  // Otherwise, debounce
+  sendTimeout = window.setTimeout(() => {
+    sendLogsToBackend();
+    sendTimeout = null;
+  }, BATCH_INTERVAL_MS);
+}
+
 /**
  * Logger class with level filtering and console output
  */
@@ -98,6 +155,24 @@ export class Logger {
   constructor(moduleName: string) {
     this.moduleName = moduleName;
     this.logLevel = getLogLevel(moduleName);
+  }
+
+  /**
+   * Add log to backend buffer
+   */
+  private bufferLog(level: string, message: string, args: any[]): void {
+    // Extract structured data from args
+    const data = args.length > 0 ? args : undefined;
+
+    logBuffer.push({
+      level,
+      module: this.moduleName,
+      message,
+      data,
+      timestamp: Date.now(),
+    });
+
+    scheduleLogSend();
   }
 
   /**
@@ -113,6 +188,7 @@ export class Logger {
   trace(message: string, ...args: any[]): void {
     if (this.isEnabledFor(LogLevel.TRACE)) {
       console.log(`[${this.moduleName}] [TRACE]`, message, ...args);
+      this.bufferLog('debug', message, args); // Send trace as debug to backend
     }
   }
 
@@ -122,6 +198,7 @@ export class Logger {
   debug(message: string, ...args: any[]): void {
     if (this.isEnabledFor(LogLevel.DEBUG)) {
       console.log(`[${this.moduleName}] [DEBUG]`, message, ...args);
+      this.bufferLog('debug', message, args);
     }
   }
 
@@ -131,6 +208,7 @@ export class Logger {
   info(message: string, ...args: any[]): void {
     if (this.isEnabledFor(LogLevel.INFO)) {
       console.info(`[${this.moduleName}] [INFO]`, message, ...args);
+      this.bufferLog('info', message, args);
     }
   }
 
@@ -140,6 +218,7 @@ export class Logger {
   warn(message: string, ...args: any[]): void {
     if (this.isEnabledFor(LogLevel.WARN)) {
       console.warn(`[${this.moduleName}] [WARN]`, message, ...args);
+      this.bufferLog('warn', message, args);
     }
   }
 
@@ -149,6 +228,7 @@ export class Logger {
   error(message: string, ...args: any[]): void {
     if (this.isEnabledFor(LogLevel.ERROR)) {
       console.error(`[${this.moduleName}] [ERROR]`, message, ...args);
+      this.bufferLog('error', message, args);
     }
   }
 

@@ -641,6 +641,49 @@ async def get_metrics():
     """
     return metrics_tracker.get_metrics()
 
+class FrontendLogEntry(BaseModel):
+    """Frontend log entry for remote logging"""
+    level: str  # debug, info, warn, error
+    module: str  # Logger module name (e.g., "VoxbridgePage")
+    message: str  # Log message
+    data: Optional[Dict] = None  # Additional structured data
+    timestamp: float  # Client timestamp (ms since epoch)
+
+@app.post("/api/frontend-logs")
+async def receive_frontend_logs(logs: list[FrontendLogEntry]):
+    """
+    Receive frontend logs from browser and write to backend logger
+
+    This endpoint allows frontend JavaScript logs to be visible in Docker logs
+    for debugging purposes. All frontend logs are prefixed with [FRONTEND].
+
+    Args:
+        logs: List of log entries from frontend
+
+    Returns:
+        Success status
+    """
+    for log in logs:
+        # Map frontend log level to Python logging level
+        level_map = {
+            'debug': logging.DEBUG,
+            'info': logging.INFO,
+            'warn': logging.WARNING,
+            'error': logging.ERROR,
+        }
+        level = level_map.get(log.level, logging.INFO)
+
+        # Format log message with frontend prefix
+        msg_parts = [f"[FRONTEND:{log.module}]", log.message]
+        if log.data:
+            msg_parts.append(f"Data: {log.data}")
+        msg = " ".join(msg_parts)
+
+        # Write to backend logger
+        logger.log(level, msg)
+
+    return {"status": "ok", "received": len(logs)}
+
 @app.get("/api/voices")
 async def get_voices():
     """
@@ -1037,26 +1080,69 @@ class ConnectionManager:
         logger.info(f"🔌 WebSocket client disconnected (total: {len(self.active_connections)})")
 
     async def broadcast(self, message: dict):
-        """Broadcast message to all connected clients"""
+        """Broadcast message to all connected clients with detailed delivery logging"""
+        import json
+        import time
+
         event_type = message.get('event', 'unknown')
         num_clients = len(self.active_connections)
-        logger.info(f"📤 Broadcasting {event_type} to {num_clients} client(s)")
+        correlation_id = message.get('data', {}).get('correlation_id', None) if isinstance(message.get('data'), dict) else None
+
+        # Calculate message size
+        message_json = json.dumps(message)
+        message_size = len(message_json.encode('utf-8'))
+
+        t_start = time.time()
+
+        logger.info(
+            f"📤 [WS_BROADCAST_START] Broadcasting {event_type} to {num_clients} client(s) "
+            f"(size={message_size} bytes, correlation_id={correlation_id[:8] + '...' if correlation_id else 'none'})"
+        )
 
         dead_connections = []
         success_count = 0
+        client_index = 0
+
         for connection in self.active_connections:
+            client_index += 1
+            t_send_start = time.time()
+
             try:
+                logger.debug(
+                    f"📤 [WS_SEND_START] Sending {event_type} to client #{client_index} "
+                    f"(correlation_id={correlation_id[:8] + '...' if correlation_id else 'none'})"
+                )
+
                 await connection.send_json(message)
+
+                t_send_end = time.time()
+                send_duration_ms = (t_send_end - t_send_start) * 1000
+
+                logger.debug(
+                    f"✅ [WS_SEND_SUCCESS] Client #{client_index} received {event_type} "
+                    f"(duration={send_duration_ms:.2f}ms, correlation_id={correlation_id[:8] + '...' if correlation_id else 'none'})"
+                )
+
                 success_count += 1
             except Exception as e:
-                logger.error(f"❌ Error sending to WebSocket client: {e}")
+                logger.error(
+                    f"❌ [WS_SEND_ERROR] Failed to send to client #{client_index}: {e} "
+                    f"(event={event_type}, correlation_id={correlation_id[:8] + '...' if correlation_id else 'none'})"
+                )
                 dead_connections.append(connection)
+
+        # Calculate total broadcast duration
+        t_end = time.time()
+        total_duration_ms = (t_end - t_start) * 1000
 
         # Log results
         if success_count > 0:
-            logger.info(f"✅ Sent {event_type} to {success_count}/{num_clients} client(s)")
+            logger.info(
+                f"✅ [WS_BROADCAST_COMPLETE] Sent {event_type} to {success_count}/{num_clients} client(s) "
+                f"(total_duration={total_duration_ms:.2f}ms, correlation_id={correlation_id[:8] + '...' if correlation_id else 'none'})"
+            )
         if dead_connections:
-            logger.warning(f"⚠️ Removed {len(dead_connections)} dead connection(s)")
+            logger.warning(f"⚠️ [WS_CLEANUP] Removed {len(dead_connections)} dead connection(s)")
 
         # Remove dead connections
         for connection in dead_connections:
