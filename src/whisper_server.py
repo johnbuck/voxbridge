@@ -40,6 +40,10 @@ WHISPERX_BATCH_SIZE = int(os.getenv('WHISPERX_BATCH_SIZE', '16'))
 WHISPERX_LANGUAGE = os.getenv('WHISPERX_LANGUAGE', 'en')  # Force English (prevents Korean/auto-detect)
 SERVER_PORT = int(os.getenv('WHISPER_SERVER_PORT', '4901'))
 
+# WhisperX VAD configuration (TTS echo prevention)
+WHISPERX_VAD_ONSET = float(os.getenv('WHISPERX_VAD_ONSET', '0.600'))
+WHISPERX_VAD_OFFSET = float(os.getenv('WHISPERX_VAD_OFFSET', '0.450'))
+
 # Auto-detect best device
 gpu_name = None
 if WHISPERX_DEVICE == 'auto':
@@ -122,7 +126,11 @@ try:
     model = whisperx.load_model(
         WHISPERX_MODEL,
         device=device,
-        compute_type=compute_type
+        compute_type=compute_type,
+        vad_options={
+            "vad_onset": WHISPERX_VAD_ONSET,
+            "vad_offset": WHISPERX_VAD_OFFSET
+        }
     )
 
     # Restore stdout/stderr
@@ -274,7 +282,11 @@ class TranscriptionSession:
             
             # Transcribe with WhisperX (force language to prevent auto-detection)
             audio = whisperx.load_audio(temp_path)
-            result = model.transcribe(audio, batch_size=WHISPERX_BATCH_SIZE, language=self.language)
+            result = model.transcribe(
+                audio,
+                batch_size=WHISPERX_BATCH_SIZE,
+                language=self.language
+            )
             
             # Extract segments
             segments = result.get("segments", [])
@@ -327,7 +339,11 @@ class TranscriptionSession:
 
             # Transcribe complete audio with WhisperX (force language to prevent auto-detection)
             audio = whisperx.load_audio(temp_path)
-            result = model.transcribe(audio, batch_size=WHISPERX_BATCH_SIZE, language=self.language)
+            result = model.transcribe(
+                audio,
+                batch_size=WHISPERX_BATCH_SIZE,
+                language=self.language
+            )
 
             # Extract segments
             segments = result.get("segments", [])

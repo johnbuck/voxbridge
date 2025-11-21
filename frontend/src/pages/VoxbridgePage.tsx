@@ -15,7 +15,6 @@ import { RuntimeSettings } from '@/components/RuntimeSettings';
 import { ConversationList } from '@/components/ConversationList';
 import { NewConversationDialog } from '@/components/NewConversationDialog';
 import { AudioControls } from '@/components/AudioControls';
-import { AIGeneratingIndicator } from '@/components/AIGeneratingIndicator';
 import { BouncingDots } from '@/components/BouncingDots';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Badge } from '@/components/ui/badge';
@@ -80,7 +79,6 @@ export function VoxbridgePage() {
   // Unified conversation state (adapts for Discord/WebRTC)
   const [isListening, setIsListening] = useState(false);
   const [isVoiceAIGenerating, setIsVoiceAIGenerating] = useState(false);
-  const [aiGeneratingDuration, setAiGeneratingDuration] = useState(0);
   const [streamingChunks, setStreamingChunks] = useState<string[]>([]);
   const [isStreaming, setIsStreaming] = useState(false);
   const [isSpeakerMuted, setIsSpeakerMuted] = useState(false);
@@ -535,7 +533,6 @@ export function VoxbridgePage() {
           // Stop AI generating animation
           setIsVoiceAIGenerating(false);
           aiStartTimeRef.current = null;
-          setAiGeneratingDuration(0);
 
           // Stop streaming animation
           setIsStreaming(false);
@@ -884,7 +881,6 @@ export function VoxbridgePage() {
       // Stop AI generating animation (unified experience)
       setIsVoiceAIGenerating(false);
       aiStartTimeRef.current = null;
-      setAiGeneratingDuration(0);
 
       // Check for errors
       if (message.data.error) {
@@ -1051,16 +1047,6 @@ export function VoxbridgePage() {
     const interval = setInterval(fetchDiscordStatus, 3000);
     return () => clearInterval(interval);
   }, [activeAgent]);
-
-  // Update AI generating duration (web voice chat)
-  useEffect(() => {
-    if (isVoiceAIGenerating && aiStartTimeRef.current) {
-      const interval = setInterval(() => {
-        setAiGeneratingDuration(Date.now() - aiStartTimeRef.current!);
-      }, 100);
-      return () => clearInterval(interval);
-    }
-  }, [isVoiceAIGenerating]);
 
   // Clear pending user transcript when switching sessions
   useEffect(() => {
@@ -1775,14 +1761,6 @@ export function VoxbridgePage() {
                             <p className="text-xs text-muted-foreground">{permissionError}</p>
                           </div>
                         </div>
-                      )}
-
-                      {/* AI Generating Indicator */}
-                      {isVoiceAIGenerating && (
-                        <AIGeneratingIndicator
-                          isGenerating={isVoiceAIGenerating}
-                          duration={aiGeneratingDuration}
-                        />
                       )}
 
                       {/* Discord-style: No "ready" indicator - system is always ready for next input */}

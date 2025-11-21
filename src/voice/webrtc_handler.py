@@ -97,6 +97,11 @@ class WebRTCVoiceHandler:
         self.utterance_start_time: Optional[float] = None  # Track utterance start for max timeout
         self.silence_task: Optional[asyncio.Task] = None
 
+        # Option B: VAD enhancement settings (minimum speech duration filtering)
+        self.min_speech_duration_ms = int(os.getenv('MIN_SPEECH_DURATION_MS', '500'))
+        self.speech_energy_threshold = int(os.getenv('SPEECH_ENERGY_THRESHOLD', '300'))
+        self.audio_energy_buffer: list[int] = []  # Track recent energy levels
+
         # LLM task tracking (Phase 3: Prevent orphaned tasks)
         self.llm_task: Optional[asyncio.Task] = None
 
@@ -428,6 +433,12 @@ class WebRTCVoiceHandler:
 
                 # Send new PCM data to WhisperX (if extraction successful)
                 if pcm_data:
+                    # Option B: Check if audio has sufficient speech energy (filter echoes/noise)
+                    if not self._has_sufficient_speech_energy(pcm_data):
+                        # Not enough energy - likely silence, echo, or brief noise
+                        logger.debug(f"⏭️ [ENERGY_FILTER] Skipping low-energy audio chunk")
+                        continue
+
                     # ✅ CHECKPOINT 4: WhisperX Send
                     logger.info(f"🎤 [WHISPER_SEND] Sending {len(pcm_data)} bytes PCM to WhisperX, session={self.session_id}")
 
@@ -583,6 +594,32 @@ class WebRTCVoiceHandler:
         except Exception as e:
             logger.error(f"❌ [DECODE] PyAV decode failed: {type(e).__name__}: {e}, buffer={len(self.webm_buffer)} bytes")
             return b''
+
+    def _has_sufficient_speech_energy(self, pcm_data: bytes) -> bool:
+        """
+        Option B: Check if audio has sustained speech-level energy
+        Requires 500ms of continuous speech before accepting (reduces echo/noise)
+        """
+        import numpy as np
+
+        samples = np.frombuffer(pcm_data, dtype=np.int16)
+        energy = int(np.abs(samples).mean())
+
+        self.audio_energy_buffer.append(energy)
+
+        # Require 500ms of sustained energy (5 chunks * 100ms approx)
+        if len(self.audio_energy_buffer) < 5:
+            return False
+
+        # Check average energy over last 500ms
+        avg_energy = int(np.mean(self.audio_energy_buffer[-5:]))
+
+        if avg_energy > self.speech_energy_threshold:
+            logger.debug(f"✅ Sufficient speech energy: {avg_energy} (threshold: {self.speech_energy_threshold})")
+            return True
+        else:
+            logger.debug(f"❌ Insufficient energy: {avg_energy} < {self.speech_energy_threshold}")
+            return False
 
     def _decode_webm_chunk(self, chunk: bytes) -> bytes:
         """
@@ -984,6 +1021,10 @@ class WebRTCVoiceHandler:
             return
 
         self.is_finalizing = True
+
+        # Option B: Clear energy buffer after finalization
+        self.audio_energy_buffer.clear()
+        logger.debug("🧹 [ENERGY_BUFFER] Cleared energy buffer for next turn")
 
         try:
             # ✅ FIX: Wait for WhisperX final transcript (with timeout)

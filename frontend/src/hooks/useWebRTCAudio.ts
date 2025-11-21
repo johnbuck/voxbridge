@@ -126,6 +126,12 @@ export function useWebRTCAudio(options: UseWebRTCAudioOptions): UseWebRTCAudioRe
   const lastChunkTimeRef = useRef<number | null>(null); // Track last ondataavailable timestamp
   // emptyChunkCountRef removed - was only used in old start() function
 
+  // Option E: Audio ducking refs (Web Audio API for gain control during TTS)
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const gainNodeRef = useRef<GainNode | null>(null);
+  const sourceNodeRef = useRef<MediaStreamAudioSourceNode | null>(null);
+  const destinationStreamRef = useRef<MediaStream | null>(null);
+
   const MAX_RECONNECT_ATTEMPTS = 5;
   const RECONNECT_INTERVAL = 3000;
 
@@ -230,6 +236,37 @@ export function useWebRTCAudio(options: UseWebRTCAudioOptions): UseWebRTCAudioRe
               // automatically detect new audio and start a new conversation turn.
 
               logger.debug('✅ Utterance finalized, microphone STAYS ACTIVE - ready for next question');
+              return;
+            }
+
+            // Option E: Handle bot speaking state changes for audio ducking
+            if (message.event === 'bot_speaking_state_changed') {
+              const isSpeaking = message.data.is_speaking;
+
+              if (gainNodeRef.current && audioContextRef.current) {
+                if (isSpeaking) {
+                  // Duck to 20% during TTS
+                  logger.info('🔉 Ducking microphone gain to 20% (TTS playing)');
+                  gainNodeRef.current.gain.setTargetAtTime(
+                    0.2,
+                    audioContextRef.current.currentTime,
+                    0.1  // 100ms smooth transition
+                  );
+                } else {
+                  // Restore full gain after TTS
+                  logger.info('🔊 Restoring microphone gain to 100% (TTS complete)');
+                  gainNodeRef.current.gain.setTargetAtTime(
+                    1.0,
+                    audioContextRef.current.currentTime,
+                    0.1
+                  );
+                }
+              }
+
+              // Pass event to parent
+              if (onMessage) {
+                onMessage(message);
+              }
               return;
             }
 
@@ -374,13 +411,54 @@ export function useWebRTCAudio(options: UseWebRTCAudioOptions): UseWebRTCAudioRe
           audio: {
             channelCount: 2, // Stereo (matching Discord)
             sampleRate: 48000, // 48kHz (matching Discord)
-            echoCancellation: true,
-            noiseSuppression: true,
-            autoGainControl: true,
+            echoCancellation: { ideal: true },  // Force enable
+            noiseSuppression: { ideal: true },
+            autoGainControl: { ideal: true },
           },
         });
         logger.info('✅ Microphone access GRANTED');
+
+        // Verify echo cancellation is active (Option A: Enhanced WebRTC AEC)
+        const audioTrack = stream.getAudioTracks()[0];
+        const settings = audioTrack.getSettings();
+        logger.info('🎧 Audio constraints applied:', {
+          echoCancellation: settings.echoCancellation,
+          noiseSuppression: settings.noiseSuppression,
+          autoGainControl: settings.autoGainControl,
+          sampleRate: settings.sampleRate,
+          channelCount: settings.channelCount,
+        });
+
+        if (!settings.echoCancellation) {
+          logger.warn('⚠️ Echo cancellation not supported by browser!');
+        }
+
         mediaStreamRef.current = stream;
+
+        // Option E: Create Web Audio API pipeline for audio ducking
+        // This allows us to reduce microphone gain during TTS playback
+        try {
+          const audioContext = new AudioContext();
+          const source = audioContext.createMediaStreamSource(stream);
+          const gainNode = audioContext.createGain();
+          const destination = audioContext.createMediaStreamDestination();
+
+          gainNode.gain.value = 1.0;  // Normal gain initially
+
+          source.connect(gainNode);
+          gainNode.connect(destination);
+
+          // Store refs
+          audioContextRef.current = audioContext;
+          gainNodeRef.current = gainNode;
+          sourceNodeRef.current = source;
+          destinationStreamRef.current = destination.stream;
+
+          logger.info('🎚️ Audio ducking pipeline created (gain: 100%)');
+        } catch (error) {
+          logger.error('❌ Failed to create Web Audio API pipeline:', error);
+          // Continue without ducking (graceful degradation)
+        }
 
         // Create MediaRecorder if it doesn't exist
         const mimeTypes = [
@@ -401,7 +479,11 @@ export function useWebRTCAudio(options: UseWebRTCAudioOptions): UseWebRTCAudioRe
           throw new Error('No supported audio codec found (OGG/Opus or WebM/Opus required)');
         }
 
-        const mediaRecorder = new MediaRecorder(stream, {
+        // Use destination stream (with gain control) if available, otherwise use original stream
+        const recordingStream = destinationStreamRef.current || stream;
+        logger.debug('🎙️ MediaRecorder using:', destinationStreamRef.current ? 'ducked stream' : 'original stream');
+
+        const mediaRecorder = new MediaRecorder(recordingStream, {
           mimeType: selectedMimeType,
         });
 
@@ -608,6 +690,14 @@ export function useWebRTCAudio(options: UseWebRTCAudioOptions): UseWebRTCAudioRe
     // Cleanup on unmount ONLY - not on sessionId changes
     return () => {
       logger.debug('🧹 useEffect[mount] cleanup - Component unmounting, calling endSession()');
+
+      // Option E: Cleanup Web Audio API resources
+      if (audioContextRef.current) {
+        logger.debug('   - Closing AudioContext');
+        audioContextRef.current.close();
+        audioContextRef.current = null;
+      }
+
       endSession();  // ✅ Proper cleanup when component unmounts (user leaving page)
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
