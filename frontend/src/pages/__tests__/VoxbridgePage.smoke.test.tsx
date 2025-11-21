@@ -76,6 +76,7 @@ describe('VoxbridgePage Smoke Tests', () => {
     tts_cfg_weight: 0.7,
     tts_temperature: 0.3,
     tts_language: 'en',
+    filter_actions_for_tts: false,
     created_at: '2025-11-20T00:00:00Z',
     updated_at: '2025-11-20T00:00:00Z',
   };

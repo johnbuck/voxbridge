@@ -137,6 +137,7 @@ export interface Agent {
   tts_cfg_weight: number; // Pace control (0.0-1.0)
   tts_temperature: number; // Sampling randomness (0.05-5.0)
   tts_language: string; // Language code (e.g., "en")
+  filter_actions_for_tts: boolean; // Remove roleplay actions (*text*) before TTS
   max_utterance_time_ms?: number; // Voice configuration: max duration per speaking turn
   plugins?: {
     discord?: {
@@ -166,6 +167,7 @@ export interface AgentCreateRequest {
   tts_cfg_weight?: number; // Pace control (0.0-1.0, default 0.7)
   tts_temperature?: number; // Sampling randomness (0.05-5.0, default 0.3)
   tts_language?: string; // Language code (default "en")
+  filter_actions_for_tts?: boolean; // Remove roleplay actions (*text*) before TTS (default false)
   max_utterance_time_ms?: number; // Voice configuration: max duration per speaking turn
   plugins?: {
     discord?: {
@@ -193,6 +195,7 @@ export interface AgentUpdateRequest {
   tts_cfg_weight?: number; // Pace control (0.0-1.0)
   tts_temperature?: number; // Sampling randomness (0.05-5.0)
   tts_language?: string; // Language code
+  filter_actions_for_tts?: boolean; // Remove roleplay actions (*text*) before TTS
   max_utterance_time_ms?: number; // Voice configuration: max duration per speaking turn
   plugins?: {
     discord?: {

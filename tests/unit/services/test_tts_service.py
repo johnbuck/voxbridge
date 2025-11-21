@@ -230,6 +230,166 @@ async def test_synthesize_speed_clamping():
 
 
 @pytest.mark.asyncio
+async def test_synthesize_with_action_filtering_enabled():
+    """Test synthesis with filter_actions=True removes action text"""
+    service = TTSService()
+    session_id = str(uuid4())
+
+    # Mock HTTP client
+    mock_response = AsyncMock()
+    mock_response.raise_for_status = MagicMock()
+
+    async def mock_aiter_bytes(chunk_size):
+        yield b"audio"
+
+    mock_response.aiter_bytes = mock_aiter_bytes
+
+    mock_client = AsyncMock()
+    mock_client.stream = MagicMock()
+    mock_client.stream.return_value.__aenter__ = AsyncMock(return_value=mock_response)
+    mock_client.stream.return_value.__aexit__ = AsyncMock()
+
+    mock_health_response = AsyncMock()
+    mock_health_response.status_code = 200
+    mock_client.get = AsyncMock(return_value=mock_health_response)
+
+    service._client = mock_client
+
+    # Text with actions that should be filtered
+    text_with_action = "*nods* Oh! Testing? *pauses thoughtfully* Does my voice sound okay?"
+
+    # Mock filter function to verify it's called
+    with patch('src.services.tts_service.filter_action_text_with_metadata') as mock_filter:
+        # Set up the mock to return filtered text
+        mock_filter.return_value = (
+            "Oh! Testing? Does my voice sound okay?",
+            {
+                'removed_actions': ['nods', 'pauses thoughtfully'],
+                'action_count': 2,
+                'char_diff': 29,
+                'has_math': False
+            }
+        )
+
+        # Synthesize with filter_actions=True
+        result = await service.synthesize_speech(
+            session_id=session_id,
+            text=text_with_action,
+            filter_actions=True,
+            stream=False
+        )
+
+        # Verify filter was called with the original text
+        mock_filter.assert_called_once_with(text_with_action)
+
+        # Verify synthesis completed successfully
+        assert result == b'audio'
+
+
+@pytest.mark.asyncio
+async def test_synthesize_with_action_filtering_disabled():
+    """Test synthesis with filter_actions=False keeps action text (default)"""
+    service = TTSService()
+    session_id = str(uuid4())
+
+    # Mock HTTP client
+    mock_response = AsyncMock()
+    mock_response.raise_for_status = MagicMock()
+
+    async def mock_aiter_bytes(chunk_size):
+        yield b"audio"
+
+    mock_response.aiter_bytes = mock_aiter_bytes
+
+    mock_client = AsyncMock()
+    mock_client.stream = MagicMock()
+    mock_client.stream.return_value.__aenter__ = AsyncMock(return_value=mock_response)
+    mock_client.stream.return_value.__aexit__ = AsyncMock()
+
+    mock_health_response = AsyncMock()
+    mock_health_response.status_code = 200
+    mock_client.get = AsyncMock(return_value=mock_health_response)
+
+    service._client = mock_client
+
+    # Text with action
+    text_with_action = "*nods* Oh! Testing?"
+
+    # Mock filter function to ensure it's NOT called when disabled
+    with patch('src.services.tts_service.filter_action_text_with_metadata') as mock_filter:
+        # Synthesize with filter_actions=False (default)
+        result = await service.synthesize_speech(
+            session_id=session_id,
+            text=text_with_action,
+            filter_actions=False,
+            stream=False
+        )
+
+        # Verify filter was NOT called
+        mock_filter.assert_not_called()
+
+        # Verify synthesis completed successfully
+        assert result == b'audio'
+
+
+@pytest.mark.asyncio
+async def test_synthesize_filtering_preserves_math():
+    """Test that action filtering preserves math expressions"""
+    service = TTSService()
+    session_id = str(uuid4())
+
+    # Mock HTTP client
+    mock_response = AsyncMock()
+    mock_response.raise_for_status = MagicMock()
+
+    async def mock_aiter_bytes(chunk_size):
+        yield b"audio"
+
+    mock_response.aiter_bytes = mock_aiter_bytes
+
+    mock_client = AsyncMock()
+    mock_client.stream = MagicMock()
+    mock_client.stream.return_value.__aenter__ = AsyncMock(return_value=mock_response)
+    mock_client.stream.return_value.__aexit__ = AsyncMock()
+
+    mock_health_response = AsyncMock()
+    mock_health_response.status_code = 200
+    mock_client.get = AsyncMock(return_value=mock_health_response)
+
+    service._client = mock_client
+
+    # Text with both actions and math
+    text_with_both = "*thinking* The answer is 2*3*4 which equals 24 *nods*"
+
+    # Mock filter to verify the correct filtered text is returned
+    with patch('src.services.tts_service.filter_action_text_with_metadata') as mock_filter:
+        # Set up the mock to return filtered text with math preserved
+        mock_filter.return_value = (
+            "The answer is 2*3*4 which equals 24",
+            {
+                'removed_actions': ['thinking', 'nods'],
+                'action_count': 2,
+                'char_diff': 18,
+                'has_math': True
+            }
+        )
+
+        # Synthesize with filtering enabled
+        result = await service.synthesize_speech(
+            session_id=session_id,
+            text=text_with_both,
+            filter_actions=True,
+            stream=False
+        )
+
+        # Verify filter was called
+        mock_filter.assert_called_once_with(text_with_both)
+
+        # Verify synthesis completed
+        assert result == b'audio'
+
+
+@pytest.mark.asyncio
 async def test_synthesize_chatterbox_unavailable():
     """Test graceful degradation when Chatterbox unavailable"""
     service = TTSService()

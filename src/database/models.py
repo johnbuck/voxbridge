@@ -72,6 +72,17 @@ class Agent(Base):
     tts_temperature = Column(Float, nullable=False, default=0.3)  # Sampling randomness (0.05-5.0)
     tts_language = Column(String(10), nullable=False, default="en")  # Language code
 
+    # TTS Action Filtering - Remove roleplay actions before synthesis
+    filter_actions_for_tts = Column(Boolean, nullable=False, default=False)
+    """
+    Remove roleplay actions (*text*) from LLM responses before TTS synthesis.
+    When enabled, asterisk-wrapped actions are filtered to prevent TTS from
+    speaking unnatural action descriptions. Original text is preserved in
+    conversation history. Math expressions like 2*3*4 are preserved.
+
+    Default: False (opt-in per agent)
+    """
+
     # VoxBridge 2.0 Phase 3: LLM Routing (DEPRECATED - use plugins instead)
     use_n8n = Column(Boolean, nullable=False, default=False)  # Use n8n webhook instead of direct LLM
     n8n_webhook_url = Column(String(500), nullable=True)  # Per-agent n8n webhook URL

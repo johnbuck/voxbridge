@@ -2073,7 +2073,8 @@ class DiscordPlugin(PluginBase):
                 temperature=self.agent.tts_temperature,
                 language_id=self.agent.tts_language,
                 stream=False,  # Discord needs complete audio file
-                callback=None
+                callback=None,
+                filter_actions=self.agent.filter_actions_for_tts
             )
 
             if not audio_bytes:

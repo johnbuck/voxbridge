@@ -22,7 +22,7 @@ Design Patterns:
 import os
 import asyncio
 import time
-from typing import Dict, List, Optional, Callable, Any, Awaitable
+from typing import Dict, List, Optional, Callable, Any, Awaitable, Tuple
 from dataclasses import dataclass
 from enum import Enum
 import httpx
@@ -31,6 +31,7 @@ import json
 from src.config.logging_config import get_logger
 from src.types.error_events import ServiceErrorEvent, ServiceErrorType
 from src.config.streaming import StreamingConfig, get_streaming_config
+from src.utils.text_filters import filter_action_text_with_metadata
 
 logger = get_logger(__name__)
 
@@ -218,7 +219,8 @@ class TTSService:
         temperature: Optional[float] = None,
         language_id: str = "en",
         stream: bool = True,
-        callback: Optional[Callable[[bytes], None]] = None
+        callback: Optional[Callable[[bytes], None]] = None,
+        filter_actions: bool = False
     ) -> bytes:
         """
         Synthesize speech from text using Chatterbox TTS API.
@@ -237,6 +239,7 @@ class TTSService:
             language_id: Language code (default: "en")
             stream: Enable streaming (default: True)
             callback: Optional callback for streaming audio chunks
+            filter_actions: Remove roleplay actions (*text*) before synthesis (default: False)
 
         Returns:
             bytes: Complete audio (if no callback), or empty bytes (if streaming)
@@ -245,6 +248,21 @@ class TTSService:
             None: Errors are logged and empty bytes returned (graceful degradation)
         """
         voice_id = voice_id or self.default_voice_id
+
+        # Filter action text if enabled
+        original_text = text
+        if filter_actions:
+            text, filter_metadata = filter_action_text_with_metadata(text)
+
+            # Log filtering results
+            if filter_metadata['action_count'] > 0:
+                logger.info(
+                    f"🔧 Filtered {filter_metadata['action_count']} actions from TTS text "
+                    f"(session={session_id}, {filter_metadata['char_diff']} chars removed)"
+                )
+                logger.debug(f"   Original: \"{original_text[:100]}...\"")
+                logger.debug(f"   Filtered: \"{text[:100]}...\"")
+                logger.debug(f"   Actions removed: {filter_metadata['removed_actions']}")
 
         logger.info(
             f"🔊 TTS request: session={session_id}, text=\"{text[:50]}...\", voice={voice_id}, "

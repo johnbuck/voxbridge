@@ -54,6 +54,7 @@ export function AgentForm({ open, onOpenChange, agent, onSubmit }: AgentFormProp
   const [ttsCfgWeight, setTtsCfgWeight] = useState(0.7);
   const [ttsTemperature, setTtsTemperature] = useState(0.3);
   const [ttsLanguage, setTtsLanguage] = useState('en');
+  const [filterActionsForTts, setFilterActionsForTts] = useState(false);
 
   // Voice Configuration
   const [maxUtteranceTimeMs, setMaxUtteranceTimeMs] = useState<number>(120000); // 2 minutes default
@@ -121,6 +122,7 @@ export function AgentForm({ open, onOpenChange, agent, onSubmit }: AgentFormProp
       setTtsCfgWeight(agent.tts_cfg_weight);
       setTtsTemperature(agent.tts_temperature);
       setTtsLanguage(agent.tts_language);
+      setFilterActionsForTts(agent.filter_actions_for_tts || false);
       setMaxUtteranceTimeMs(agent.max_utterance_time_ms ?? 120000);
 
       // Load Discord plugin config if present
@@ -149,6 +151,7 @@ export function AgentForm({ open, onOpenChange, agent, onSubmit }: AgentFormProp
       setTtsCfgWeight(0.7);
       setTtsTemperature(0.3);
       setTtsLanguage('en');
+      setFilterActionsForTts(false);
       setMaxUtteranceTimeMs(120000);
       setDiscordEnabled(false);
       setDiscordBotToken('');
@@ -187,6 +190,7 @@ export function AgentForm({ open, onOpenChange, agent, onSubmit }: AgentFormProp
         tts_cfg_weight: ttsCfgWeight,
         tts_temperature: ttsTemperature,
         tts_language: ttsLanguage,
+        filter_actions_for_tts: filterActionsForTts,
         max_utterance_time_ms: maxUtteranceTimeMs,
         plugins: Object.keys(plugins).length > 0 ? plugins : undefined,
       });
@@ -425,6 +429,24 @@ export function AgentForm({ open, onOpenChange, agent, onSubmit }: AgentFormProp
                 </SelectContent>
               </Select>
             </div>
+
+            {/* TTS Action Filtering */}
+            <div className="flex items-center justify-between space-x-2 py-2">
+              <div className="space-y-0.5">
+                <Label htmlFor="filterActionsForTts">Filter Action Text</Label>
+                <p className="text-xs text-muted-foreground">
+                  Remove roleplay actions (*text*) before TTS synthesis
+                </p>
+              </div>
+              <Switch
+                id="filterActionsForTts"
+                checked={filterActionsForTts}
+                onCheckedChange={setFilterActionsForTts}
+              />
+            </div>
+            <p className="text-xs text-muted-foreground pl-1">
+              When enabled, asterisk-wrapped actions like *nods* or *pauses thoughtfully* will be filtered from TTS output while preserving them in conversation history. Math expressions like 2*3*4 are preserved.
+            </p>
           </div>
 
           {/* Voice Configuration */}

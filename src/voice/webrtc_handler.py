@@ -1527,7 +1527,8 @@ class WebRTCVoiceHandler:
                 temperature=agent.tts_temperature,
                 language_id=agent.tts_language,
                 stream=True,
-                callback=on_audio_chunk
+                callback=on_audio_chunk,
+                filter_actions=agent.filter_actions_for_tts
             )
 
             # Send completion event (only if still connected)
