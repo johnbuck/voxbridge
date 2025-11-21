@@ -107,6 +107,22 @@ class MetricsTracker:
         self.interruption_count = 0
         self.streaming_sessions = 0
 
+        # Last Turn Metrics (per-turn values, reset each conversation turn)
+        self.last_turn_metrics = {
+            'total_pipeline_latency': None,
+            'time_to_first_audio': None,
+            'transcription_duration': None,
+            'ai_generation_latency': None,
+            'tts_generation_latency': None,
+            'tts_first_byte_latency': None,
+            'whisper_connection_latency': None,
+            'first_partial_transcript_latency': None,
+            'silence_detection_latency': None,
+            'tts_queue_latency': None,
+            'audio_playback_latency': None,
+            'thinking_indicator_duration': None
+        }
+
     def record_latency(self, latency_ms: float):
         """Record a latency measurement (overall transcript latency)"""
         with self.lock:
@@ -127,33 +143,39 @@ class MetricsTracker:
         """Record TTS first byte latency (time to first audio byte from Chatterbox)"""
         with self.lock:
             self.tts_first_byte_latencies.append(latency_s)
+            self.last_turn_metrics['tts_first_byte_latency'] = latency_s
 
     # Phase 1: Speech → Transcription recording methods
     def record_whisper_connection_latency(self, latency_s: float):
         """Record WhisperX connection latency (user starts speaking → connected)"""
         with self.lock:
             self.whisper_connection_latencies.append(latency_s)
+            self.last_turn_metrics['whisper_connection_latency'] = latency_s
 
     def record_first_partial_transcript_latency(self, latency_s: float):
         """Record first partial transcript latency (WhisperX connected → first partial)"""
         with self.lock:
             self.first_partial_transcript_latencies.append(latency_s)
+            self.last_turn_metrics['first_partial_transcript_latency'] = latency_s
 
     def record_transcription_duration(self, latency_s: float):
         """Record transcription duration (first partial → final transcript)"""
         with self.lock:
             self.transcription_duration_latencies.append(latency_s)
+            self.last_turn_metrics['transcription_duration'] = latency_s
 
     def record_silence_detection_latency(self, latency_ms: float):
         """Record silence detection latency (last audio → silence detected) in ms"""
         with self.lock:
             self.silence_detection_latencies.append(latency_ms)
+            self.last_turn_metrics['silence_detection_latency'] = latency_ms
 
     # Phase 2: AI Processing recording methods
     def record_ai_generation_latency(self, latency_s: float):
         """Record AI generation latency (webhook sent → response received)"""
         with self.lock:
             self.ai_generation_latencies.append(latency_s)
+            self.last_turn_metrics['ai_generation_latency'] = latency_s
 
     def record_response_parsing_latency(self, latency_ms: float):
         """Record response parsing latency (response received → text extracted) in ms"""
@@ -165,17 +187,20 @@ class MetricsTracker:
         """Record TTS queue latency (text ready → TTS request sent)"""
         with self.lock:
             self.tts_queue_latencies.append(latency_s)
+            self.last_turn_metrics['tts_queue_latency'] = latency_s
 
     def record_tts_generation_latency(self, latency_s: float):
         """Record TTS generation latency (TTS sent → all audio downloaded)"""
         with self.lock:
             self.tts_generation_latencies.append(latency_s)
+            self.last_turn_metrics['tts_generation_latency'] = latency_s
 
     # Phase 4: Audio Playback recording methods
     def record_audio_playback_latency(self, latency_s: float):
         """Record audio playback latency (audio ready → playback complete)"""
         with self.lock:
             self.audio_playback_latencies.append(latency_s)
+            self.last_turn_metrics['audio_playback_latency'] = latency_s
 
     def record_ffmpeg_processing_latency(self, latency_ms: float):
         """Record FFmpeg processing latency (conversion time) in ms"""
@@ -187,16 +212,19 @@ class MetricsTracker:
         """Record total pipeline latency (user starts speaking → audio playback complete)"""
         with self.lock:
             self.total_pipeline_latencies.append(latency_s)
+            self.last_turn_metrics['total_pipeline_latency'] = latency_s
 
     def record_time_to_first_audio(self, latency_s: float):
         """Record time to first audio (user starts speaking → first audio byte plays)"""
         with self.lock:
             self.time_to_first_audio_latencies.append(latency_s)
+            self.last_turn_metrics['time_to_first_audio'] = latency_s
 
     def record_thinking_indicator_duration(self, duration_s: float):
         """Record thinking indicator duration (gap filled between transcript and TTS)"""
         with self.lock:
             self.thinking_indicator_durations.append(duration_s)
+            self.last_turn_metrics['thinking_indicator_duration'] = duration_s
 
     def record_transcript(self):
         """Record a transcript completion"""
@@ -381,7 +409,23 @@ class MetricsTracker:
                 "sentencesFailed": self.sentences_failed,
                 "sentencesRetried": self.sentences_retried,
                 "interruptionCount": self.interruption_count,
-                "streamingSessions": self.streaming_sessions
+                "streamingSessions": self.streaming_sessions,
+
+                # Last Turn Metrics (per-turn, resets each conversation)
+                "lastTurn": {
+                    "totalPipelineLatency": self.last_turn_metrics['total_pipeline_latency'],
+                    "timeToFirstAudio": self.last_turn_metrics['time_to_first_audio'],
+                    "transcriptionDuration": self.last_turn_metrics['transcription_duration'],
+                    "aiGenerationLatency": self.last_turn_metrics['ai_generation_latency'],
+                    "ttsGenerationLatency": self.last_turn_metrics['tts_generation_latency'],
+                    "ttsFirstByteLatency": self.last_turn_metrics['tts_first_byte_latency'],
+                    "whisperConnectionLatency": self.last_turn_metrics['whisper_connection_latency'],
+                    "firstPartialTranscriptLatency": self.last_turn_metrics['first_partial_transcript_latency'],
+                    "silenceDetectionLatency": self.last_turn_metrics['silence_detection_latency'],
+                    "ttsQueueLatency": self.last_turn_metrics['tts_queue_latency'],
+                    "audioPlaybackLatency": self.last_turn_metrics['audio_playback_latency'],
+                    "thinkingIndicatorDuration": self.last_turn_metrics['thinking_indicator_duration']
+                }
             }
 
 # Global metrics tracker

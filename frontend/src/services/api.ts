@@ -112,6 +112,22 @@ export interface Metrics {
   transcriptCount: number;
   errorRate: number;
   uptime: number;
+
+  // Last Turn Metrics (per-turn values, reset each conversation)
+  lastTurn: {
+    totalPipelineLatency: number | null;
+    timeToFirstAudio: number | null;
+    transcriptionDuration: number | null;
+    aiGenerationLatency: number | null;
+    ttsGenerationLatency: number | null;
+    ttsFirstByteLatency: number | null;
+    whisperConnectionLatency: number | null;
+    firstPartialTranscriptLatency: number | null;
+    silenceDetectionLatency: number | null;
+    ttsQueueLatency: number | null;
+    audioPlaybackLatency: number | null;
+    thinkingIndicatorDuration: number | null;
+  };
 }
 
 export interface RuntimeConfig {

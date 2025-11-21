@@ -70,11 +70,11 @@ export function MetricsPanel() {
   const [metricsHistory, setMetricsHistory] = useState<MetricsDataPoint[]>([]);
   const maxDataPoints = 20; // Keep last 20 data points
 
-  // Fetch metrics (triggered by Dashboard after AI response completion)
-  const { data: metrics } = useQuery({
+  // Fetch metrics (updates per conversation turn via WebSocket events)
+  const { data: metrics, isRefetching } = useQuery({
     queryKey: ['metrics'],
     queryFn: () => api.getMetrics(),
-    // No automatic polling - only refetch after user interactions
+    // No polling - metrics update once per conversation turn via WebSocket
   });
 
   // Update metrics history when new data arrives
@@ -121,9 +121,21 @@ export function MetricsPanel() {
   return (
     <Card className="w-full">
       <CardHeader className="pb-3">
-        <CardTitle className="text-sm font-medium flex items-center gap-2">
-          <BarChart3 className="w-4 h-4" />
-          Performance Metrics
+        <CardTitle className="text-sm font-medium flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <BarChart3 className="w-4 h-4" />
+            Performance Metrics
+          </div>
+          {/* Live update indicator */}
+          {isRefetching && (
+            <div className="flex items-center gap-2">
+              <span className="flex h-2 w-2">
+                <span className="animate-ping absolute inline-flex h-2 w-2 rounded-full bg-green-400 opacity-75"></span>
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-green-500"></span>
+              </span>
+              <span className="text-xs text-muted-foreground">Updating...</span>
+            </div>
+          )}
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-0">
@@ -161,7 +173,8 @@ export function MetricsPanel() {
                     strokeWidth={3}
                     dot={false}
                     name="Time to First Audio"
-                    isAnimationActive={false}
+                    isAnimationActive={true}
+                    animationDuration={500}
                   />
                   <Line
                     type="monotone"
@@ -170,7 +183,8 @@ export function MetricsPanel() {
                     strokeWidth={2}
                     dot={false}
                     name="Total Response Time"
-                    isAnimationActive={false}
+                    isAnimationActive={true}
+                    animationDuration={500}
                   />
                   <Line
                     type="monotone"
@@ -179,7 +193,8 @@ export function MetricsPanel() {
                     strokeWidth={2}
                     dot={false}
                     name="AI Generation"
-                    isAnimationActive={false}
+                    isAnimationActive={true}
+                    animationDuration={500}
                   />
                   <Line
                     type="monotone"
@@ -188,7 +203,8 @@ export function MetricsPanel() {
                     strokeWidth={2}
                     dot={false}
                     name="TTS Generation"
-                    isAnimationActive={false}
+                    isAnimationActive={true}
+                    animationDuration={500}
                   />
                 </LineChart>
               </ResponsiveContainer>
@@ -209,9 +225,14 @@ export function MetricsPanel() {
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             {/* Time to First Audio */}
             <div className="space-y-2">
-              <div className="text-xs text-muted-foreground">Time to First Audio</div>
-              <div className={`text-3xl font-bold ${getLatencyColor(metrics?.timeToFirstAudio?.avg || 0, 'critical')}`}>
-                {formatLatency(metrics?.timeToFirstAudio?.avg || 0)}
+              <div className="text-xs text-muted-foreground flex items-center gap-2">
+                Time to First Audio
+                <span className="text-[10px] bg-primary/10 text-primary px-1.5 py-0.5 rounded font-medium">LAST TURN</span>
+              </div>
+              <div className={`text-3xl font-bold ${getLatencyColor(metrics?.lastTurn?.timeToFirstAudio || 0, 'critical')}`}>
+                {metrics?.lastTurn?.timeToFirstAudio
+                  ? formatLatency(metrics.lastTurn.timeToFirstAudio)
+                  : <span className="text-muted-foreground">-</span>}
               </div>
               <div className="flex gap-2 text-xs flex-wrap">
                 <span className={`px-2 py-0.5 rounded ${getLatencyColor(metrics?.timeToFirstAudio?.p50 || 0, 'critical')} bg-opacity-10`}>
@@ -231,9 +252,14 @@ export function MetricsPanel() {
 
             {/* Total Pipeline Latency */}
             <div className="space-y-2">
-              <div className="text-xs text-muted-foreground">Total Response Time</div>
+              <div className="text-xs text-muted-foreground flex items-center gap-2">
+                Total Response Time
+                <span className="text-[10px] bg-primary/10 text-primary px-1.5 py-0.5 rounded font-medium">LAST TURN</span>
+              </div>
               <div className="text-3xl font-bold text-foreground">
-                {formatLatency(metrics?.totalPipelineLatency?.avg || 0)}
+                {metrics?.lastTurn?.totalPipelineLatency
+                  ? formatLatency(metrics.lastTurn.totalPipelineLatency)
+                  : <span className="text-muted-foreground">-</span>}
               </div>
               <div className="flex gap-2 text-xs flex-wrap">
                 <span className="px-2 py-0.5 rounded bg-muted text-muted-foreground">
@@ -248,6 +274,79 @@ export function MetricsPanel() {
               </div>
               <div className="text-xs text-muted-foreground">
                 User stops speaking → Response complete
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* SECTION 2.5: Per-Turn Pipeline Breakdown */}
+        <div className="border-t pt-3">
+          <div className="flex items-center gap-2 mb-3">
+            <Timer className="w-4 h-4 text-muted-foreground" />
+            <span className="text-xs text-muted-foreground font-medium">Per-Turn Pipeline Breakdown</span>
+          </div>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            {/* AI Generation Time */}
+            <div className="space-y-1">
+              <div className="text-xs text-muted-foreground flex items-center gap-1">
+                <Brain className="w-3 h-3" />
+                AI Generation
+              </div>
+              <div className={`text-2xl font-bold ${getLatencyColor(metrics?.lastTurn?.aiGenerationLatency || 0, 'slow')}`}>
+                {metrics?.lastTurn?.aiGenerationLatency
+                  ? formatLatency(metrics.lastTurn.aiGenerationLatency)
+                  : <span className="text-muted-foreground text-lg">-</span>}
+              </div>
+              <div className="text-[10px] text-muted-foreground">
+                LLM response time
+              </div>
+            </div>
+
+            {/* TTS Queue Wait */}
+            <div className="space-y-1">
+              <div className="text-xs text-muted-foreground flex items-center gap-1">
+                <Timer className="w-3 h-3" />
+                TTS Queue
+              </div>
+              <div className={`text-2xl font-bold ${getLatencyColor(metrics?.lastTurn?.ttsQueueLatency || 0, 'fast')}`}>
+                {metrics?.lastTurn?.ttsQueueLatency
+                  ? formatLatency(metrics.lastTurn.ttsQueueLatency)
+                  : <span className="text-muted-foreground text-lg">-</span>}
+              </div>
+              <div className="text-[10px] text-muted-foreground">
+                Queue wait time
+              </div>
+            </div>
+
+            {/* TTS Generation */}
+            <div className="space-y-1">
+              <div className="text-xs text-muted-foreground flex items-center gap-1">
+                <Volume2 className="w-3 h-3" />
+                TTS Generation
+              </div>
+              <div className={`text-2xl font-bold ${getLatencyColor(metrics?.lastTurn?.ttsGenerationLatency || 0, 'moderate')}`}>
+                {metrics?.lastTurn?.ttsGenerationLatency
+                  ? formatLatency(metrics.lastTurn.ttsGenerationLatency)
+                  : <span className="text-muted-foreground text-lg">-</span>}
+              </div>
+              <div className="text-[10px] text-muted-foreground">
+                Audio synthesis
+              </div>
+            </div>
+
+            {/* First Audio Byte */}
+            <div className="space-y-1">
+              <div className="text-xs text-muted-foreground flex items-center gap-1">
+                <Play className="w-3 h-3" />
+                First Byte
+              </div>
+              <div className={`text-2xl font-bold ${getLatencyColor(metrics?.lastTurn?.ttsFirstByteLatency || 0, 'moderate')}`}>
+                {metrics?.lastTurn?.ttsFirstByteLatency
+                  ? formatLatency(metrics.lastTurn.ttsFirstByteLatency)
+                  : <span className="text-muted-foreground text-lg">-</span>}
+              </div>
+              <div className="text-[10px] text-muted-foreground">
+                TTS first byte
               </div>
             </div>
           </div>
