@@ -233,7 +233,7 @@ def sample_webm_audio(), multi_frame_webm_audio(), ...
 
 ### Run in Docker
 ```bash
-docker exec voxbridge-discord ./test.sh tests/integration/test_webrtc_audio_format.py -v
+docker exec voxbridge-api ./test.sh tests/integration/test_webrtc_audio_format.py -v
 ```
 
 ---
@@ -302,7 +302,7 @@ docker exec voxbridge-discord ./test.sh tests/integration/test_webrtc_audio_form
 ### 1. Execute Tests
 ```bash
 # Run in Docker container
-docker exec voxbridge-discord ./test.sh tests/integration/test_webrtc_audio_format.py -v
+docker exec voxbridge-api ./test.sh tests/integration/test_webrtc_audio_format.py -v
 
 # Expected: 12/12 tests pass (may need minor fixture adjustments)
 ```
@@ -310,7 +310,7 @@ docker exec voxbridge-discord ./test.sh tests/integration/test_webrtc_audio_form
 ### 2. Review Coverage
 ```bash
 # Generate HTML coverage report
-docker exec voxbridge-discord ./test.sh tests/integration/test_webrtc_audio_format.py \
+docker exec voxbridge-api ./test.sh tests/integration/test_webrtc_audio_format.py \
   --cov=src --cov-report=html --cov-report=term
 ```
 

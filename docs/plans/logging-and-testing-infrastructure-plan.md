@@ -481,5 +481,5 @@ case 'message_saved':
 - All logs use emoji prefixes for easy filtering (🎤 voice, 📡 network, ⏱️ latency, 🌊 streaming, 💭 AI, ✅ success, ❌ error, ⚠️ warning, 🔍 debug)
 - Correlation IDs enable end-to-end tracing of messages through the system
 - Frontend logs are batched and sent to backend via `/api/frontend-logs` endpoint
-- All logs are accessible to Claude via Docker logs (`docker logs voxbridge-discord`)
+- All logs are accessible to Claude via Docker logs (`docker logs voxbridge-api`)
 - Tests use Vitest (frontend) and Pytest (backend) for consistent testing experience

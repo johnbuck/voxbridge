@@ -431,12 +431,12 @@ assert latency < 2000, f"Total latency too high: {latency:.2f}ms"
 
 1. **Run tests in Docker container**:
    ```bash
-   docker exec voxbridge-discord ./test.sh tests/integration/test_webrtc_audio_format.py -v
+   docker exec voxbridge-api ./test.sh tests/integration/test_webrtc_audio_format.py -v
    ```
 
 2. **Generate coverage report**:
    ```bash
-   docker exec voxbridge-discord ./test.sh tests/integration/test_webrtc_audio_format.py \
+   docker exec voxbridge-api ./test.sh tests/integration/test_webrtc_audio_format.py \
      --cov=src --cov-report=html --cov-report=term
    ```
 

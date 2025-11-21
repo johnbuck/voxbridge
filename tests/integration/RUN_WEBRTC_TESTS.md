@@ -12,41 +12,41 @@
 
 ### Run All Tests (Recommended)
 ```bash
-docker exec voxbridge-discord ./test.sh tests/integration/test_webrtc_audio_format.py -v
+docker exec voxbridge-api ./test.sh tests/integration/test_webrtc_audio_format.py -v
 ```
 
 ### Run Specific Test Class
 ```bash
 # P0: End-to-end flow (3 tests)
-docker exec voxbridge-discord ./test.sh tests/integration/test_webrtc_audio_format.py::TestWebRTCEndToEnd -v
+docker exec voxbridge-api ./test.sh tests/integration/test_webrtc_audio_format.py::TestWebRTCEndToEnd -v
 
 # P0: Format routing (2 tests)
-docker exec voxbridge-discord ./test.sh tests/integration/test_webrtc_audio_format.py::TestFormatRouting -v
+docker exec voxbridge-api ./test.sh tests/integration/test_webrtc_audio_format.py::TestFormatRouting -v
 
 # P0: Concurrent formats (2 tests)
-docker exec voxbridge-discord ./test.sh tests/integration/test_webrtc_audio_format.py::TestConcurrentFormats -v
+docker exec voxbridge-api ./test.sh tests/integration/test_webrtc_audio_format.py::TestConcurrentFormats -v
 
 # P1: Error handling (3 tests)
-docker exec voxbridge-discord ./test.sh tests/integration/test_webrtc_audio_format.py::TestWebRTCErrors -v
+docker exec voxbridge-api ./test.sh tests/integration/test_webrtc_audio_format.py::TestWebRTCErrors -v
 
 # P2: Performance (2 tests)
-docker exec voxbridge-discord ./test.sh tests/integration/test_webrtc_audio_format.py::TestWebRTCLatency -v
+docker exec voxbridge-api ./test.sh tests/integration/test_webrtc_audio_format.py::TestWebRTCLatency -v
 ```
 
 ### Run Single Test
 ```bash
-docker exec voxbridge-discord ./test.sh \
+docker exec voxbridge-api ./test.sh \
   tests/integration/test_webrtc_audio_format.py::TestWebRTCEndToEnd::test_browser_to_transcript_pcm_format -v
 ```
 
 ### Run with Print Statements
 ```bash
-docker exec voxbridge-discord ./test.sh tests/integration/test_webrtc_audio_format.py -v -s
+docker exec voxbridge-api ./test.sh tests/integration/test_webrtc_audio_format.py -v -s
 ```
 
 ### Generate Coverage Report
 ```bash
-docker exec voxbridge-discord ./test.sh tests/integration/test_webrtc_audio_format.py \
+docker exec voxbridge-api ./test.sh tests/integration/test_webrtc_audio_format.py \
   --cov=src/voice/webrtc_handler \
   --cov=src/services/stt_service \
   --cov-report=html \
@@ -98,7 +98,7 @@ tests/integration/test_webrtc_audio_format.py::TestWebRTCLatency::test_end_to_en
 ### Issue: `ModuleNotFoundError: No module named 'av'`
 **Solution**: PyAV not installed in container
 ```bash
-docker exec voxbridge-discord pip install av
+docker exec voxbridge-api pip install av
 ```
 
 ### Issue: Database connection errors
@@ -111,21 +111,21 @@ docker exec voxbridge-postgres psql -U voxbridge -d voxbridge -c "SELECT 1;"
 ### Issue: Mock WhisperX server not starting
 **Solution**: Check port availability
 ```bash
-docker exec voxbridge-discord netstat -tuln | grep 14901
+docker exec voxbridge-api netstat -tuln | grep 14901
 ```
 
 ### Issue: Tests hang indefinitely
 **Solution**: Check for deadlocks in async code
 ```bash
 # Add timeout to pytest
-docker exec voxbridge-discord ./test.sh tests/integration/test_webrtc_audio_format.py -v --timeout=30
+docker exec voxbridge-api ./test.sh tests/integration/test_webrtc_audio_format.py -v --timeout=30
 ```
 
 ## Debugging
 
 ### View Test Logs
 ```bash
-docker exec voxbridge-discord ./test.sh tests/integration/test_webrtc_audio_format.py -v -s --log-cli-level=DEBUG
+docker exec voxbridge-api ./test.sh tests/integration/test_webrtc_audio_format.py -v -s --log-cli-level=DEBUG
 ```
 
 ### Run Tests Outside Docker (Local Development)
@@ -162,4 +162,4 @@ Expected latencies (from test assertions):
 
 ---
 
-**Quick Start**: `docker exec voxbridge-discord ./test.sh tests/integration/test_webrtc_audio_format.py -v`
+**Quick Start**: `docker exec voxbridge-api ./test.sh tests/integration/test_webrtc_audio_format.py -v`

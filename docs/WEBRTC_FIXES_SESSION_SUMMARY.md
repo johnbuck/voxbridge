@@ -28,7 +28,7 @@ All three bugs are now **completely resolved** with comprehensive test coverage 
 - Remove `tts_rate` and `tts_pitch` (not supported by Chatterbox)
 - Migration: `alembic/versions/011_align_tts_with_chatterbox.py`
 
-**Run Migration**: `docker exec voxbridge-discord alembic upgrade head`
+**Run Migration**: `docker exec voxbridge-api alembic upgrade head`
 
 ### 2. `b651f7b` - feat: update API and services for Chatterbox TTS config
 **Type**: Backend API
@@ -219,7 +219,7 @@ Agent(
 **Migration Steps**:
 1. Stop services: `docker compose down`
 2. Pull latest code: `git pull`
-3. Run migration: `docker exec voxbridge-discord alembic upgrade head`
+3. Run migration: `docker exec voxbridge-api alembic upgrade head`
 4. Restart services: `docker compose up -d --build`
 5. Verify: Test agent form, TTS, silence detection
 

@@ -55,7 +55,7 @@ You are a specialized performance optimization agent for the VoxBridge Discord v
 1. **Collect Latency Data**
    ```bash
    # Extract last 500 latency logs
-   docker logs voxbridge-discord --tail 500 | grep "LATENCY"
+   docker logs voxbridge-api --tail 500 | grep "LATENCY"
    ```
 
 2. **Parse and Analyze**

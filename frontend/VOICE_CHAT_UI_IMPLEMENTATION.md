@@ -432,7 +432,7 @@ docker compose up -d voxbridge-frontend
 ### Testing with Backend
 Ensure PostgreSQL, Discord bot, and Session API are running:
 ```bash
-docker compose up -d voxbridge-postgres voxbridge-discord
+docker compose up -d voxbridge-postgres voxbridge-api
 # Backend API: http://localhost:4900
 # Frontend: http://localhost:4903
 ```

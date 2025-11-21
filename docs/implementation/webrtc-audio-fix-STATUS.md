@@ -282,7 +282,7 @@ curl http://localhost:4900/health
 curl http://localhost:4903
 
 # 3. View real-time logs
-docker logs voxbridge-discord --follow | grep -E "(WebRTC|ws/voice|audio)"
+docker logs voxbridge-api --follow | grep -E "(WebRTC|ws/voice|audio)"
 docker logs voxbridge-whisperx --follow | grep -E "(connection|session|PCM)"
 
 # 4. Test API endpoints
@@ -442,6 +442,6 @@ docker compose up -d
 git checkout src/api/server.py  # Remove CORS changes
 git checkout src/voice/webrtc_handler.py  # Remove buffer fix
 git checkout frontend/src/hooks/useWebRTCAudio.ts  # Remove port fix
-docker compose build voxbridge-discord voxbridge-frontend
-docker compose up -d voxbridge-discord voxbridge-frontend
+docker compose build voxbridge-api voxbridge-frontend
+docker compose up -d voxbridge-api voxbridge-frontend
 ```

@@ -623,7 +623,7 @@ This reverts to the original behavior for testing/comparison.
 ## Support
 
 For issues or questions:
-- Check logs: `docker logs voxbridge-discord --tail 200 | grep -E "(🌊|streaming)"`
+- Check logs: `docker logs voxbridge-api --tail 200 | grep -E "(🌊|streaming)"`
 - View metrics: `curl http://localhost:4900/metrics | python3 -m json.tool`
 - Run tests: `./test.sh tests/unit tests/integration -v`
 

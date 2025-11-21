@@ -161,7 +161,7 @@ For comprehensive architecture and patterns, see [AGENTS.md](./AGENTS.md).
 
 **Migration Required**:
 ```bash
-docker exec voxbridge-discord alembic upgrade head  # Run 011_align_tts_with_chatterbox.py
+docker exec voxbridge-api alembic upgrade head  # Run 011_align_tts_with_chatterbox.py
 ```
 
 ## Quick Start
@@ -172,7 +172,7 @@ docker exec voxbridge-discord alembic upgrade head  # Run 011_align_tts_with_cha
 docker compose up -d
 
 # Watch logs (filtered)
-docker logs voxbridge-discord --tail 100 --follow | grep -v "GET /health"
+docker logs voxbridge-api --tail 100 --follow | grep -v "GET /health"
 
 # Rebuild after changes
 docker compose down && docker compose build --no-cache && docker compose up -d
@@ -195,7 +195,7 @@ docker compose down && docker compose build --no-cache && docker compose up -d
 **Four-Container Setup (VoxBridge 2.0):**
 - `postgres` (port 5432) - PostgreSQL 15 database for agents/sessions/conversations
 - `voxbridge-whisperx` (ports 4901, 4902) - WhisperX STT server (GPU: RTX 5060 Ti)
-- `voxbridge-discord` (port 4900) - Discord.py bot with FastAPI + streaming responses
+- `voxbridge-api` (port 4900) - Discord.py bot with FastAPI + streaming responses
 - `voxbridge-frontend` (port 4903) - React monitoring dashboard ✅ **DEPLOYED**
 
 **Service Layer Architecture (Phase 5):**
@@ -412,16 +412,16 @@ These settings can be configured via:
 ### Database Management (VoxBridge 2.0)
 ```bash
 # Run Alembic migrations
-docker exec voxbridge-discord alembic upgrade head
+docker exec voxbridge-api alembic upgrade head
 
 # Seed example agents
-docker exec voxbridge-discord python -m src.database.seed
+docker exec voxbridge-api python -m src.database.seed
 
 # Clear all agents (WARNING: Destructive!)
-docker exec voxbridge-discord python -m src.database.seed --clear
+docker exec voxbridge-api python -m src.database.seed --clear
 
 # Check database connection
-docker exec voxbridge-discord python -c "import asyncio; from src.database import check_db_connection; print(asyncio.run(check_db_connection()))"
+docker exec voxbridge-api python -c "import asyncio; from src.database import check_db_connection; print(asyncio.run(check_db_connection()))"
 
 # PostgreSQL shell
 docker exec -it voxbridge-postgres psql -U voxbridge -d voxbridge
@@ -436,16 +436,16 @@ docker exec voxbridge-postgres psql -U voxbridge -d voxbridge -c "SELECT id, nam
 docker compose ps
 
 # View logs (Discord bot only)
-docker logs voxbridge-discord --tail 200 --follow
+docker logs voxbridge-api --tail 200 --follow
 
 # View logs (WhisperX only)
 docker logs voxbridge-whisperx --tail 200 --follow
 
 # Restart specific service
-docker compose restart voxbridge-discord
+docker compose restart voxbridge-api
 
 # Rebuild specific service
-docker compose up -d --force-recreate --build voxbridge-discord
+docker compose up -d --force-recreate --build voxbridge-api
 ```
 
 ### Debugging
@@ -457,13 +457,13 @@ curl http://localhost:4900/health | python3 -m json.tool
 curl http://localhost:4900/metrics | python3 -m json.tool
 
 # View latency logs
-docker logs voxbridge-discord --tail 200 | grep -E "(LATENCY|⏱️)"
+docker logs voxbridge-api --tail 200 | grep -E "(LATENCY|⏱️)"
 
 # View streaming logs
-docker logs voxbridge-discord --tail 300 | grep -E "(🌊|streaming|chunk|sentence)"
+docker logs voxbridge-api --tail 300 | grep -E "(🌊|streaming|chunk|sentence)"
 
 # View thinking indicator logs
-docker logs voxbridge-discord --tail 200 | grep -E "(💭|thinking indicator|🎵)"
+docker logs voxbridge-api --tail 200 | grep -E "(💭|thinking indicator|🎵)"
 ```
 
 ### Testing Shortcuts

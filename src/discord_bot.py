@@ -24,7 +24,7 @@ NEW USERS: Set USE_LEGACY_DISCORD_BOT=false (default)
 
 EXISTING USERS: Migrate to plugin-based bot by:
   1. Set USE_LEGACY_DISCORD_BOT=false in .env
-  2. Restart container: docker compose restart voxbridge-discord
+  2. Restart container: docker compose restart voxbridge-api
   3. See docs/MIGRATION_GUIDE.md for complete migration steps
 
 ROLLBACK: Set USE_LEGACY_DISCORD_BOT=true if issues arise

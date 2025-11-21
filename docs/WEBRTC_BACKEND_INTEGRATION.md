@@ -156,17 +156,17 @@ DATABASE_URL=postgresql+asyncpg://voxbridge:voxbridge_dev_password@postgres:5432
 
 1. **Services running**:
    ```bash
-   docker compose up -d postgres voxbridge-whisperx voxbridge-discord
+   docker compose up -d postgres voxbridge-whisperx voxbridge-api
    ```
 
 2. **Database migrated**:
    ```bash
-   docker exec voxbridge-discord alembic upgrade head
+   docker exec voxbridge-api alembic upgrade head
    ```
 
 3. **Seed agents** (if not already done):
    ```bash
-   docker exec voxbridge-discord python -m src.database.seed
+   docker exec voxbridge-api python -m src.database.seed
    ```
 
 ### Test with Frontend
@@ -265,13 +265,13 @@ asyncio.run(test_voice_websocket())
 
 ```bash
 # Follow WebSocket voice logs
-docker logs voxbridge-discord --tail 200 --follow | grep -E "(🎙️|🔌|WebRTC|/ws/voice)"
+docker logs voxbridge-api --tail 200 --follow | grep -E "(🎙️|🔌|WebRTC|/ws/voice)"
 
 # Follow transcription logs
-docker logs voxbridge-discord --tail 200 --follow | grep -E "(WhisperX|partial|final|transcript)"
+docker logs voxbridge-api --tail 200 --follow | grep -E "(WhisperX|partial|final|transcript)"
 
 # Follow LLM logs
-docker logs voxbridge-discord --tail 200 --follow | grep -E "(🤖|LLM|ai_response)"
+docker logs voxbridge-api --tail 200 --follow | grep -E "(🤖|LLM|ai_response)"
 ```
 
 ### Metrics

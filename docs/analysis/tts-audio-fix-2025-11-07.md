@@ -96,7 +96,7 @@ if (message.event === 'ai_response_complete' || message.event === 'tts_complete'
 
 **Command**:
 ```bash
-docker exec voxbridge-discord python3 -c "..."
+docker exec voxbridge-api python3 -c "..."
 ```
 
 **Result**:
@@ -177,7 +177,7 @@ docker compose up -d voxbridge-frontend
 
 ### Expected Logs
 
-**Backend** (docker logs voxbridge-discord):
+**Backend** (docker logs voxbridge-api):
 ```
 📝 Final transcript: "..."
 📤 Sending to LLM: "..."
@@ -263,7 +263,7 @@ docker compose up -d voxbridge-frontend
 ### Configuration
 - `/home/wiley/Docker/voxbridge/docker-compose.yml`
   - Service: voxbridge-frontend (port 4903)
-  - Service: voxbridge-discord (port 4900)
+  - Service: voxbridge-api (port 4900)
 
 ---
 

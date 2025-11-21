@@ -7,7 +7,7 @@ Debug VoxBridge streaming response system to analyze sentence splitting, chunk p
 Execute the following command to view streaming-related logs:
 
 ```bash
-docker logs voxbridge-discord --tail 300 | grep -E "(🌊|streaming|chunk|sentence|TTS|clause)"
+docker logs voxbridge-api --tail 300 | grep -E "(🌊|streaming|chunk|sentence|TTS|clause)"
 ```
 
 This will:
@@ -35,19 +35,19 @@ Expected output example:
 
 **For real-time streaming debug:**
 ```bash
-docker logs voxbridge-discord --follow | grep -E "(🌊|streaming)"
+docker logs voxbridge-api --follow | grep -E "(🌊|streaming)"
 ```
 
 **To analyze specific aspects:**
 ```bash
 # Sentence splitting only
-docker logs voxbridge-discord --tail 300 | grep "sentence detected"
+docker logs voxbridge-api --tail 300 | grep "sentence detected"
 
 # TTS calls only
-docker logs voxbridge-discord --tail 300 | grep "Sending to TTS"
+docker logs voxbridge-api --tail 300 | grep "Sending to TTS"
 
 # Buffer state
-docker logs voxbridge-discord --tail 300 | grep "buffer"
+docker logs voxbridge-api --tail 300 | grep "buffer"
 ```
 
 **Common issues to look for:**

@@ -119,8 +119,8 @@ VoxBridge 2.0 transforms the Discord bot into a modular AI voice platform:
 
 3. **Run Alembic migration**:
    ```bash
-   docker compose up -d voxbridge-discord
-   docker exec voxbridge-discord alembic upgrade head
+   docker compose up -d voxbridge-api
+   docker exec voxbridge-api alembic upgrade head
    ```
 
 4. **Restart all services**:

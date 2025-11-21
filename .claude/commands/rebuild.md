@@ -12,7 +12,7 @@ docker compose down && docker compose build --no-cache && docker compose up -d
 
 This will:
 1. **Stop all containers** (`docker compose down`)
-   - Stops voxbridge-discord, voxbridge-whisperx, voxbridge-frontend
+   - Stops voxbridge-api, voxbridge-whisperx, voxbridge-frontend
    - Removes containers (but keeps volumes)
 2. **Rebuild all images** (`docker compose build --no-cache`)
    - Rebuilds from Dockerfile without using cache
@@ -37,13 +37,13 @@ This will:
 docker compose ps
 
 # Check logs
-docker logs voxbridge-discord --tail 50
+docker logs voxbridge-api --tail 50
 
 # Check health
 curl http://localhost:4900/health | python3 -m json.tool
 ```
 
 **Faster alternatives:**
-- **Rebuild single service:** `docker compose up -d --build voxbridge-discord`
-- **Restart without rebuild:** `docker compose restart voxbridge-discord`
+- **Rebuild single service:** `docker compose up -d --build voxbridge-api`
+- **Restart without rebuild:** `docker compose restart voxbridge-api`
 - **Rebuild with cache:** `docker compose build` (without `--no-cache`)

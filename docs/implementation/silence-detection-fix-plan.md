@@ -212,7 +212,7 @@ If fix causes regressions:
 
 3. **Verify rollback**:
    ```bash
-   docker logs voxbridge-discord --tail 100
+   docker logs voxbridge-api --tail 100
    ```
 
 ---

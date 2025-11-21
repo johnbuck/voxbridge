@@ -32,7 +32,7 @@ Discord Voice Channel
 ### Docker Services
 
 1. **whisperx** (port 4901) - WhisperX STT server, GPU-enabled (GPU 1)
-2. **voxbridge-discord** (port 4900) - Discord bot, integrates all services
+2. **voxbridge-api** (port 4900) - Discord bot, integrates all services
 
 ## Architecture Documentation
 
@@ -128,7 +128,7 @@ See **[ARCHITECTURE.md](ARCHITECTURE.md)** for complete documentation map and qu
 
 **Deployed Services**:
 - ✅ `voxbridge-whisperx` (ports 4901, 4902) - WhisperX STT with GPU acceleration
-- ✅ `voxbridge-discord` (port 4900) - Discord bot + FastAPI + WebSocket
+- ✅ `voxbridge-api` (port 4900) - Discord bot + FastAPI + WebSocket
 - ✅ `voxbridge-frontend` (port 4903) - React dashboard (4 pages, production build)
 
 **Core Features**:
@@ -567,7 +567,7 @@ tests/
 2. **Update `docker-compose.yml`** - Pass variable to service
 3. **Update code** - Read with `os.getenv('VAR_NAME', 'default')`
 4. **Document in README.md** - Add to "Environment Variables" section
-5. **Restart container** - `docker compose restart voxbridge-discord`
+5. **Restart container** - `docker compose restart voxbridge-api`
 
 ### Investigating Performance Issues
 
@@ -613,7 +613,7 @@ volumes:
 
 **Restart after code changes:**
 ```bash
-docker compose restart voxbridge-discord
+docker compose restart voxbridge-api
 ```
 
 ### Production (Embedded Code)
@@ -914,10 +914,10 @@ useEffect(() => {
 
 ```bash
 # Restart bot
-docker compose restart voxbridge-discord
+docker compose restart voxbridge-api
 
 # View logs
-docker logs voxbridge-discord -f
+docker logs voxbridge-api -f
 
 # Rebuild containers
 docker compose build --no-cache

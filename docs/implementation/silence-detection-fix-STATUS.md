@@ -389,16 +389,16 @@ MAX_UTTERANCE_TIME_MS=120000  # 2 minutes for long conversations
 
 ```bash
 # Rebuild backend (Discord bot) with silence detection fixes
-docker compose build voxbridge-discord --no-cache
+docker compose build voxbridge-api --no-cache
 
 # Rebuild frontend with stop_listening listener
 docker compose build voxbridge-frontend --no-cache
 
 # Restart services
-docker compose up -d voxbridge-discord voxbridge-frontend
+docker compose up -d voxbridge-api voxbridge-frontend
 
 # Verify deployment
-docker logs voxbridge-discord --tail 100 | grep -E "(Silence threshold|Max utterance)"
+docker logs voxbridge-api --tail 100 | grep -E "(Silence threshold|Max utterance)"
 ```
 
 **Expected Logs**:
@@ -476,11 +476,11 @@ git checkout src/voice/webrtc_handler.py
 git checkout frontend/src/hooks/useWebRTCAudio.ts
 
 # Rebuild containers
-docker compose build voxbridge-discord voxbridge-frontend --no-cache
-docker compose up -d voxbridge-discord voxbridge-frontend
+docker compose build voxbridge-api voxbridge-frontend --no-cache
+docker compose up -d voxbridge-api voxbridge-frontend
 
 # Verify rollback
-docker logs voxbridge-discord --tail 100
+docker logs voxbridge-api --tail 100
 ```
 
 **Note**: Rollback will re-introduce the "microphone never stops" bug.
@@ -536,7 +536,7 @@ docker logs voxbridge-discord --tail 100
 
 **Next Steps for User**:
 1. Review this status report
-2. Rebuild containers (`docker compose build voxbridge-discord voxbridge-frontend --no-cache`)
+2. Rebuild containers (`docker compose build voxbridge-api voxbridge-frontend --no-cache`)
 3. Restart services (`docker compose up -d`)
 4. Test with real microphone
 5. Verify silence detection works as expected

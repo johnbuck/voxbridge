@@ -278,14 +278,14 @@ if pcm_data:
 ## Deployment Status
 
 ✅ **Containers Rebuilt**:
-- `voxbridge-discord` - Backend with critical fix (line 278)
+- `voxbridge-api` - Backend with critical fix (line 278)
 - `voxbridge-frontend` - Frontend with stop listener
 
 ✅ **Services Running**:
 ```bash
 $ docker compose ps
 NAME                 STATUS
-voxbridge-discord    Up (healthy)
+voxbridge-api    Up (healthy)
 voxbridge-frontend   Up
 voxbridge-postgres   Up (healthy)
 voxbridge-whisperx   Up
@@ -293,7 +293,7 @@ voxbridge-whisperx   Up
 
 ✅ **Configuration Verified**:
 ```bash
-$ docker logs voxbridge-discord --tail 5 | grep "Silence threshold"
+$ docker logs voxbridge-api --tail 5 | grep "Silence threshold"
    Silence threshold: 600ms
    Max utterance time: 45000ms
 ```
@@ -416,13 +416,13 @@ git checkout frontend/src/hooks/useWebRTCAudio.ts
 git checkout frontend/src/types/webrtc.ts
 
 # 2. Rebuild containers
-docker compose build voxbridge-discord voxbridge-frontend --no-cache
+docker compose build voxbridge-api voxbridge-frontend --no-cache
 
 # 3. Restart services
-docker compose up -d voxbridge-discord voxbridge-frontend
+docker compose up -d voxbridge-api voxbridge-frontend
 
 # 4. Verify rollback
-docker logs voxbridge-discord --tail 100
+docker logs voxbridge-api --tail 100
 ```
 
 **Note**: Rollback will re-introduce the "microphone never stops" bug.

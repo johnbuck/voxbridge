@@ -8,7 +8,7 @@
 
 ```bash
 cd /home/wiley/Docker/voxbridge
-docker compose up -d postgres voxbridge-whisperx voxbridge-discord
+docker compose up -d postgres voxbridge-whisperx voxbridge-api
 ```
 
 ### 2. Verify Services
@@ -18,7 +18,7 @@ docker compose up -d postgres voxbridge-whisperx voxbridge-discord
 docker compose ps
 
 # Check backend logs
-docker logs voxbridge-discord --tail 50
+docker logs voxbridge-api --tail 50
 
 # Verify endpoint is listed
 # Should see: "WS   /ws/voice - Browser voice streaming (Phase 4)"
@@ -28,10 +28,10 @@ docker logs voxbridge-discord --tail 50
 
 ```bash
 # Run migrations
-docker exec voxbridge-discord alembic upgrade head
+docker exec voxbridge-api alembic upgrade head
 
 # Seed example agents
-docker exec voxbridge-discord python -m src.database.seed
+docker exec voxbridge-api python -m src.database.seed
 
 # Verify agents exist
 docker exec voxbridge-postgres psql -U voxbridge -d voxbridge -c "SELECT id, name, llm_provider FROM agents;"
@@ -303,7 +303,7 @@ ws.onmessage = (event) => {
 Watch for TTS processing:
 
 ```bash
-docker logs voxbridge-discord --tail 100 --follow | grep -E "(🔊|TTS|audio)"
+docker logs voxbridge-api --tail 100 --follow | grep -E "(🔊|TTS|audio)"
 ```
 
 **Expected Output**:
@@ -333,7 +333,7 @@ curl http://localhost:4123/health | python3 -m json.tool
 Check backend can reach Chatterbox:
 
 ```bash
-docker logs voxbridge-discord --tail 50 | grep -i chatterbox
+docker logs voxbridge-api --tail 50 | grep -i chatterbox
 ```
 
 **Expected**:
@@ -393,16 +393,16 @@ ws.onmessage = (event) => {
 ### Backend Logs
 ```bash
 # Follow WebSocket logs
-docker logs voxbridge-discord --tail 100 --follow | grep -E "(🔌|🎙️|WebRTC|/ws/voice)"
+docker logs voxbridge-api --tail 100 --follow | grep -E "(🔌|🎙️|WebRTC|/ws/voice)"
 
 # Follow transcription logs
-docker logs voxbridge-discord --tail 100 --follow | grep -E "(partial|final)_transcript"
+docker logs voxbridge-api --tail 100 --follow | grep -E "(partial|final)_transcript"
 
 # Follow LLM logs
-docker logs voxbridge-discord --tail 100 --follow | grep -E "(🤖|LLM|ai_response)"
+docker logs voxbridge-api --tail 100 --follow | grep -E "(🤖|LLM|ai_response)"
 
 # Follow latency logs
-docker logs voxbridge-discord --tail 100 --follow | grep "⏱️ LATENCY"
+docker logs voxbridge-api --tail 100 --follow | grep "⏱️ LATENCY"
 ```
 
 ### Database Check
@@ -438,12 +438,12 @@ docker logs voxbridge-whisperx --tail 50
 
 2. Check backend logs for TTS errors:
    ```bash
-   docker logs voxbridge-discord --tail 50 | grep -E "(TTS|Chatterbox|ERROR)"
+   docker logs voxbridge-api --tail 50 | grep -E "(TTS|Chatterbox|ERROR)"
    ```
 
 3. Verify binary chunks are being sent:
    ```bash
-   docker logs voxbridge-discord --tail 50 | grep "binary audio chunk"
+   docker logs voxbridge-api --tail 50 | grep "binary audio chunk"
    ```
 
 4. Check browser console for audio playback errors
@@ -459,7 +459,7 @@ docker logs voxbridge-whisperx --tail 50
 
 **Check**:
 ```bash
-docker logs voxbridge-discord --tail 100 | grep "LATENCY \[TTS first byte\]"
+docker logs voxbridge-api --tail 100 | grep "LATENCY \[TTS first byte\]"
 ```
 
 **Solutions**:
@@ -494,7 +494,7 @@ docker logs voxbridge-discord --tail 100 | grep "LATENCY \[TTS first byte\]"
 
 3. Check network latency between containers:
    ```bash
-   docker exec voxbridge-discord ping -c 5 chatterbox-tts
+   docker exec voxbridge-api ping -c 5 chatterbox-tts
    ```
 
 ### Connection Refused
@@ -503,13 +503,13 @@ docker logs voxbridge-discord --tail 100 | grep "LATENCY \[TTS first byte\]"
 **Check**:
 ```bash
 # Verify service is running
-docker compose ps voxbridge-discord
+docker compose ps voxbridge-api
 
 # Check port is listening
 netstat -an | grep 4900
 
 # Check logs for startup errors
-docker logs voxbridge-discord --tail 50
+docker logs voxbridge-api --tail 50
 ```
 
 ### No Partial Transcripts
@@ -536,7 +536,7 @@ docker exec voxbridge-postgres psql -U voxbridge -d voxbridge -c \
   "SELECT name, llm_provider, llm_model FROM agents;"
 
 # Check environment variables
-docker exec voxbridge-discord env | grep -E "(OPENROUTER|LOCAL_LLM|N8N)"
+docker exec voxbridge-api env | grep -E "(OPENROUTER|LOCAL_LLM|N8N)"
 
 # Test LLM provider directly
 curl http://localhost:11434/v1/models  # For local Ollama

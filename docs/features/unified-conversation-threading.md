@@ -365,7 +365,7 @@ ORDER BY c.timestamp;
 
 ```bash
 # Apply migration
-docker exec voxbridge-discord alembic upgrade head
+docker exec voxbridge-api alembic upgrade head
 
 # Verify
 docker exec voxbridge-postgres psql -U voxbridge -d voxbridge -c "\d sessions"
@@ -375,7 +375,7 @@ docker exec voxbridge-postgres psql -U voxbridge -d voxbridge -c "\d sessions"
 
 ```bash
 # Rollback migration
-docker exec voxbridge-discord alembic downgrade -1
+docker exec voxbridge-api alembic downgrade -1
 
 # This will:
 # - Drop ix_sessions_discord_guild_id index

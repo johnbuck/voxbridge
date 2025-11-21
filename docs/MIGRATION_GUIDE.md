@@ -128,13 +128,13 @@ docker compose down
 
 ```bash
 # Rebuild Discord bot container with new architecture
-docker compose build --no-cache voxbridge-discord
+docker compose build --no-cache voxbridge-api
 
 # Start all services
 docker compose up -d
 
 # Watch logs to verify startup
-docker logs voxbridge-discord --tail 100 --follow
+docker logs voxbridge-api --tail 100 --follow
 ```
 
 ### Step 6: Verify Plugin System
@@ -142,7 +142,7 @@ docker logs voxbridge-discord --tail 100 --follow
 Check logs to confirm plugin system is active:
 
 ```bash
-docker logs voxbridge-discord --tail 100 | grep "Using new plugin-based"
+docker logs voxbridge-api --tail 100 | grep "Using new plugin-based"
 ```
 
 **Expected output**:
@@ -166,7 +166,7 @@ Ensure database schema is up-to-date:
 
 ```bash
 # Run Alembic migrations
-docker exec voxbridge-discord alembic upgrade head
+docker exec voxbridge-api alembic upgrade head
 
 # Verify agents table exists
 docker exec voxbridge-postgres psql -U voxbridge -d voxbridge -c "\dt"
@@ -321,12 +321,12 @@ USE_LEGACY_DISCORD_BOT=true
 
 Restart container:
 ```bash
-docker compose restart voxbridge-discord
+docker compose restart voxbridge-api
 ```
 
 Verify legacy mode:
 ```bash
-docker logs voxbridge-discord --tail 50 | grep "DEPRECATION WARNING"
+docker logs voxbridge-api --tail 50 | grep "DEPRECATION WARNING"
 ```
 
 Expected output:
@@ -412,7 +412,7 @@ This migration is **100% backward compatible**. All existing functionality is pr
 
 **Solution 1**: Check plugin initialization logs
 ```bash
-docker logs voxbridge-discord | grep "🔌 Initializing plugins"
+docker logs voxbridge-api | grep "🔌 Initializing plugins"
 ```
 
 Expected:
@@ -423,7 +423,7 @@ Expected:
 
 **Solution 2**: Verify WhisperX connection
 ```bash
-docker logs voxbridge-discord | grep "WhisperX"
+docker logs voxbridge-api | grep "WhisperX"
 ```
 
 Expected:
@@ -449,7 +449,7 @@ curl http://localhost:4900/status | python3 -m json.tool | grep "stt"
 
 **Solution 1**: Verify bridge pattern is initialized
 ```bash
-docker logs voxbridge-discord | grep "bridge"
+docker logs voxbridge-api | grep "bridge"
 ```
 
 Expected:
@@ -466,7 +466,7 @@ Verify `"bot_ready": true`.
 
 **Solution 3**: Restart Discord container
 ```bash
-docker compose restart voxbridge-discord
+docker compose restart voxbridge-api
 ```
 
 ---
@@ -478,7 +478,7 @@ docker compose restart voxbridge-discord
 
 **Solution 1**: Check environment variable syntax
 ```bash
-docker exec voxbridge-discord printenv | grep "USE_LEGACY_DISCORD_BOT"
+docker exec voxbridge-api printenv | grep "USE_LEGACY_DISCORD_BOT"
 ```
 
 Should print: `USE_LEGACY_DISCORD_BOT=true`
@@ -497,7 +497,7 @@ environment:
 **Solution 3**: Rebuild container with --no-cache
 ```bash
 docker compose down
-docker compose build --no-cache voxbridge-discord
+docker compose build --no-cache voxbridge-api
 docker compose up -d
 ```
 
@@ -531,7 +531,7 @@ POSTGRES_DB=voxbridge
 
 **Solution 3**: Run database migrations
 ```bash
-docker exec voxbridge-discord alembic upgrade head
+docker exec voxbridge-api alembic upgrade head
 ```
 
 ---
@@ -544,7 +544,7 @@ docker exec voxbridge-discord alembic upgrade head
 
 **Solution 1**: Seed example agents
 ```bash
-docker exec voxbridge-discord python -m src.database.seed
+docker exec voxbridge-api python -m src.database.seed
 ```
 
 **Solution 2**: Verify agents table exists
@@ -556,7 +556,7 @@ Should show count > 0.
 
 **Solution 3**: Check agent service logs
 ```bash
-docker logs voxbridge-discord | grep "AgentService"
+docker logs voxbridge-api | grep "AgentService"
 ```
 
 ---
@@ -578,7 +578,7 @@ curl -X POST http://localhost:4900/api/plugins/discord/restart
 
 **Solution 3**: Check plugin manager logs
 ```bash
-docker logs voxbridge-discord | grep "PluginManager"
+docker logs voxbridge-api | grep "PluginManager"
 ```
 
 ---
@@ -662,7 +662,7 @@ See [PHASE4_BATCH2_TEST_RESULTS.md](../PHASE4_BATCH2_TEST_RESULTS.md) for detail
 
 If you encounter issues not covered in this guide:
 
-1. **Check logs**: `docker logs voxbridge-discord --tail 200`
+1. **Check logs**: `docker logs voxbridge-api --tail 200`
 2. **Review test results**: `PHASE4_BATCH2_TEST_RESULTS.md`
 3. **Search GitHub issues**: Look for similar problems
 4. **Open GitHub issue**: Include logs and steps to reproduce
@@ -678,7 +678,7 @@ If you encounter issues not covered in this guide:
 [Description of problem]
 
 **Logs**:
-[Output of `docker logs voxbridge-discord --tail 200`]
+[Output of `docker logs voxbridge-api --tail 200`]
 
 **Steps to Reproduce**:
 1. ...

@@ -1627,11 +1627,11 @@ services:
   # ============================================================
   # VoxBridge Discord Bot (Updated)
   # ============================================================
-  voxbridge-discord:
+  voxbridge-api:
     build:
       context: .
       dockerfile: docker/Dockerfile.discord
-    container_name: voxbridge-discord
+    container_name: voxbridge-api
     restart: unless-stopped
     depends_on:
       postgres:
@@ -2074,7 +2074,7 @@ docker compose build
 docker compose up -d
 
 # Watch logs
-docker compose logs -f voxbridge-discord
+docker compose logs -f voxbridge-api
 ```
 
 **Step 6: Verify**
@@ -2149,11 +2149,11 @@ docker compose ps
 **Issue: Bot not responding to voice**
 ```bash
 # Check processing workers started
-docker compose logs voxbridge-discord | grep "Started.*workers"
+docker compose logs voxbridge-api | grep "Started.*workers"
 
 # Check queue size
 # Should show queue additions when users speak
-docker compose logs voxbridge-discord | grep "Queued"
+docker compose logs voxbridge-api | grep "Queued"
 ```
 
 **Issue: Database connection failed**
@@ -2165,7 +2165,7 @@ docker compose ps postgres
 docker compose exec postgres psql -U voxbridge -c "SELECT 1"
 
 # Check DATABASE_URL is correct
-docker compose exec voxbridge-discord env | grep DATABASE_URL
+docker compose exec voxbridge-api env | grep DATABASE_URL
 ```
 
 **Issue: Redis not caching**
@@ -2177,29 +2177,29 @@ docker compose ps redis
 docker compose exec redis redis-cli ping
 
 # Check cache operations
-docker compose logs voxbridge-discord | grep "Redis"
+docker compose logs voxbridge-api | grep "Redis"
 ```
 
 **Issue: Slash commands not appearing**
 ```bash
 # Check bot has applications.commands scope
 # Check command sync succeeded
-docker compose logs voxbridge-discord | grep "Synced.*command"
+docker compose logs voxbridge-api | grep "Synced.*command"
 
 # Force re-sync (restart bot)
-docker compose restart voxbridge-discord
+docker compose restart voxbridge-api
 ```
 
 **Issue: Agents not routing correctly**
 ```bash
 # Check agent config loaded
-docker compose logs voxbridge-discord | grep "agent"
+docker compose logs voxbridge-api | grep "agent"
 
 # Verify agents in database
 docker compose exec postgres psql -U voxbridge -c "SELECT * FROM agent_config"
 
 # Check routing strategy
-docker compose exec voxbridge-discord env | grep ROUTING_STRATEGY
+docker compose exec voxbridge-api env | grep ROUTING_STRATEGY
 ```
 
 ---

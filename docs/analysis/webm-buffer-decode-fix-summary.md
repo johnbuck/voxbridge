@@ -254,14 +254,14 @@ git revert <commit-hash>
 
 # 3. Rebuild and restart
 docker compose down
-docker compose build voxbridge-discord
+docker compose build voxbridge-api
 docker compose up -d
 ```
 
 **Emergency hotfix** (no rebuild):
 ```bash
 # Edit files directly in container
-docker exec -it voxbridge-discord bash
+docker exec -it voxbridge-api bash
 
 # Restore old code (re-add buffer trimming, remove finalization)
 vim src/voice/webrtc_handler.py
@@ -271,7 +271,7 @@ vim src/voice/webrtc_handler.py
 
 # Restart container
 exit
-docker compose restart voxbridge-discord
+docker compose restart voxbridge-api
 ```
 
 ---

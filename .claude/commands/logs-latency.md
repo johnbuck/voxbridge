@@ -7,7 +7,7 @@ View latency measurement logs to analyze VoxBridge performance metrics.
 Execute the following command to filter latency logs:
 
 ```bash
-docker logs voxbridge-discord --tail 200 | grep -E "(LATENCY|⏱️)"
+docker logs voxbridge-api --tail 200 | grep -E "(LATENCY|⏱️)"
 ```
 
 This will:
@@ -34,10 +34,10 @@ Expected output example:
 
 **For real-time monitoring:**
 ```bash
-docker logs voxbridge-discord --follow | grep -E "(LATENCY|⏱️)"
+docker logs voxbridge-api --follow | grep -E "(LATENCY|⏱️)"
 ```
 
 **To analyze specific metric:**
 ```bash
-docker logs voxbridge-discord --tail 500 | grep "thinking indicator"
+docker logs voxbridge-api --tail 500 | grep "thinking indicator"
 ```

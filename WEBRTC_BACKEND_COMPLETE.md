@@ -107,13 +107,13 @@ mediaRecorder.start(100);  // 100ms chunks
 ### 3. Verify It Works
 ```bash
 # Check logs for WebSocket connections
-docker logs voxbridge-discord --tail 100 --follow | grep "🔌"
+docker logs voxbridge-api --tail 100 --follow | grep "🔌"
 
 # Check logs for transcriptions
-docker logs voxbridge-discord --tail 100 --follow | grep "transcript"
+docker logs voxbridge-api --tail 100 --follow | grep "transcript"
 
 # Check logs for LLM responses
-docker logs voxbridge-discord --tail 100 --follow | grep "🤖"
+docker logs voxbridge-api --tail 100 --follow | grep "🤖"
 ```
 
 ---

@@ -57,11 +57,11 @@ services:
               capabilities: [gpu]
 
   # VoxBridge Discord - Python Discord voice bridge (STT/TTS)
-  voxbridge-discord:
+  voxbridge-api:
     build:
       context: .
       dockerfile: Dockerfile.python
-    container_name: voxbridge-discord
+    container_name: voxbridge-api
     ports:
       - "4900:4900"
     volumes:
@@ -144,7 +144,7 @@ services:
     ports:
       - "${FRONTEND_PORT:-4903}:80"
     depends_on:
-      - voxbridge-discord
+      - voxbridge-api
     restart: unless-stopped
     networks:
       - bot-network

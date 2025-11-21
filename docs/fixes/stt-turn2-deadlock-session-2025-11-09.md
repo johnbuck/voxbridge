@@ -232,7 +232,7 @@ logger.info(f"🔍 [DEBUG] New container created: {self.av_container}, streams={
 
 ## Deployment Status
 
-- **Backend**: `voxbridge-discord` rebuilt and deployed (19:37 UTC)
+- **Backend**: `voxbridge-api` rebuilt and deployed (19:37 UTC)
 - **Frontend**: No changes in latest deployment
 - **Status**: User reports "no good" - Turn 2 still deadlocks
 

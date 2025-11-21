@@ -283,8 +283,8 @@ docker compose up -d voxbridge-frontend
 **Backend**:
 ```bash
 # Update .env with new parameters
-docker compose build voxbridge-discord whisperx
-docker compose up -d voxbridge-discord whisperx
+docker compose build voxbridge-api whisperx
+docker compose up -d voxbridge-api whisperx
 ```
 
 ---
@@ -336,7 +336,7 @@ MIN_SPEECH_DURATION_MS=400            # Was 500
 ### Monitor logs:
 ```bash
 # Check energy levels
-docker logs voxbridge-discord | grep "energy:"
+docker logs voxbridge-api | grep "energy:"
 
 # Check ducking activation
 docker logs voxbridge-frontend --tail 100 | grep "Ducking"

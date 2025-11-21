@@ -538,10 +538,10 @@ Add comment (no env vars needed since it's per-agent config):
 
 ```bash
 # 1. Run database migration
-docker exec voxbridge-discord alembic upgrade head
+docker exec voxbridge-api alembic upgrade head
 
 # 2. Rebuild containers
-docker compose build voxbridge-discord voxbridge-frontend
+docker compose build voxbridge-api voxbridge-frontend
 
 # 3. Deploy updated containers
 docker compose up -d
@@ -567,7 +567,7 @@ curl http://localhost:4900/health
 
 3. **Check logs**:
    ```bash
-   docker logs voxbridge-discord --tail 100 | grep "Filtered"
+   docker logs voxbridge-api --tail 100 | grep "Filtered"
    # Should see: "🔧 Filtered 2 actions from TTS text (session=..., 20 chars removed)"
    ```
 
@@ -643,13 +643,13 @@ If issues arise:
 2. **Code rollback**: Revert commit and redeploy:
    ```bash
    git revert HEAD
-   docker compose build voxbridge-discord voxbridge-frontend
+   docker compose build voxbridge-api voxbridge-frontend
    docker compose up -d
    ```
 
 3. **Database rollback**: Downgrade migration:
    ```bash
-   docker exec voxbridge-discord alembic downgrade -1
+   docker exec voxbridge-api alembic downgrade -1
    ```
 
 ---

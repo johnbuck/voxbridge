@@ -405,14 +405,14 @@ $ docker compose ps
 NAME                 STATUS                   PORTS
 voxbridge-postgres   Up 29 hours (healthy)    0.0.0.0:5432->5432/tcp
 voxbridge-whisperx   Up 26 hours (healthy)    0.0.0.0:4901-4902->4901-4902/tcp
-voxbridge-discord    Up (healthy)             0.0.0.0:4900->4900/tcp
+voxbridge-api    Up (healthy)             0.0.0.0:4900->4900/tcp
 voxbridge-frontend   Up (healthy)             0.0.0.0:4903->80/tcp
 ```
 
 ### Chatterbox Integration
 
 ```bash
-$ docker logs voxbridge-discord --tail 50 | grep -i chatterbox
+$ docker logs voxbridge-api --tail 50 | grep -i chatterbox
 HTTP Request: GET http://chatterbox-tts:4123/health "HTTP/1.1 200 OK"
 HTTP Request: GET http://chatterbox-tts:4123/info "HTTP/1.1 200 OK"
 ```

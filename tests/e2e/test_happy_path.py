@@ -65,7 +65,7 @@ async def test_complete_voice_interaction_flow(latency_tracker):
     CHANNEL_ID = "1429982041348378776"
     GUILD_ID = "680488880935403563"
 
-    async with AsyncClient(base_url="http://voxbridge-discord:4900", timeout=60.0) as client:
+    async with AsyncClient(base_url="http://voxbridge-api:4900", timeout=60.0) as client:
         # Step 1: Join real Discord channel
         latency_tracker.start("join_channel")
 
@@ -168,7 +168,7 @@ async def test_streaming_response_with_tts_options_header():
     CHANNEL_ID = "1429982041348378776"
     GUILD_ID = "680488880935403563"
 
-    async with AsyncClient(base_url="http://voxbridge-discord:4900", timeout=60.0) as client:
+    async with AsyncClient(base_url="http://voxbridge-api:4900", timeout=60.0) as client:
         # Join channel
         print(f"\n🎤 Joining Discord channel...")
         response = await client.post(
@@ -236,7 +236,7 @@ async def test_health_status_during_operation():
     CHANNEL_ID = "1429982041348378776"
     GUILD_ID = "680488880935403563"
 
-    async with AsyncClient(base_url="http://voxbridge-discord:4900", timeout=30.0) as client:
+    async with AsyncClient(base_url="http://voxbridge-api:4900", timeout=30.0) as client:
         # 1. Health check before joining
         print(f"\n📊 Health check (before join)...")
         response = await client.get("/health")

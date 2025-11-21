@@ -320,7 +320,7 @@ DATABASE_URL=postgresql+asyncpg://voxbridge:voxbridge_dev_password@postgres:5432
 ### Startup
 ```bash
 # Already works - no changes to docker-compose.yml needed
-docker compose up -d voxbridge-discord
+docker compose up -d voxbridge-api
 
 # Verify endpoint is available
 curl http://localhost:4900/health
@@ -331,19 +331,19 @@ curl http://localhost:4900/health
 ### Log Patterns
 ```bash
 # WebSocket connections
-grep "🔌" docker logs voxbridge-discord
+grep "🔌" docker logs voxbridge-api
 
 # Audio processing
-grep "🎙️" docker logs voxbridge-discord
+grep "🎙️" docker logs voxbridge-api
 
 # Transcription
-grep -E "(partial|final)_transcript" docker logs voxbridge-discord
+grep -E "(partial|final)_transcript" docker logs voxbridge-api
 
 # LLM processing
-grep "🤖" docker logs voxbridge-discord
+grep "🤖" docker logs voxbridge-api
 
 # Latency tracking
-grep "⏱️ LATENCY" docker logs voxbridge-discord
+grep "⏱️ LATENCY" docker logs voxbridge-api
 ```
 
 ### Health Checks
@@ -355,7 +355,7 @@ curl http://localhost:4900/health
 curl http://localhost:4901/health
 
 # Database connection
-docker exec voxbridge-discord python -c "import asyncio; from src.database import check_db_connection; print(asyncio.run(check_db_connection()))"
+docker exec voxbridge-api python -c "import asyncio; from src.database import check_db_connection; print(asyncio.run(check_db_connection()))"
 ```
 
 ## 🐛 Known Issues & Limitations

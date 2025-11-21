@@ -326,7 +326,7 @@ async def _send_ai_response_complete(self, text: str):
 **Verify**:
 ```bash
 # Check backend logs
-docker logs voxbridge-discord --tail 50 | grep "Broadcast partial transcript"
+docker logs voxbridge-api --tail 50 | grep "Broadcast partial transcript"
 ```
 
 ---
@@ -346,7 +346,7 @@ docker logs voxbridge-discord --tail 50 | grep "Broadcast partial transcript"
 **Verify**:
 ```bash
 # Check backend logs
-docker logs voxbridge-discord --tail 50 | grep "Broadcast final transcript"
+docker logs voxbridge-api --tail 50 | grep "Broadcast final transcript"
 
 # Check database
 docker exec voxbridge-postgres psql -U voxbridge -d voxbridge -c "SELECT role, content FROM conversations ORDER BY timestamp DESC LIMIT 5;"
@@ -370,7 +370,7 @@ docker exec voxbridge-postgres psql -U voxbridge -d voxbridge -c "SELECT role, c
 **Verify**:
 ```bash
 # Check backend logs
-docker logs voxbridge-discord --tail 100 | grep "Broadcast AI chunk"
+docker logs voxbridge-api --tail 100 | grep "Broadcast AI chunk"
 ```
 
 ---
@@ -391,7 +391,7 @@ docker logs voxbridge-discord --tail 100 | grep "Broadcast AI chunk"
 **Verify**:
 ```bash
 # Check backend logs
-docker logs voxbridge-discord --tail 50 | grep "Broadcast AI response complete"
+docker logs voxbridge-api --tail 50 | grep "Broadcast AI response complete"
 
 # Check database
 docker exec voxbridge-postgres psql -U voxbridge -d voxbridge -c "SELECT role, content FROM conversations ORDER BY timestamp DESC LIMIT 5;"
@@ -414,7 +414,7 @@ docker exec voxbridge-postgres psql -U voxbridge -d voxbridge -c "SELECT role, c
 **Verify**:
 ```bash
 # Check backend logs
-docker logs voxbridge-discord --tail 50 | grep "Broadcast metrics"
+docker logs voxbridge-api --tail 50 | grep "Broadcast metrics"
 ```
 
 ---
@@ -457,7 +457,7 @@ docker exec voxbridge-postgres psql -U voxbridge -d voxbridge -c "SELECT role, L
 **Verify**:
 ```bash
 # Check broadcast count
-docker logs voxbridge-discord --tail 50 | grep "Broadcast.*to.*client"
+docker logs voxbridge-api --tail 50 | grep "Broadcast.*to.*client"
 ```
 
 ---
@@ -490,7 +490,7 @@ If issues arise after deployment:
 1. **Immediate Rollback** (< 5 minutes):
    ```bash
    git checkout HEAD~1 src/voice/webrtc_handler.py
-   docker compose restart voxbridge-discord
+   docker compose restart voxbridge-api
    ```
 
 2. **Disable Broadcasting** (temporary fix):
@@ -501,10 +501,10 @@ If issues arise after deployment:
 3. **Logs to Check**:
    ```bash
    # Check for broadcast errors
-   docker logs voxbridge-discord --tail 200 | grep -E "(broadcast|❌|⚠️)"
+   docker logs voxbridge-api --tail 200 | grep -E "(broadcast|❌|⚠️)"
 
    # Check WebSocket connection count
-   docker logs voxbridge-discord --tail 200 | grep "WebSocket.*client"
+   docker logs voxbridge-api --tail 200 | grep "WebSocket.*client"
    ```
 
 ---

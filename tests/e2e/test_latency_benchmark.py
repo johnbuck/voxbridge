@@ -21,7 +21,7 @@ from httpx import AsyncClient
 # Real Discord channel and guild
 CHANNEL_ID = "1429982041348378776"
 GUILD_ID = "680488880935403563"
-VOXBRIDGE_API_URL = "http://voxbridge-discord:4900"
+VOXBRIDGE_API_URL = "http://voxbridge-api:4900"
 
 
 class LogBasedLatencyTracker:
@@ -32,7 +32,7 @@ class LogBasedLatencyTracker:
     requiring latency-specific logging in production code.
     """
 
-    def __init__(self, container_name: str = "voxbridge-discord"):
+    def __init__(self, container_name: str = "voxbridge-api"):
         self.container_name = container_name
         self.log_buffer = []
         self.timestamps = {}

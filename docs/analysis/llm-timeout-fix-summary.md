@@ -261,14 +261,14 @@ git revert <commit-hash>
 
 # 3. Rebuild and restart
 docker compose down
-docker compose build voxbridge-discord
+docker compose build voxbridge-api
 docker compose up -d
 ```
 
 **Emergency hotfix** (no rebuild):
 ```bash
 # Edit files directly in container
-docker exec -it voxbridge-discord bash
+docker exec -it voxbridge-api bash
 
 # Restore old code (remove timeout wrappers)
 vim src/llm/openrouter.py

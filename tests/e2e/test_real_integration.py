@@ -21,8 +21,8 @@ REAL_DISCORD_CHANNEL_ID = "1429982041348378776"
 REAL_DISCORD_GUILD_ID = "680488880935403563"
 
 # VoxBridge API URL - use container name when running in Docker
-# Tests running in Docker can access voxbridge-discord container directly
-VOXBRIDGE_API_URL = "http://voxbridge-discord:4900"
+# Tests running in Docker can access voxbridge-api container directly
+VOXBRIDGE_API_URL = "http://voxbridge-api:4900"
 
 
 # ============================================================

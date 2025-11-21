@@ -45,7 +45,7 @@ You are a specialized end-to-end (E2E) test writing agent for the VoxBridge Disc
 - **Production readiness** - Can the system handle real usage?
 
 **VoxBridge Services:**
-- **voxbridge-discord** (port 4900) - Discord bot + FastAPI + WebSocket
+- **voxbridge-api** (port 4900) - Discord bot + FastAPI + WebSocket
 - **voxbridge-whisperx** (port 4901) - WhisperX STT server
 - **chatterbox-tts-api** (port 4123) - Chatterbox TTS server
 - **n8n** (external, optional) - AI agent for responses
@@ -417,7 +417,7 @@ async def test_full_pipeline():
     """Test full pipeline with all services.
 
     Prerequisites:
-        - VoxBridge Discord bot (docker compose up -d voxbridge-discord)
+        - VoxBridge Discord bot (docker compose up -d voxbridge-api)
         - WhisperX server (docker compose up -d whisperx)
         - Chatterbox TTS (running on localhost:4123)
         - Discord bot in voice channel on test server

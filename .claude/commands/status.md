@@ -66,7 +66,7 @@ Expected response from `/metrics`:
 Expected output from `docker compose ps`:
 ```
 NAME                     STATUS         PORTS
-voxbridge-discord        Up 2 hours     0.0.0.0:4900->4900/tcp
+voxbridge-api        Up 2 hours     0.0.0.0:4900->4900/tcp
 voxbridge-whisperx       Up 2 hours     0.0.0.0:4901->4901/tcp, 0.0.0.0:4902->4902/tcp
 voxbridge-frontend       Up 2 hours     0.0.0.0:4903->80/tcp
 ```
@@ -78,7 +78,7 @@ voxbridge-frontend       Up 2 hours     0.0.0.0:4903->80/tcp
 ## Troubleshooting
 
 **If health check fails:**
-1. Check Docker logs: `docker logs voxbridge-discord --tail 50`
+1. Check Docker logs: `docker logs voxbridge-api --tail 50`
 2. Verify Discord token: Check .env file
 3. Verify network: `docker network ls | grep bot-network`
 
@@ -88,6 +88,6 @@ voxbridge-frontend       Up 2 hours     0.0.0.0:4903->80/tcp
 3. Check n8n latency → n8n workflow may be slow
 
 **If containers are down:**
-1. Check logs: `docker logs voxbridge-discord --tail 100`
+1. Check logs: `docker logs voxbridge-api --tail 100`
 2. Restart: `docker compose restart`
 3. Rebuild if needed: See `/rebuild` command

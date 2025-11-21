@@ -38,7 +38,7 @@
 - ✅ PostgreSQL 15 service added to docker-compose.yml
 - ✅ postgres-data volume configured (bind mount to zexternal-volumes)
 - ✅ Health check configured
-- ✅ voxbridge-discord dependency on postgres service
+- ✅ voxbridge-api dependency on postgres service
 - ✅ DATABASE_URL environment variable
 
 #### Database Schema ✅

@@ -7,7 +7,7 @@ View real-time logs from the VoxBridge Discord bot container, filtered to remove
 Execute the following command to tail logs:
 
 ```bash
-docker logs voxbridge-discord --tail 100 --follow | grep -v "GET /health"
+docker logs voxbridge-api --tail 100 --follow | grep -v "GET /health"
 ```
 
 This will:
