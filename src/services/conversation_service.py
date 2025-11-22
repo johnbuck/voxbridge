@@ -34,6 +34,7 @@ from sqlalchemy.orm import selectinload
 from src.config.logging_config import get_logger
 from src.database.models import Agent, Session, Conversation
 from src.database.session import get_db_session
+from src.services.memory_service import MemoryService
 
 # Configure logging with emoji prefixes
 logger = get_logger(__name__)
@@ -138,6 +139,14 @@ class ConversationService:
         self._max_context = max_context_messages
         self._cleanup_task: Optional[asyncio.Task] = None
         self._running = False
+
+        # Initialize MemoryService (optional - gracefully degrade if initialization fails)
+        try:
+            self._memory_service = MemoryService()
+            logger.info("🧠 MemoryService integrated with ConversationService")
+        except Exception as e:
+            logger.warning(f"⚠️ MemoryService initialization failed, memory features disabled: {e}")
+            self._memory_service = None
 
         logger.info(
             f"🎤 ConversationService initialized: "
@@ -309,6 +318,28 @@ class ConversationService:
                         timestamp=cached.session.started_at
                     ))
 
+                # Add user memories (VoxBridge 2.0 Phase 2: Memory System)
+                if self._memory_service and cached.messages:
+                    # Get last user message as query for relevant memories
+                    last_user_msg = next((m for m in reversed(cached.messages) if m.role == "user"), None)
+                    if last_user_msg:
+                        try:
+                            memory_context = await self._memory_service.get_user_memory_context(
+                                user_id=cached.session.user_id,
+                                agent_id=cached.agent.id,
+                                query=last_user_msg.content,
+                                limit=5
+                            )
+                            if memory_context:
+                                messages.append(Message(
+                                    role="system",
+                                    content=memory_context,
+                                    timestamp=datetime.utcnow()
+                                ))
+                                logger.debug(f"🧠 Injected user memories into conversation context for session {session_id[:8]}")
+                        except Exception as e:
+                            logger.error(f"❌ Failed to retrieve memories for session {session_id[:8]}: {e}")
+
                 # Add conversation messages (convert from Conversation to Message)
                 # ✅ FIX: cached.messages are now in ASC order (oldest first)
                 # No need to reverse - just take last N messages directly
@@ -476,6 +507,10 @@ class ConversationService:
                     f"💬 Added {role} message to session {session_id[:8]}... "
                     f"(length={len(content)} chars)"
                 )
+
+                # Queue memory extraction after assistant responses (VoxBridge 2.0 Phase 2: Memory System)
+                if role == "assistant" and self._memory_service:
+                    asyncio.create_task(self._queue_memory_extraction(session_id, cached, content))
 
                 return message
 
@@ -659,6 +694,52 @@ class ConversationService:
         except Exception as e:
             logger.error(f"💥 Error loading session {session_id[:8]}... from DB: {e}")
             return None
+
+    async def _queue_memory_extraction(
+        self,
+        session_id: str,
+        cached: CachedContext,
+        ai_response: str
+    ) -> None:
+        """
+        Queue memory extraction for a conversation turn (VoxBridge 2.0 Phase 2: Memory System).
+
+        Args:
+            session_id: Session ID
+            cached: Cached context with messages
+            ai_response: The AI response just added
+
+        Note:
+            - Finds the most recent user message
+            - Queues extraction task (non-blocking)
+            - Gracefully degrades on errors
+        """
+        try:
+            # Find most recent user message
+            recent_user_msg = next(
+                (m for m in reversed(cached.messages) if m.role == "user"),
+                None
+            )
+
+            if not recent_user_msg:
+                logger.debug(f"🧠 No user message found for extraction (session {session_id[:8]})")
+                return
+
+            # Queue extraction task
+            task_id = await self._memory_service.queue_extraction(
+                user_id=cached.session.user_id,
+                agent_id=cached.agent.id,
+                user_message=recent_user_msg.content,
+                ai_response=ai_response
+            )
+
+            logger.info(
+                f"🧠 Queued memory extraction task {task_id} for session {session_id[:8]} "
+                f"(user_id={cached.session.user_id})"
+            )
+
+        except Exception as e:
+            logger.error(f"❌ Failed to queue memory extraction for session {session_id[:8]}: {e}")
 
     async def _cleanup_expired_cache(self) -> None:
         """

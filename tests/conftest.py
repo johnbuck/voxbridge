@@ -6,17 +6,25 @@ import asyncio
 import os
 from typing import AsyncGenerator
 from httpx import AsyncClient, ASGITransport
-from unittest.mock import AsyncMock, Mock, MagicMock
+from unittest.mock import AsyncMock, Mock, MagicMock, patch
 
 # Import the FastAPI app
 import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-# Import discord and voice_recv extension
-import discord
-from discord.ext import voice_recv
+# Mock Mem0 Memory class before importing modules that use it (VoxBridge 2.0 Phase 2)
+# This prevents MemoryService from trying to connect to PostgreSQL during test imports
+mock_mem0_memory = MagicMock()
+mock_mem0_memory.from_config.return_value = MagicMock()
+mock_mem0_memory.add.return_value = {"memories": []}
+mock_mem0_memory.search.return_value = []
 
-from src.discord_bot import app
+with patch('src.services.memory_service.Memory', mock_mem0_memory):
+    # Import discord and voice_recv extension
+    import discord
+    from discord.ext import voice_recv
+
+    from src.discord_bot import app
 
 # ============================================================
 # Event Loop Configuration

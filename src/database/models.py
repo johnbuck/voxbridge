@@ -96,6 +96,9 @@ class Agent(Base):
     # Voice Configuration
     max_utterance_time_ms = Column(Integer, nullable=True, default=120000)  # Max duration per speaking turn (ms)
 
+    # Memory System Configuration (Phase 1: Memory System)
+    memory_scope = Column(String(20), server_default='global')  # 'global' (shared across agents) or 'agent' (agent-specific)
+
     # Metadata
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(
@@ -250,3 +253,135 @@ class LLMProvider(Base):
 
     def __repr__(self):
         return f"<LLMProvider(id={self.id}, name='{self.name}', provider_type='{self.provider_type}')>"
+
+
+class User(Base):
+    """
+    User Model for Memory Personalization
+
+    Stores user identity and memory preferences.
+    Supports both Discord users (permanent IDs) and WebRTC users (token-based auth).
+
+    Phase 1: Memory System
+    - user_id: "discord_{snowflake}" or "webrtc_{random}"
+    - memory_extraction_enabled: Opt-in (GDPR-compliant)
+    - auth_token: For WebRTC users only (Discord uses snowflake IDs)
+    """
+
+    __tablename__ = "users"
+
+    # Primary key - UUID for global uniqueness
+    id = Column(UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()"))
+
+    # User Identity
+    user_id = Column(String(255), unique=True, nullable=False, index=True)  # Discord ID or WebRTC session
+    display_name = Column(String(255), nullable=True)
+
+    # Memory Configuration
+    embedding_provider = Column(String(50), server_default='azure')  # 'azure' or 'local'
+    memory_extraction_enabled = Column(Boolean, server_default=text('false'))  # Opt-in (GDPR)
+
+    # Authentication (WebRTC users only)
+    auth_token = Column(String(255), unique=True, nullable=True, index=True)  # JWT or random token
+    token_created_at = Column(DateTime(timezone=True), nullable=True)
+    last_login_at = Column(DateTime(timezone=True), nullable=True)
+
+    # Metadata
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    # Relationships
+    facts = relationship("UserFact", back_populates="user", cascade="all, delete-orphan")
+
+    def __repr__(self):
+        return f"<User(id={self.id}, user_id='{self.user_id}', display_name='{self.display_name}')>"
+
+
+class UserFact(Base):
+    """
+    User Fact Model (Metadata for Mem0 Memory System)
+
+    Stores relational metadata for facts in Mem0 vector database.
+    Complements vector storage with structured data for SQL queries.
+
+    Phase 1: Memory System
+    - user_id: Foreign key to users table
+    - agent_id: NULL = global fact, otherwise agent-specific
+    - vector_id: References Mem0 memory ID for sync
+    - validity_start/end: Temporal validity tracking
+    """
+
+    __tablename__ = "user_facts"
+
+    # Primary key - UUID for global uniqueness
+    id = Column(UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()"))
+
+    # Associations
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    agent_id = Column(UUID(as_uuid=True), ForeignKey("agents.id", ondelete="CASCADE"), nullable=True, index=True)  # NULL = global
+
+    # Fact Data
+    fact_key = Column(String(100), nullable=False)  # 'name', 'location', 'preferences', etc.
+    fact_value = Column(Text, nullable=False)       # Raw value
+    fact_text = Column(Text, nullable=False)        # Natural language fact
+    importance = Column(Float, server_default='0.5')  # 0.0-1.0 importance score
+
+    # Vector Store Sync
+    vector_id = Column(String(255), unique=True, nullable=False, index=True)  # Vector store memory ID (managed by Mem0)
+    embedding_provider = Column(String(50), nullable=False)  # Which embedder was used
+    embedding_model = Column(String(100), nullable=True)     # Model name (e.g., 'text-embedding-3-large')
+
+    # Temporal Validity
+    validity_start = Column(DateTime(timezone=True), server_default=func.now())
+    validity_end = Column(DateTime(timezone=True), nullable=True)  # NULL = still valid
+
+    # Metadata
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    # Relationships
+    user = relationship("User", back_populates="facts")
+    agent = relationship("Agent")
+
+    def __repr__(self):
+        return f"<UserFact(id={self.id}, user_id={self.user_id}, fact_key='{self.fact_key}')>"
+
+
+class ExtractionTask(Base):
+    """
+    Extraction Task Queue
+
+    Queue for background fact extraction from conversation turns.
+    Non-blocking design: Extraction happens after voice response is sent.
+
+    Phase 1: Memory System
+    - status: pending → processing → completed/failed
+    - attempts: Retry up to 3 times on failure
+    - error: Store error message for debugging
+    """
+
+    __tablename__ = "extraction_tasks"
+
+    # Primary key - UUID for global uniqueness
+    id = Column(UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()"))
+
+    # Task Data
+    user_id = Column(String(255), nullable=False)  # User identifier (not FK to allow orphaned tasks)
+    agent_id = Column(UUID(as_uuid=True), ForeignKey("agents.id", ondelete="CASCADE"), nullable=False)
+    user_message = Column(Text, nullable=False)
+    ai_response = Column(Text, nullable=False)
+
+    # Task Status
+    status = Column(String(20), server_default='pending', nullable=False)  # pending, processing, completed, failed
+    attempts = Column(Integer, server_default='0')
+    error = Column(Text, nullable=True)
+
+    # Metadata
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+
+    # Relationships
+    agent = relationship("Agent")
+
+    def __repr__(self):
+        return f"<ExtractionTask(id={self.id}, user_id='{self.user_id}', status='{self.status}', attempts={self.attempts})>"

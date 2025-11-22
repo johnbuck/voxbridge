@@ -1,0 +1,3126 @@
+# VoxBridge Memory System - Implementation Plan
+
+**Status**: FINAL / APPROVED
+**Last Updated**: 2025-11-21
+**Vector Database**: pgvectorscale (PostgreSQL extension)
+**Framework**: Mem0 (Apache 2.0, self-hosted)
+**Embeddings**: Azure AI text-embedding-3-large (3072 dimensions)
+**Fact Extraction**: Real-time with LLM relevance filtering
+**Caching**: Optional Redis layer (Phase 6 - Future Enhancement)
+**Frontend**: Full-stack memory viewer UI
+
+---
+
+## ✅ APPROVED ARCHITECTURE
+
+This document describes the **final approved architecture** for VoxBridge memory system.
+
+**Key Architectural Decisions**:
+- ✅ **Vector Database**: pgvectorscale (11x throughput, zero deployment complexity)
+- ✅ **Framework**: Mem0 (Apache 2.0, 26% accuracy improvement, self-hosted)
+- ✅ **Embeddings**: Configurable (Azure AI text-embedding-3-large OR local open-source models)
+- ✅ **Fact Extraction**: Real-time per-turn with LLM relevance filtering
+- ⏳ **Caching**: Redis (optional Phase 6 enhancement, not required for v1)
+- ✅ **Memory Scope**: Global by default, agent-specific option in agent settings
+
+---
+
+## ⚠️ DOCUMENT NAVIGATION WARNING ⚠️
+
+This document contains **deprecated code sections** from the original Qdrant-based design. **Follow this guide to avoid implementing deprecated code:**
+
+### ✅ IMPLEMENT THESE SECTIONS (Current Architecture):
+- **Lines 1-150**: Executive Summary, Quick Implementation, Mem0 Integration
+- **Lines 151-350**: Architecture Overview, Data Flow, Performance Benchmarks
+- **Lines 351-430**: PostgreSQL Extension Setup (pgvectorscale installation)
+- **Lines 780-900**: Database Schema (memory tables, embedding_providers table)
+- **Lines 965-1090**: Embedding Provider Configuration (Azure + Local)
+- **Lines 1090-1212**: Frontend UI Configuration (Settings Page)
+- **Lines 2251-2352**: Phase 6 - Redis Caching (optional enhancement)
+- **Lines 2659-2739**: Cost Analysis (Azure vs Local, with/without Redis)
+- **Lines 3012-3061**: Environment Variables (embedding provider selection)
+
+### 🚫 DO NOT IMPLEMENT (Deprecated - Historical Reference Only):
+- **Lines 431-680**: Custom VectorStoreProvider abstract class (Mem0 handles this)
+- **Lines 680-720**: Provider Factory pattern (Mem0 handles initialization)
+- **Lines 721-777**: Qdrant unit tests (use Mem0 test patterns instead)
+- **Lines 1215-1627**: Custom fact extraction logic (Mem0 dual-phase extraction)
+- **Lines 1674-2100**: Qdrant-specific Docker configuration (pgvectorscale is PostgreSQL extension)
+
+**If you see references to `QdrantProvider`, `VectorStoreProvider`, or custom extraction logic, check if it's in the DEPRECATED sections above.**
+
+---
+
+## 🚀 Quick Implementation Summary
+
+**What Changed from Original Plan:**
+1. **Qdrant → pgvectorscale**: Use PostgreSQL extension instead of separate container
+2. **Custom Extraction → Mem0**: Use battle-tested framework (90% less code, 26% better accuracy)
+3. **Embeddings**: Configurable provider (Azure AI OR local open-source models, user choice)
+4. **Always Extract → LLM Relevance Filter**: Only extract when data is actually relevant
+5. **Redis Caching**: Moved to Phase 6 (optional enhancement, not required for v1)
+
+**Mem0 Framework Integration (Configurable Embeddings):**
+
+```python
+from mem0 import Memory
+import os
+
+# Select embedding provider via environment variable
+embedding_provider = os.getenv("EMBEDDING_PROVIDER", "azure")  # "azure" or "local"
+
+# Azure AI Embeddings (3072 dimensions, $0.13 per 1M tokens)
+if embedding_provider == "azure":
+    embedder_config = {
+        "provider": "azure_openai",
+        "config": {
+            "model": "text-embedding-3-large",
+            "embedding_dims": 3072,
+            "azure_kwargs": {
+                "api_version": os.getenv("AZURE_EMBEDDING_API_VERSION", "2024-12-01-preview"),
+                "azure_deployment": os.getenv("AZURE_EMBEDDING_DEPLOYMENT", "text-embedding-3-large"),
+                "azure_endpoint": os.getenv("AZURE_EMBEDDING_ENDPOINT"),
+                "api_key": os.getenv("AZURE_EMBEDDING_API_KEY")
+            }
+        }
+    }
+# Local Open-Source Embeddings (768-1024 dimensions, free, runs in container)
+elif embedding_provider == "local":
+    embedder_config = {
+        "provider": "huggingface",
+        "config": {
+            "model": os.getenv("LOCAL_EMBEDDING_MODEL", "sentence-transformers/all-mpnet-base-v2"),
+            "embedding_dims": int(os.getenv("LOCAL_EMBEDDING_DIMS", "768"))
+        }
+    }
+
+# Mem0 Configuration
+config = {
+    "vector_store": {
+        "provider": "pgvector",
+        "config": {
+            "dbname": "voxbridge",
+            "host": "postgres",
+            "collection_name": "user_memories"
+        }
+    },
+    "llm": {
+        "provider": "openai",
+        "config": {
+            "model": "gpt-4o-mini",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key": os.getenv("OPENROUTER_API_KEY")
+        }
+    },
+    "embedder": embedder_config
+}
+
+memory = Memory.from_config(config)
+
+# Add facts with relevance filtering
+if await should_extract_facts(user_message, ai_response):
+    await memory.add(
+        user_id=user_id,
+        messages=[
+            {"role": "user", "content": user_message},
+            {"role": "assistant", "content": ai_response}
+        ],
+        metadata={"agent_id": str(agent_id)}
+    )
+
+# Search with context injection
+results = await memory.search(
+    query=user_message,
+    user_id=user_id,
+    agent_id=str(agent_id),
+    limit=5
+)
+```
+
+**Installation Steps:**
+1. Install pgvectorscale: `CREATE EXTENSION vectorscale CASCADE;` (Alembic migration)
+2. Install Mem0: `pip install mem0ai` (add to requirements-bot.txt)
+3. **Choose embedding provider**: Configure Azure AI OR local model in `.env`
+   - **Azure AI**: Set `EMBEDDING_PROVIDER=azure` + Azure credentials (costs $1/month)
+   - **Local**: Set `EMBEDDING_PROVIDER=local` + model name (free, runs in container)
+4. (Optional) Install Redis for caching: Add to docker-compose.yml (Phase 6)
+
+**Note**: Some code examples in this document still reference Qdrant/custom providers for historical context. Use the Mem0 integration pattern shown above for actual implementation.
+
+---
+
+## Executive Summary
+
+VoxBridge will implement a three-tier conversational memory system using **Mem0 framework** with **pgvectorscale**:
+
+1. **Short-Term Memory**: In-memory conversation cache (15-minute TTL, existing ConversationService)
+2. **Long-Term Memory**: Mem0 + pgvectorscale (user facts extracted from conversations, 3072-dimension embeddings)
+3. **Relational Metadata**: PostgreSQL (user preferences, fact metadata, temporal tracking)
+
+**Why Mem0?**
+- ✅ **Apache 2.0 License**: Fully open-source, self-hostable
+- ✅ **26% Accuracy Improvement**: Over custom extraction logic
+- ✅ **Dual-Phase Extraction**: Extract facts → Update existing facts (intelligent deduplication)
+- ✅ **90% Less Code**: Battle-tested framework vs custom implementation
+- ✅ **Automatic Deduplication**: Semantic similarity matching prevents duplicate facts
+- ✅ **Multi-Provider Support**: Works with Azure AI, OpenAI, local LLMs
+
+**Why pgvectorscale over Qdrant?**
+- ✅ **11x Better Throughput**: 471.57 QPS vs 41.47 QPS (99% recall)
+- ✅ **Zero Deployment Complexity**: PostgreSQL extension (no separate container)
+- ✅ **75% Less Memory**: ~2GB for 100K vectors vs ~8GB Qdrant
+- ✅ **ACID Transactions**: No data consistency issues (Qdrant requires eventual consistency)
+- ✅ **StreamingDiskANN**: Disk-based indexing scales to millions of vectors
+- ✅ **Proven at Scale**: Discord uses pgvector at billions of vectors
+
+**Expected Performance** (pgvectorscale benchmarks):
+- **Query Latency**: 31ms p50, 60ms p95, 74ms p99 at 99% recall
+- **Throughput**: 471.57 QPS at 99% recall (11x better than Qdrant)
+- **Scalability**: 10K → 100K → 1M+ vectors with consistent performance
+- **Resource Requirements**: ~2GB RAM for 100K vectors, ~12GB RAM for 1M vectors
+
+**Latency Trade-off Accepted**:
+- pgvectorscale p95: 60ms vs Qdrant p95: 37ms (23ms difference)
+- **Analysis**: 23ms = 1% of 2-second conversation turn, not user-perceptible
+- **Rationale**: 11x throughput + zero deployment complexity >> 23ms latency difference
+
+---
+
+## Table of Contents
+
+1. [Architecture Overview](#architecture-overview)
+2. [Technology Research Summary](#technology-research-summary)
+3. [Phase 1: pgvectorscale Infrastructure](#phase-1-pgvectorscale-infrastructure)
+4. [Phase 2: Mem0 Framework Integration](#phase-2-mem0-framework-integration)
+5. [Phase 3: LLM Relevance Filtering & Fact Extraction](#phase-3-llm-relevance-filtering--fact-extraction)
+6. [Phase 4: Memory Retrieval & Context Injection](#phase-4-memory-retrieval--context-injection)
+7. [Phase 5: Frontend Memory Viewer UI](#phase-5-frontend-memory-viewer-ui)
+8. [Phase 6: Redis Caching (Optional Enhancement)](#phase-6-redis-caching-optional-enhancement)
+9. [Database Schema](#database-schema)
+10. [Testing Strategy](#testing-strategy)
+11. [Monitoring & Metrics](#monitoring--metrics)
+12. [Migration Strategy](#migration-strategy)
+13. [Cost Analysis](#cost-analysis)
+
+---
+
+## Architecture Overview
+
+### System Diagram
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│             VoxBridge Memory System (Mem0 + pgvectorscale)          │
+└─────────────────────────────────────────────────────────────────────┘
+
+┌──────────────────┐      ┌──────────────────┐      ┌──────────────────┐
+│  Discord Voice   │      │  WebRTC Voice    │      │  Frontend UI     │
+│  (Discord Bot)   │      │  (Browser)       │      │  (Memory Viewer) │
+└────────┬─────────┘      └────────┬─────────┘      └────────┬─────────┘
+         │                         │                         │
+         └─────────────────────────┼─────────────────────────┘
+                                   │
+                    ┌──────────────▼──────────────┐
+                    │   ConversationService       │
+                    │   (Short-term cache)        │
+                    └──────────────┬──────────────┘
+                                   │
+         ┌─────────────────────────┼─────────────────────────┐
+         │                         │                         │
+         ▼                         ▼                         ▼
+┌─────────────────┐      ┌─────────────────┐      ┌─────────────────┐
+│  LLMService     │      │  Mem0 Memory    │      │ PostgreSQL 15   │
+│  (AI responses) │      │  (Framework)    │      │ (pgvectorscale) │
+└────────┬────────┘      └────────┬────────┘      └─────────┬───────┘
+         │                        │                         │
+         │              ┌─────────▼─────────┐               │
+         │              │  LLM Relevance    │               │
+         │              │  Filter           │               │
+         │              └─────────┬─────────┘               │
+         │                        │                         │
+         │              ┌─────────▼─────────┐               │
+         │              │  Azure AI         │               │
+         │              │  Embeddings       │               │
+         │              │  (3072-dim)       │               │
+         │              └─────────┬─────────┘               │
+         │                        │                         │
+         │                        ▼                         │
+         └───────────────────────────────────────────────────┘
+                                  │
+                        ┌─────────▼─────────┐
+                        │  pgvectorscale    │
+                        │  (Vector index)   │
+                        │  StreamingDiskANN │
+                        └───────────────────┘
+                                  │
+                    ┌─────────────▼──────────────┐
+                    │  [Phase 6] Redis Cache     │
+                    │  (Optional Enhancement)    │
+                    └────────────────────────────┘
+```
+
+### Data Flow
+
+**1. User sends message** (Discord or WebRTC):
+```
+User Message → ConversationService → Mem0.search()
+                      ↓                    ↓
+                 STTService          pgvectorscale
+                                (search similar facts)
+                                      ↓
+                                LLMService
+                            (context-injected prompt)
+                                      ↓
+                                 AI Response
+```
+
+**2. Real-time fact extraction with relevance filtering**:
+```
+Conversation Turn → LLM Relevance Filter
+                         ↓
+              "Is this data relevant to store?"
+                         ↓
+                    (if yes) → Mem0.add()
+                                  ↓
+                    Mem0 Extract & Update Logic
+                                  ↓
+              ┌───────────────────┴─────────────────┐
+              ▼                                     ▼
+    Azure AI Embeddings                    PostgreSQL
+    (direct API call)                      (metadata)
+              ↓                                     ↓
+         pgvectorscale ←──────────────────────────┘
+      (vector index + ACID)
+```
+
+**3. Memory-aware AI response with Mem0**:
+```
+User Query → Mem0.search(query, user_id, agent_id)
+                  ↓
+          Azure AI (embed query)
+                  ↓
+          pgvectorscale (search top-k facts)
+                  ↓
+          Mem0 formats context string
+                  ↓
+          LLMService (inject into system prompt)
+                  ↓
+          AI Response (memory-aware)
+```
+
+---
+
+## Technology Research Summary
+
+### Why pgvectorscale + Mem0?
+
+After comprehensive research comparing vector databases (**pgvector**, **pgvectorscale**, **Qdrant**, **Milvus**, **Weaviate**, **Chroma**, **LanceDB**) and memory frameworks (**Mem0**, **Letta**, **OpenMemory**, **LangChain Memory**, **custom**), we selected **pgvectorscale + Mem0** for the following reasons:
+
+#### Performance Benchmarks (99% Recall)
+
+| Metric | pgvector HNSW | **pgvectorscale** | Qdrant | Winner |
+|--------|---------------|-------------------|--------|--------|
+| **QPS** | ~50-100 | **471.57** | 41.47 | ✅ pgvectorscale (11x) |
+| **p50 Latency** | 20-50ms | 31ms | 31ms | ✅ Tie |
+| **p95 Latency** | 60-100ms | 60ms | 37ms | ⚠️ Qdrant (+23ms) |
+| **p99 Latency** | 100-200ms | 74ms | 39ms | ⚠️ Qdrant (+35ms) |
+| **Memory (100K)** | ~5GB | **~2GB** | ~8GB | ✅ pgvectorscale (75% less) |
+| **Memory (1M)** | ~50GB | **~12GB** | ~40GB | ✅ pgvectorscale (70% less) |
+| **Deployment** | PostgreSQL ext | **PostgreSQL ext** | +1 container | ✅ pgvectorscale (zero complexity) |
+| **ACID Transactions** | ✅ | ✅ | ❌ (eventual consistency) | ✅ pgvectorscale |
+
+**Key Insights**:
+- **pgvectorscale wins decisively**: 11x throughput, 75% less memory, zero deployment complexity
+- **Latency trade-off is acceptable**: 23ms p95 difference = 1% of conversation time (not user-perceptible)
+- **ACID transactions eliminate data consistency issues**: No PostgreSQL ↔ Qdrant synchronization bugs
+- **Proven at scale**: Discord uses pgvector at billions of vectors
+
+#### Why pgvectorscale over Qdrant?
+
+**Advantages of pgvectorscale**:
+1. ✅ **11x Better Throughput**: 471.57 QPS vs 41.47 QPS (99% recall)
+2. ✅ **Zero Deployment Complexity**: PostgreSQL extension (no separate container)
+3. ✅ **75% Less Memory**: ~2GB for 100K vectors vs ~8GB Qdrant
+4. ✅ **ACID Transactions**: Eliminates data consistency issues (PostgreSQL ↔ Qdrant sync)
+5. ✅ **StreamingDiskANN**: Disk-based indexing scales to millions of vectors
+6. ✅ **Proven at Scale**: Discord uses pgvector at billions of vectors
+7. ✅ **Lower TCO**: $0 infrastructure cost (uses existing PostgreSQL)
+
+**Trade-offs Accepted**:
+- ⚠️ **Higher p95 Latency**: 60ms vs 37ms Qdrant (+23ms)
+- ⚠️ **Higher p99 Latency**: 74ms vs 39ms Qdrant (+35ms)
+
+**Rationale**: 23ms latency difference = **1% of 2-second conversation turn** (not user-perceptible). The 11x throughput advantage, zero deployment complexity, and ACID transactions far outweigh the minor latency cost.
+
+#### Why Mem0 Framework?
+
+**Mem0 vs Custom Implementation**:
+- ✅ **Apache 2.0 License**: Fully open-source, self-hostable
+- ✅ **26% Accuracy Improvement**: Over custom extraction logic (benchmarked)
+- ✅ **90% Less Code**: Battle-tested framework vs custom implementation
+- ✅ **Automatic Deduplication**: Semantic similarity matching prevents duplicate facts
+- ✅ **Dual-Phase Extraction**: Extract facts → Update existing facts (intelligent merge)
+- ✅ **Multi-Provider Support**: Works with Azure AI, OpenAI, local LLMs
+- ✅ **Active Development**: 24K+ GitHub stars, strong community
+
+**Mem0 vs Alternatives** (Letta, OpenMemory, LangChain Memory):
+- Letta: More complex (agent-focused), not purely memory-focused
+- OpenMemory: Less mature, smaller community
+- LangChain Memory: Good but requires full LangChain stack (VoxBridge uses OpenRouter/local LLMs)
+
+**Conclusion**: Mem0 provides best-in-class memory extraction with minimal code overhead.
+
+---
+
+## Phase 1: pgvectorscale Infrastructure
+
+### PostgreSQL Extension Setup
+
+#### Tasks
+
+1. **Install pgvectorscale Extension**
+
+pgvectorscale is a PostgreSQL extension, so no additional Docker containers needed. Install directly in existing PostgreSQL:
+
+**File**: `alembic/versions/012_install_pgvectorscale.py`
+
+```python
+"""
+Install pgvectorscale extension for vector search.
+"""
+from alembic import op
+
+revision = '012'
+down_revision = '011'
+
+def upgrade():
+    # Enable pgvector extension (prerequisite)
+    op.execute('CREATE EXTENSION IF NOT EXISTS vector;')
+
+    # Enable pgvectorscale extension
+    op.execute('CREATE EXTENSION IF NOT EXISTS vectorscale CASCADE;')
+
+    print("✅ Installed pgvector and pgvectorscale extensions")
+
+def downgrade():
+    op.execute('DROP EXTENSION IF EXISTS vectorscale CASCADE;')
+    op.execute('DROP EXTENSION IF EXISTS vector CASCADE;')
+```
+
+**Run migration**:
+```bash
+docker exec voxbridge-api alembic upgrade head
+```
+
+2. **Update PostgreSQL Docker Image (if needed)**
+
+pgvectorscale requires PostgreSQL 12+. VoxBridge already uses PostgreSQL 15, so no changes needed.
+
+**Current `docker-compose.yml`** (no changes required):
+```yaml
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: voxbridge-postgres
+    # ... existing configuration
+```
+
+**Note**: pgvectorscale is installed as a PostgreSQL extension, not a separate service. Zero additional infrastructure.
+
+3. **Create Vector Table with pgvectorscale**
+
+**File**: `alembic/versions/013_create_memory_vectors.py`
+
+```python
+"""
+Create vector table for user facts with pgvectorscale index.
+"""
+from alembic import op
+import sqlalchemy as sa
+from sqlalchemy.dialects.postgresql import UUID
+
+revision = '013'
+down_revision = '012'
+
+def upgrade():
+    # Note: Mem0 manages vector table creation automatically
+    # This migration is a placeholder for manual table creation if needed
+    pass
+
+def downgrade():
+    # Note: Mem0 manages vector tables
+    # Manual cleanup only if you created tables outside Mem0
+    pass
+```
+
+**Run migration**:
+```bash
+docker exec voxbridge-api alembic upgrade head
+```
+
+---
+
+## 🚫 DEPRECATED SECTION - DO NOT IMPLEMENT 🚫
+
+The following sections describe **custom vector provider patterns** that are **NO LONGER USED**. Mem0 handles all vector operations internally. **These sections are preserved for historical reference only.**
+
+---
+
+### ~~2. Abstract Interface~~ (DEPRECATED)
+
+**Note**: This abstract class is **DEPRECATED**. Mem0 manages vector operations via its `config["vector_store"]` parameter. Do not implement this interface.
+
+### ~~3. Qdrant Provider Implementation~~ (DEPRECATED)
+
+**Note**: This Qdrant provider is **DEPRECATED**. Use Mem0's built-in pgvector support instead. This code is preserved for historical reference only.
+
+**File**: `src/memory/providers/qdrant_provider.py` (DO NOT CREATE)
+
+```python
+"""
+Qdrant vector database provider implementation.
+"""
+import asyncio
+from typing import List, Dict, Optional
+from qdrant_client import QdrantClient
+from qdrant_client.models import (
+    Distance, VectorParams, PointStruct,
+    Filter, FieldCondition, MatchValue, Range
+)
+from src.memory.providers.base import VectorStoreProvider
+from src.config import logger
+
+class QdrantProvider(VectorStoreProvider):
+    """Qdrant vector database provider."""
+
+    def __init__(self, host: str = "qdrant", port: int = 6333, api_key: Optional[str] = None):
+        """
+        Initialize Qdrant client.
+
+        Args:
+            host: Qdrant host (default: "qdrant" for Docker network)
+            port: Qdrant port (default: 6333)
+            api_key: Optional API key for authentication
+        """
+        self.client = QdrantClient(
+            host=host,
+            port=port,
+            api_key=api_key,
+            timeout=30
+        )
+        logger.info(f"🔗 Initialized Qdrant provider: {host}:{port}")
+
+    async def create_collection(
+        self,
+        collection_name: str,
+        vector_size: int,
+        distance: str = "cosine"
+    ) -> None:
+        """Create Qdrant collection."""
+        distance_map = {
+            "cosine": Distance.COSINE,
+            "euclidean": Distance.EUCLID,
+            "dot": Distance.DOT
+        }
+
+        # Check if collection exists
+        collections = self.client.get_collections().collections
+        if collection_name in [c.name for c in collections]:
+            logger.info(f"✅ Collection '{collection_name}' already exists")
+            return
+
+        # Create collection
+        self.client.create_collection(
+            collection_name=collection_name,
+            vectors_config=VectorParams(
+                size=vector_size,
+                distance=distance_map.get(distance, Distance.COSINE)
+            )
+        )
+        logger.info(f"✅ Created Qdrant collection: {collection_name} (size={vector_size}, distance={distance})")
+
+    async def index_embedding(
+        self,
+        collection_name: str,
+        id: str,
+        embedding: List[float],
+        metadata: Dict
+    ) -> None:
+        """Index single embedding."""
+        point = PointStruct(
+            id=id,
+            vector=embedding,
+            payload=metadata
+        )
+
+        self.client.upsert(
+            collection_name=collection_name,
+            points=[point]
+        )
+        logger.debug(f"📝 Indexed embedding: {id} in {collection_name}")
+
+    async def batch_index_embeddings(
+        self,
+        collection_name: str,
+        embeddings: List[Dict]
+    ) -> None:
+        """Batch index embeddings (more efficient)."""
+        points = [
+            PointStruct(
+                id=emb["id"],
+                vector=emb["embedding"],
+                payload=emb["metadata"]
+            )
+            for emb in embeddings
+        ]
+
+        self.client.upsert(
+            collection_name=collection_name,
+            points=points
+        )
+        logger.info(f"📝 Batch indexed {len(embeddings)} embeddings in {collection_name}")
+
+    async def search_similar(
+        self,
+        collection_name: str,
+        query_embedding: List[float],
+        filters: Optional[Dict] = None,
+        limit: int = 10,
+        score_threshold: float = 0.7
+    ) -> List[Dict]:
+        """Search similar vectors with optional metadata filters."""
+        # Build Qdrant filter from dict
+        qdrant_filter = None
+        if filters:
+            conditions = []
+            for key, value in filters.items():
+                if value is None:
+                    # Skip None values (used for optional agent_id)
+                    continue
+                conditions.append(
+                    FieldCondition(
+                        key=key,
+                        match=MatchValue(value=value)
+                    )
+                )
+            if conditions:
+                qdrant_filter = Filter(must=conditions)
+
+        # Search
+        results = self.client.search(
+            collection_name=collection_name,
+            query_vector=query_embedding,
+            query_filter=qdrant_filter,
+            limit=limit,
+            score_threshold=score_threshold
+        )
+
+        # Format results
+        formatted = [
+            {
+                "id": str(result.id),
+                "score": result.score,
+                "metadata": result.payload
+            }
+            for result in results
+        ]
+
+        logger.debug(f"🔍 Found {len(formatted)} similar vectors in {collection_name}")
+        return formatted
+
+    async def delete_embedding(self, collection_name: str, id: str) -> None:
+        """Delete embedding by ID."""
+        self.client.delete(
+            collection_name=collection_name,
+            points_selector=[id]
+        )
+        logger.debug(f"🗑️ Deleted embedding: {id} from {collection_name}")
+
+    async def update_metadata(
+        self,
+        collection_name: str,
+        id: str,
+        metadata: Dict
+    ) -> None:
+        """Update metadata without re-embedding."""
+        self.client.set_payload(
+            collection_name=collection_name,
+            payload=metadata,
+            points=[id]
+        )
+        logger.debug(f"📝 Updated metadata: {id} in {collection_name}")
+
+    async def health_check(self) -> bool:
+        """Check Qdrant health."""
+        try:
+            self.client.get_collections()
+            return True
+        except Exception as e:
+            logger.error(f"❌ Qdrant health check failed: {e}")
+            return False
+```
+
+### ~~4. Provider Factory~~ (DEPRECATED)
+
+**Note**: This factory pattern is **DEPRECATED**. Mem0 handles vector store initialization internally via `config["vector_store"]`. See "Mem0 Integration" section for correct implementation.
+
+### ~~5. Testing~~ (DEPRECATED)
+
+**Note**: These Qdrant-specific tests are **DEPRECATED**. Use Mem0 test patterns instead (see Mem0 documentation for testing examples).
+
+**File**: `tests/unit/memory/test_qdrant_provider.py` (DO NOT CREATE)
+
+```python
+"""
+Unit tests for QdrantProvider.
+"""
+import pytest
+from unittest.mock import Mock, AsyncMock, patch
+from src.memory.providers.qdrant_provider import QdrantProvider
+
+@pytest.fixture
+def mock_qdrant_client():
+    """Mock Qdrant client."""
+    with patch("src.memory.providers.qdrant_provider.QdrantClient") as mock:
+        yield mock
+
+@pytest.mark.asyncio
+async def test_create_collection(mock_qdrant_client):
+    """Test collection creation."""
+    provider = QdrantProvider()
+    await provider.create_collection("test_collection", vector_size=3072)
+
+    mock_qdrant_client.return_value.create_collection.assert_called_once()
+
+@pytest.mark.asyncio
+async def test_index_embedding(mock_qdrant_client):
+    """Test single embedding indexing."""
+    provider = QdrantProvider()
+    embedding = [0.1] * 3072
+    metadata = {"fact_text": "User likes pizza", "importance": 0.9}
+
+    await provider.index_embedding("test_collection", "fact-123", embedding, metadata)
+
+    mock_qdrant_client.return_value.upsert.assert_called_once()
+
+@pytest.mark.asyncio
+async def test_search_similar(mock_qdrant_client):
+    """Test similarity search."""
+    provider = QdrantProvider()
+    query_embedding = [0.1] * 3072
+
+    # Mock search results
+    mock_result = Mock()
+    mock_result.id = "fact-123"
+    mock_result.score = 0.95
+    mock_result.payload = {"fact_text": "User likes pizza"}
+    mock_qdrant_client.return_value.search.return_value = [mock_result]
+
+    results = await provider.search_similar("test_collection", query_embedding, limit=5)
+
+    assert len(results) == 1
+    assert results[0]["id"] == "fact-123"
+    assert results[0]["score"] == 0.95
+```
+
+---
+
+## ✅ END OF DEPRECATED SECTION - RESUME IMPLEMENTATION ✅
+
+The sections below describe the **current approved architecture** using Mem0 + pgvectorscale.
+
+---
+
+### Database Schema & Alembic Migration
+
+#### PostgreSQL Schema
+
+**File**: `alembic/versions/014_add_memory_tables.py`
+
+```python
+"""
+Add memory system tables (users, user_facts, embedding_preferences).
+"""
+from alembic import op
+import sqlalchemy as sa
+from sqlalchemy.dialects.postgresql import UUID, JSONB
+
+revision = '014'
+down_revision = '013'
+
+def upgrade():
+    # Users table (for memory personalization)
+    op.create_table(
+        'users',
+        sa.Column('id', UUID(as_uuid=True), primary_key=True, server_default=sa.text('gen_random_uuid()')),
+        sa.Column('user_id', sa.String(255), unique=True, nullable=False),  # Discord ID or WebRTC session
+        sa.Column('display_name', sa.String(255)),
+        sa.Column('embedding_provider', sa.String(50), server_default='azure'),  # 'azure' or 'local'
+        sa.Column('memory_extraction_enabled', sa.Boolean, server_default='true'),
+        sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.func.now()),
+        sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.func.now(), onupdate=sa.func.now())
+    )
+    op.create_index('idx_users_user_id', 'users', ['user_id'])
+
+    # User facts table (metadata for Mem0 memory system)
+    op.create_table(
+        'user_facts',
+        sa.Column('id', UUID(as_uuid=True), primary_key=True, server_default=sa.text('gen_random_uuid()')),
+        sa.Column('user_id', UUID(as_uuid=True), sa.ForeignKey('users.id', ondelete='CASCADE'), nullable=False),
+        sa.Column('agent_id', UUID(as_uuid=True), sa.ForeignKey('agents.id', ondelete='CASCADE'), nullable=True),  # NULL = global
+        sa.Column('fact_key', sa.String(100), nullable=False),  # 'name', 'location', 'preferences', etc.
+        sa.Column('fact_value', sa.Text, nullable=False),       # Raw value
+        sa.Column('fact_text', sa.Text, nullable=False),        # Natural language fact
+        sa.Column('importance', sa.Float, server_default='0.5'),  # 0.0-1.0 importance score
+        sa.Column('vector_id', sa.String(255), unique=True, nullable=False),  # Vector store point ID (managed by Mem0)
+        sa.Column('embedding_provider', sa.String(50), nullable=False),  # Which embedder was used
+        sa.Column('embedding_model', sa.String(100)),           # Model name (e.g., 'text-embedding-3-large')
+        sa.Column('validity_start', sa.DateTime(timezone=True), server_default=sa.func.now()),
+        sa.Column('validity_end', sa.DateTime(timezone=True), nullable=True),  # NULL = still valid
+        sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.func.now()),
+        sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.func.now(), onupdate=sa.func.now()),
+        sa.UniqueConstraint('user_id', 'fact_key', 'agent_id', name='uq_user_fact_key_agent')
+    )
+    op.create_index('idx_user_facts_user_id', 'user_facts', ['user_id'])
+    op.create_index('idx_user_facts_agent_id', 'user_facts', ['agent_id'])
+    op.create_index('idx_user_facts_validity', 'user_facts', ['validity_start', 'validity_end'])
+    op.create_index('idx_user_facts_vector_id', 'user_facts', ['vector_id'])
+
+def downgrade():
+    op.drop_table('user_facts')
+    op.drop_table('users')
+```
+
+#### SQLAlchemy Models
+
+**File**: `src/database/models.py` (add to existing file)
+
+```python
+# ... existing imports
+
+class User(Base):
+    """User model for memory personalization."""
+    __tablename__ = "users"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()"))
+    user_id = Column(String(255), unique=True, nullable=False)  # Discord ID or WebRTC session
+    display_name = Column(String(255))
+    embedding_provider = Column(String(50), server_default='azure')  # 'azure' or 'local'
+    memory_extraction_enabled = Column(Boolean, server_default=text('true'))
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    # Relationships
+    facts = relationship("UserFact", back_populates="user", cascade="all, delete-orphan")
+
+class UserFact(Base):
+    """User fact model (metadata for Mem0 memory system)."""
+    __tablename__ = "user_facts"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()"))
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    agent_id = Column(UUID(as_uuid=True), ForeignKey("agents.id", ondelete="CASCADE"), nullable=True)
+    fact_key = Column(String(100), nullable=False)
+    fact_value = Column(Text, nullable=False)
+    fact_text = Column(Text, nullable=False)
+    importance = Column(Float, server_default='0.5')
+    vector_id = Column(String(255), unique=True, nullable=False)  # Vector store point ID (managed by Mem0)
+    embedding_provider = Column(String(50), nullable=False)
+    embedding_model = Column(String(100))
+    validity_start = Column(DateTime(timezone=True), server_default=func.now())
+    validity_end = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    # Relationships
+    user = relationship("User", back_populates="facts")
+    agent = relationship("Agent")
+
+    __table_args__ = (
+        UniqueConstraint('user_id', 'fact_key', 'agent_id', name='uq_user_fact_key_agent'),
+    )
+```
+
+#### ~~Qdrant Collection Initialization~~ (DEPRECATED)
+
+**Note**: This section is **DEPRECATED**. Mem0 automatically creates and manages vector collections. No manual initialization required.
+
+**File**: ~~`src/database/seed.py`~~ (DO NOT CREATE THIS CODE)
+
+```python
+# DEPRECATED - Mem0 handles collection initialization
+# This code is preserved for historical reference only
+# ... existing imports
+from src.memory.providers.factory import get_provider
+
+async def init_qdrant_collections():
+    """Initialize Qdrant collections for memory system."""
+    provider = get_provider()
+
+    # Create user_facts collection (3072 dimensions for Azure AI)
+    await provider.create_collection(
+        collection_name="user_facts",
+        vector_size=3072,
+        distance="cosine"
+    )
+
+    logger.info("✅ Qdrant collections initialized")
+
+# Add to main() function
+async def main():
+    # ... existing code
+
+    # Initialize Qdrant
+    await init_qdrant_collections()
+```
+
+---
+
+## Phase 2: Mem0 Framework Integration
+
+### Mem0 Installation & Configuration
+
+**Install Mem0**:
+```bash
+# Add to requirements-bot.txt
+mem0ai>=0.1.0
+sentence-transformers>=2.2.0  # For local embeddings (optional)
+
+# Install
+docker exec voxbridge-api pip install mem0ai
+```
+
+### Embedding Provider Configuration
+
+VoxBridge supports **two embedding providers** - choose based on your requirements:
+
+#### Option 1: Azure AI Embeddings (Recommended for Production)
+
+**Pros**:
+- ✅ **State-of-the-art quality**: text-embedding-3-large (3072 dimensions)
+- ✅ **Fast API response**: ~50ms latency
+- ✅ **Scalable**: No local GPU/CPU overhead
+- ✅ **Latest models**: Always up-to-date
+
+**Cons**:
+- ❌ **Cost**: $0.13 per 1M tokens (~$1/month for 30K conversations)
+- ❌ **Internet required**: Cannot work offline
+- ❌ **Azure account needed**: Requires Azure subscription
+
+**Configuration**:
+```bash
+# .env
+EMBEDDING_PROVIDER=azure
+AZURE_EMBEDDING_API_KEY=your_azure_key
+AZURE_EMBEDDING_ENDPOINT=https://your-resource.openai.azure.com
+AZURE_EMBEDDING_DEPLOYMENT=text-embedding-3-large
+AZURE_EMBEDDING_API_VERSION=2024-12-01-preview
+AZURE_EMBEDDING_DIMS=3072
+```
+
+**When to use**: Production deployments, best quality, willing to pay $1/month
+
+---
+
+#### Option 2: Local Open-Source Embeddings (Free, Self-Hosted)
+
+**Pros**:
+- ✅ **Free**: No API costs ($0/month)
+- ✅ **Privacy**: Data never leaves your server
+- ✅ **Offline**: Works without internet
+- ✅ **No external dependencies**: Fully self-contained
+
+**Cons**:
+- ❌ **Lower quality**: 768-1024 dims vs 3072 dims Azure
+- ❌ **Slower**: ~200-500ms CPU inference (vs 50ms Azure API)
+- ❌ **Resource intensive**: Uses CPU/RAM in voxbridge-api container
+- ❌ **Model management**: Must download models (~400MB each)
+
+**Recommended Models**:
+
+| Model | Dimensions | Quality | Speed | Size |
+|-------|------------|---------|-------|------|
+| `sentence-transformers/all-mpnet-base-v2` | 768 | Good | Fast | 420MB |
+| `sentence-transformers/all-MiniLM-L6-v2` | 384 | Fair | Very Fast | 80MB |
+| `BAAI/bge-large-en-v1.5` | 1024 | Better | Moderate | 1.34GB |
+| `thenlper/gte-large` | 1024 | Better | Moderate | 670MB |
+
+**Configuration**:
+```bash
+# .env
+EMBEDDING_PROVIDER=local
+LOCAL_EMBEDDING_MODEL=sentence-transformers/all-mpnet-base-v2
+LOCAL_EMBEDDING_DIMS=768
+```
+
+**When to use**: Development, cost-sensitive, privacy-focused, offline deployments
+
+---
+
+### Embedding Provider Comparison
+
+| Metric | Azure AI | Local (all-mpnet) |
+|--------|----------|-------------------|
+| **Cost** | $1/month | $0/month |
+| **Quality** | Excellent (3072d) | Good (768d) |
+| **Latency** | 50ms | 200-500ms |
+| **Privacy** | Data sent to Azure | Fully private |
+| **Setup** | Azure account required | pip install only |
+| **Scalability** | Unlimited | Limited by CPU |
+
+**Recommendation**: Start with **Azure AI** for best quality, switch to **local** if cost or privacy is a concern.
+
+---
+
+### Switching Embedding Providers
+
+**⚠️ Important**: Switching providers requires re-indexing all memories (incompatible dimensions).
+
+**Migration Script** (if switching providers):
+
+```python
+# scripts/migrate_embeddings.py
+async def migrate_embedding_provider(old_provider: str, new_provider: str):
+    """
+    Migrate from one embedding provider to another.
+
+    WARNING: This re-generates ALL embeddings (can take time + API costs).
+    """
+    from src.services.memory_service import MemoryService
+
+    # 1. Get all memories from old collection
+    old_memories = await db.execute("SELECT * FROM memories")
+
+    # 2. Drop old vector index (old dimensions)
+    await db.execute("DROP INDEX IF EXISTS memories_embedding_idx")
+
+    # 3. Update embedding provider in .env
+    os.environ["EMBEDDING_PROVIDER"] = new_provider
+
+    # 4. Re-initialize MemoryService with new provider
+    memory_service = MemoryService()
+
+    # 5. Re-generate embeddings for all memories
+    for mem in old_memories:
+        await memory_service.memory.add(
+            user_id=mem.user_id,
+            messages=[{"role": "user", "content": mem.text}],
+            metadata=mem.metadata
+        )
+
+    print(f"✅ Migrated {len(old_memories)} memories to {new_provider}")
+```
+
+**Note**: This is only needed if you switch providers AFTER accumulating memories. For new deployments, just set `EMBEDDING_PROVIDER` before first run.
+
+---
+
+### Frontend UI Configuration
+
+**Settings Page**: `/settings/embedding-providers`
+
+VoxBridge provides a comprehensive UI for managing embedding providers, inspired by Open WebUI's settings experience.
+
+#### UI Features
+
+**Provider Management**:
+- Grid layout showing all configured providers
+- Single active provider enforcement (only one can be active at a time)
+- Quick start examples (Azure AI, Local, OpenAI templates)
+- Stats card: Total providers, Active provider, Avg latency
+
+**Provider Cards**:
+```
+┌─────────────────────┐
+│ [☁️] Azure AI       │
+│ [✓ Active]          │
+│                     │
+│ Deployment:         │
+│ text-embedding-3... │
+│                     │
+│ Dimensions: 3072    │
+│ Avg: 234ms          │
+│ P95: 289ms          │
+│                     │
+│ [Test] [Edit] [Del] │
+└─────────────────────┘
+```
+
+**Supported Providers** (Predefined Only):
+1. **Azure OpenAI** - Enterprise, 3072 dimensions
+2. **Local HuggingFace** - Free, self-hosted, 768-1024 dimensions
+3. **OpenAI** - Hosted, 1536-3072 dimensions
+4. **Ollama** - Local, variable dimensions
+
+**Provider Form** (Conditional Fields):
+
+**Azure AI Fields**:
+- Provider Name (text)
+- Azure Endpoint (URL, validated: `*.openai.azure.com`)
+- API Key (password, encrypted at rest)
+- Deployment Name (text)
+- API Version (dropdown: 2024-12-01-preview, 2024-02-01, etc.)
+- Model (dropdown: text-embedding-3-large, text-embedding-3-small)
+- Dimensions (auto-populated: 3072 or 1536)
+
+**Local HuggingFace Fields**:
+- Provider Name (text)
+- Model (dropdown: all-mpnet-base-v2, bge-large-en-v1.5, etc.)
+- Dimensions (dropdown: 384, 768, 1024, 1536)
+- Device (dropdown: Auto, CPU, CUDA)
+
+**Test Connection**:
+- Generates sample embedding ("Hello, world")
+- Validates dimensions match configuration
+- Measures latency (ms)
+- Displays result: "✓ Connection successful! Dimensions: 3072, Latency: 234ms"
+
+**Latency Metrics**:
+- Tracks last 100 embedding requests per provider
+- Calculates avg, p95, p99 latency
+- Displays in provider card
+- Updates in real-time
+
+**Security**:
+- API keys encrypted at rest (Fernet encryption)
+- API keys never exposed in GET requests
+- API keys masked in UI (password field)
+- Option to update provider without changing API key (null = keep existing)
+
+**Single Active Provider**:
+- Only one provider can be active at a time (enforced at DB level)
+- Activating a provider automatically deactivates others
+- Delete prevented if it's the only provider
+- Switching providers shows migration warning
+
+#### Backend API
+
+**Endpoints**:
+```
+GET    /api/settings/embedding-providers      # List all providers
+POST   /api/settings/embedding-providers      # Create new (auto-activates)
+PUT    /api/settings/embedding-providers/{id} # Update provider
+DELETE /api/settings/embedding-providers/{id} # Delete provider
+POST   /api/settings/embedding-providers/{id}/test    # Test connection
+POST   /api/settings/embedding-providers/{id}/activate # Switch active
+```
+
+**Database Schema**:
+```sql
+CREATE TABLE embedding_providers (
+    id UUID PRIMARY KEY,
+    name VARCHAR(255) NOT NULL,
+    provider_type VARCHAR(50) NOT NULL, -- 'azure_openai', 'huggingface', 'openai', 'ollama'
+    is_active BOOLEAN DEFAULT TRUE,
+    dimensions INTEGER NOT NULL,
+
+    -- Encrypted config (JSON)
+    encrypted_config TEXT NOT NULL,
+
+    -- Latency metrics
+    avg_latency_ms FLOAT,
+    p95_latency_ms FLOAT,
+    p99_latency_ms FLOAT,
+    total_requests INTEGER DEFAULT 0,
+
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW(),
+
+    CONSTRAINT single_active CHECK (
+        NOT is_active OR (SELECT COUNT(*) FROM embedding_providers WHERE is_active = TRUE) = 1
+    )
+);
+```
+
+**Integration with Memory System**:
+- MemoryService queries active provider on initialization
+- Builds Mem0 configuration dynamically based on active provider
+- Switching providers: New embeddings use new provider, old embeddings remain
+- Optional: Re-index all memories with new provider (background job)
+
+---
+
+### Original Plan: Hybrid Embedding Service (SUPERSEDED BY MEM0)
+
+**Note**: The sections below describe the original custom embedding service plan. **Mem0 handles all embedding logic internally** - you only need to configure it as shown in the Quick Implementation Summary above.
+
+For reference, here's the original embedding provider interface design (not needed with Mem0):
+
+**File**: `src/memory/embeddings/base.py`
+
+```python
+"""
+Embedding provider interface for hybrid embeddings.
+"""
+from abc import ABC, abstractmethod
+from typing import List
+
+class EmbeddingProvider(ABC):
+    """Abstract interface for embedding providers."""
+
+    @abstractmethod
+    async def embed(self, texts: List[str]) -> List[List[float]]:
+        """
+        Generate embeddings for texts.
+
+        Args:
+            texts: List of text strings to embed
+
+        Returns:
+            List of embedding vectors (each vector is a list of floats)
+        """
+        pass
+
+    @abstractmethod
+    def get_dimension(self) -> int:
+        """Get embedding dimension."""
+        pass
+
+    @abstractmethod
+    def get_model_name(self) -> str:
+        """Get model identifier."""
+        pass
+
+    @abstractmethod
+    async def health_check(self) -> bool:
+        """Check if embedding service is healthy."""
+        pass
+```
+
+### Azure AI Embedding Provider
+
+**File**: `src/memory/embeddings/azure_provider.py`
+
+```python
+"""
+Azure OpenAI embedding provider.
+"""
+import os
+from typing import List
+from openai import AsyncAzureOpenAI
+from src.memory.embeddings.base import EmbeddingProvider
+from src.config import logger
+
+class AzureEmbeddingProvider(EmbeddingProvider):
+    """Azure OpenAI text-embedding-3-large provider."""
+
+    def __init__(
+        self,
+        api_key: str = None,
+        endpoint: str = None,
+        deployment_name: str = "text-embedding-3-large",
+        dimensions: int = 3072
+    ):
+        """
+        Initialize Azure OpenAI client.
+
+        Args:
+            api_key: Azure OpenAI API key (default: from env AZURE_OPENAI_API_KEY)
+            endpoint: Azure endpoint (default: from env AZURE_OPENAI_ENDPOINT)
+            deployment_name: Model deployment name
+            dimensions: Embedding dimensions (default: 3072)
+        """
+        self.api_key = api_key or os.getenv("AZURE_OPENAI_API_KEY")
+        self.endpoint = endpoint or os.getenv("AZURE_OPENAI_ENDPOINT")
+        self.deployment_name = deployment_name
+        self.dimensions = dimensions
+
+        if not self.api_key or not self.endpoint:
+            raise ValueError("Azure OpenAI API key and endpoint required")
+
+        self.client = AsyncAzureOpenAI(
+            api_key=self.api_key,
+            azure_endpoint=self.endpoint,
+            api_version="2024-02-01"
+        )
+
+        logger.info(f"🔗 Initialized Azure embedding provider: {deployment_name} ({dimensions}D)")
+
+    async def embed(self, texts: List[str]) -> List[List[float]]:
+        """Generate embeddings using Azure OpenAI."""
+        if not texts:
+            return []
+
+        response = await self.client.embeddings.create(
+            model=self.deployment_name,
+            input=texts,
+            dimensions=self.dimensions
+        )
+
+        embeddings = [data.embedding for data in response.data]
+        logger.debug(f"📊 Generated {len(embeddings)} Azure embeddings")
+        return embeddings
+
+    def get_dimension(self) -> int:
+        return self.dimensions
+
+    def get_model_name(self) -> str:
+        return f"azure/{self.deployment_name}"
+
+    async def health_check(self) -> bool:
+        """Test Azure OpenAI connectivity."""
+        try:
+            await self.embed(["health check test"])
+            return True
+        except Exception as e:
+            logger.error(f"❌ Azure embedding health check failed: {e}")
+            return False
+```
+
+### Local Embedding Provider
+
+**File**: `src/memory/embeddings/local_provider.py`
+
+```python
+"""
+Local embedding provider using sentence-transformers.
+"""
+from typing import List
+from sentence_transformers import SentenceTransformer
+from src.memory.embeddings.base import EmbeddingProvider
+from src.config import logger
+
+class LocalEmbeddingProvider(EmbeddingProvider):
+    """Local sentence-transformers embedding provider."""
+
+    # Model configurations
+    MODELS = {
+        "all-MiniLM-L6-v2": {"dimensions": 384, "description": "Fast, lightweight (80MB)"},
+        "all-mpnet-base-v2": {"dimensions": 768, "description": "Balanced quality (420MB)"},
+        "bge-large-en-v1.5": {"dimensions": 1024, "description": "High quality (1.3GB)"},
+        "nomic-embed-text-v1.5": {"dimensions": 768, "description": "Long context (548MB)"}
+    }
+
+    def __init__(self, model_name: str = "all-mpnet-base-v2"):
+        """
+        Initialize local embedding model.
+
+        Args:
+            model_name: Model identifier (see MODELS dict)
+        """
+        if model_name not in self.MODELS:
+            raise ValueError(f"Unknown model: {model_name}. Available: {list(self.MODELS.keys())}")
+
+        self.model_name = model_name
+        self.model_config = self.MODELS[model_name]
+        self.model = SentenceTransformer(model_name)
+
+        logger.info(
+            f"🔗 Initialized local embedding provider: {model_name} "
+            f"({self.model_config['dimensions']}D, {self.model_config['description']})"
+        )
+
+    async def embed(self, texts: List[str]) -> List[List[float]]:
+        """Generate embeddings using local model."""
+        if not texts:
+            return []
+
+        # sentence-transformers encode is synchronous, but fast
+        embeddings = self.model.encode(texts, convert_to_numpy=True)
+        embeddings = [emb.tolist() for emb in embeddings]
+
+        logger.debug(f"📊 Generated {len(embeddings)} local embeddings")
+        return embeddings
+
+    def get_dimension(self) -> int:
+        return self.model_config["dimensions"]
+
+    def get_model_name(self) -> str:
+        return f"local/{self.model_name}"
+
+    async def health_check(self) -> bool:
+        """Test local model loading."""
+        try:
+            await self.embed(["health check test"])
+            return True
+        except Exception as e:
+            logger.error(f"❌ Local embedding health check failed: {e}")
+            return False
+```
+
+### Embedding Service
+
+**File**: `src/services/embedding_service.py`
+
+```python
+"""
+Embedding service with hybrid provider support.
+"""
+import os
+from typing import List, Optional
+from src.memory.embeddings.base import EmbeddingProvider
+from src.memory.embeddings.azure_provider import AzureEmbeddingProvider
+from src.memory.embeddings.local_provider import LocalEmbeddingProvider
+from src.config import logger
+
+class EmbeddingService:
+    """
+    Hybrid embedding service supporting Azure AI and local models.
+    """
+
+    def __init__(self):
+        """Initialize embedding providers."""
+        self.providers = {}
+
+        # Initialize Azure provider (if configured)
+        try:
+            self.providers["azure"] = AzureEmbeddingProvider()
+            logger.info("✅ Azure embedding provider available")
+        except ValueError as e:
+            logger.warning(f"⚠️ Azure embedding provider not configured: {e}")
+
+        # Initialize local provider (always available)
+        local_model = os.getenv("LOCAL_EMBEDDING_MODEL", "all-mpnet-base-v2")
+        self.providers["local"] = LocalEmbeddingProvider(model_name=local_model)
+        logger.info("✅ Local embedding provider available")
+
+        # Default provider
+        self.default_provider = os.getenv("DEFAULT_EMBEDDING_PROVIDER", "azure")
+        if self.default_provider not in self.providers:
+            logger.warning(f"⚠️ Default provider '{self.default_provider}' not available, using 'local'")
+            self.default_provider = "local"
+
+    async def embed(
+        self,
+        texts: List[str],
+        provider: Optional[str] = None
+    ) -> List[List[float]]:
+        """
+        Generate embeddings using specified or default provider.
+
+        Args:
+            texts: List of text strings to embed
+            provider: Provider name ('azure' or 'local', default: from config)
+
+        Returns:
+            List of embedding vectors
+        """
+        provider_name = provider or self.default_provider
+
+        if provider_name not in self.providers:
+            raise ValueError(f"Unknown provider: {provider_name}. Available: {list(self.providers.keys())}")
+
+        embedder = self.providers[provider_name]
+        embeddings = await embedder.embed(texts)
+
+        logger.debug(
+            f"📊 Generated {len(embeddings)} embeddings via {provider_name} "
+            f"({embedder.get_dimension()}D)"
+        )
+        return embeddings
+
+    def get_dimension(self, provider: Optional[str] = None) -> int:
+        """Get embedding dimension for provider."""
+        provider_name = provider or self.default_provider
+        return self.providers[provider_name].get_dimension()
+
+    def get_model_name(self, provider: Optional[str] = None) -> str:
+        """Get model identifier for provider."""
+        provider_name = provider or self.default_provider
+        return self.providers[provider_name].get_model_name()
+
+    def get_available_providers(self) -> List[str]:
+        """Get list of available providers."""
+        return list(self.providers.keys())
+
+    async def health_check_all(self) -> dict:
+        """Health check all providers."""
+        results = {}
+        for name, provider in self.providers.items():
+            results[name] = await provider.health_check()
+        return results
+```
+
+### Settings Page UI (Embedding Provider Selection)
+
+**File**: `frontend/src/pages/SettingsPage.tsx` (add new section)
+
+```typescript
+// Add to SettingsPage.tsx
+
+interface EmbeddingProvider {
+  name: string;
+  label: string;
+  description: string;
+  dimensions: number;
+  available: boolean;
+}
+
+const EmbeddingProviderSettings: React.FC = () => {
+  const [providers, setProviders] = useState<EmbeddingProvider[]>([]);
+  const [selectedProvider, setSelectedProvider] = useState<string>('azure');
+
+  useEffect(() => {
+    // Fetch available providers
+    fetch('/api/memory/embedding-providers')
+      .then(res => res.json())
+      .then(data => {
+        setProviders(data.providers);
+        setSelectedProvider(data.default_provider);
+      });
+  }, []);
+
+  const handleSave = async () => {
+    await fetch('/api/memory/embedding-provider', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider: selectedProvider })
+    });
+  };
+
+  return (
+    <div className="p-6 bg-gray-800 rounded-lg">
+      <h3 className="text-xl font-bold mb-4">Embedding Provider</h3>
+      <p className="text-gray-400 mb-4">
+        Choose which model to use for generating conversation embeddings.
+      </p>
+
+      <div className="space-y-3">
+        {providers.map(provider => (
+          <label
+            key={provider.name}
+            className={`flex items-start p-4 border rounded cursor-pointer ${
+              selectedProvider === provider.name
+                ? 'border-blue-500 bg-blue-900/20'
+                : 'border-gray-600 hover:border-gray-500'
+            } ${!provider.available ? 'opacity-50 cursor-not-allowed' : ''}`}
+          >
+            <input
+              type="radio"
+              name="embedding-provider"
+              value={provider.name}
+              checked={selectedProvider === provider.name}
+              onChange={() => setSelectedProvider(provider.name)}
+              disabled={!provider.available}
+              className="mt-1 mr-3"
+            />
+            <div className="flex-1">
+              <div className="font-semibold">{provider.label}</div>
+              <div className="text-sm text-gray-400">{provider.description}</div>
+              <div className="text-xs text-gray-500 mt-1">
+                {provider.dimensions} dimensions
+                {!provider.available && ' (not configured)'}
+              </div>
+            </div>
+          </label>
+        ))}
+      </div>
+
+      <button
+        onClick={handleSave}
+        className="mt-4 px-6 py-2 bg-blue-600 hover:bg-blue-700 rounded"
+      >
+        Save Settings
+      </button>
+    </div>
+  );
+};
+```
+
+### API Endpoints
+
+**File**: `src/api/server.py` (add new routes)
+
+```python
+# Embedding provider management
+@app.get("/api/memory/embedding-providers")
+async def get_embedding_providers():
+    """Get available embedding providers."""
+    embedding_service = get_embedding_service()
+
+    providers = [
+        {
+            "name": "azure",
+            "label": "Azure OpenAI (text-embedding-3-large)",
+            "description": "Highest quality embeddings, 3072 dimensions, ~$1/month for 30K conversations",
+            "dimensions": 3072,
+            "available": "azure" in embedding_service.get_available_providers()
+        },
+        {
+            "name": "local",
+            "label": "Local Model (all-mpnet-base-v2)",
+            "description": "Self-hosted, free, 768 dimensions, good quality",
+            "dimensions": 768,
+            "available": True
+        }
+    ]
+
+    return {
+        "providers": providers,
+        "default_provider": embedding_service.default_provider
+    }
+
+@app.put("/api/memory/embedding-provider")
+async def update_embedding_provider(request: dict):
+    """Update default embedding provider."""
+    provider = request.get("provider")
+
+    # Update user preference (store in database)
+    # ... implementation
+
+    return {"success": True, "provider": provider}
+```
+
+---
+
+## Phase 3: LLM Relevance Filtering & Fact Extraction
+
+### LLM Relevance Filtering + Mem0 Extraction
+
+**Key Change**: Add relevance filter before extraction to reduce noise.
+
+**File**: `src/services/memory_service.py`
+
+```python
+async def should_extract_facts(self, user_message: str, ai_response: str) -> bool:
+    """
+    LLM relevance filter: Only extract if conversation contains relevant user facts.
+
+    This reduces unnecessary LLM calls and prevents storing trivial information.
+    """
+    relevance_prompt = f"""
+    Analyze this conversation and determine if it contains NEW, IMPORTANT facts about the user
+    that should be stored in long-term memory.
+
+    Answer with ONLY "yes" or "no".
+
+    Conversation:
+    USER: {user_message}
+    AI: {ai_response}
+
+    Should we extract and store facts from this conversation?
+    """
+
+    response = await self.llm_service.generate(
+        messages=[{"role": "system", "content": relevance_prompt}],
+        model_override="gpt-4o-mini"  # Fast, cheap
+    )
+
+    return response.strip().lower() == "yes"
+```
+
+---
+
+## 🚫 DEPRECATED SECTION - DO NOT IMPLEMENT 🚫
+
+The following section describes **custom fact extraction logic** that is **NO LONGER USED**. Mem0 handles all fact extraction, deduplication, and updates automatically via its built-in dual-phase extraction. **This section is preserved for historical reference only.**
+
+---
+
+### ~~Original Plan: LLM Fact Watcher~~ (DEPRECATED - SUPERSEDED BY MEM0)
+
+**Note**: The custom fact extraction logic below is **replaced by Mem0's built-in extraction**. Mem0 handles fact extraction, deduplication, and updates automatically. Use the `memory.add()` pattern shown in Quick Implementation Summary.
+
+**DO NOT IMPLEMENT THIS CODE**. For reference only, here's the original custom extraction plan:
+
+**Core Concept**: During each conversation turn, extract user facts in real-time using a separate LLM call (parallel to AI response generation).
+
+**File**: `src/services/memory_service.py` (Part 1: Fact Extraction)
+
+```python
+"""
+Memory service for user fact extraction and retrieval.
+"""
+import json
+from typing import List, Dict, Optional
+from uuid import UUID, uuid4
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, and_, or_
+from src.database.models import User, UserFact
+from src.services.llm_service import LLMService
+from src.services.embedding_service import EmbeddingService
+from src.memory.providers.factory import get_provider
+from src.config import logger
+
+# Fact extraction prompt
+FACT_EXTRACTION_PROMPT = """
+You are a fact extraction assistant. Analyze the following conversation and extract key facts about the USER (not the AI).
+
+Extract facts in these categories:
+- **Personal Info**: Name, age, location, occupation, relationships
+- **Preferences**: Likes, dislikes, hobbies, interests
+- **Context**: Current projects, goals, problems they're solving
+- **Technical**: Skills, tools they use, technical preferences
+
+Output ONLY a valid JSON array of facts (no markdown, no explanation):
+[
+  {{
+    "fact_key": "name",
+    "fact_value": "Alice",
+    "fact_text": "User's name is Alice",
+    "importance": 0.9
+  }},
+  {{
+    "fact_key": "preference_food",
+    "fact_value": "pizza",
+    "fact_text": "User likes pizza",
+    "importance": 0.6
+  }}
+]
+
+Rules:
+- Extract 0-5 facts per conversation (only extract NEW, important information)
+- fact_key: snake_case category identifier
+- fact_value: raw extracted value
+- fact_text: natural language sentence
+- importance: 0.0-1.0 (how important/persistent is this fact?)
+- Do NOT extract facts about the AI assistant
+- Do NOT repeat facts from earlier in the conversation
+- Return empty array [] if no new facts found
+
+Conversation:
+{conversation_text}
+"""
+
+class MemoryService:
+    """Service for user memory management."""
+
+    def __init__(
+        self,
+        db: AsyncSession,
+        llm_service: LLMService,
+        embedding_service: EmbeddingService
+    ):
+        self.db = db
+        self.llm_service = llm_service
+        self.embedding_service = embedding_service
+        self.vector_store = get_provider()
+        logger.info("✅ MemoryService initialized")
+
+    async def extract_facts_from_turn(
+        self,
+        user_id: str,
+        agent_id: UUID,
+        user_message: str,
+        ai_response: str
+    ) -> List[UserFact]:
+        """
+        Extract facts from a single conversation turn (user message + AI response).
+
+        This runs in REAL-TIME during conversation (parallel to response streaming).
+
+        Args:
+            user_id: User identifier (Discord ID or WebRTC session)
+            agent_id: Agent UUID
+            user_message: User's message
+            ai_response: AI's response
+
+        Returns:
+            List of extracted UserFact objects
+        """
+        # Format conversation for fact extraction
+        conversation_text = f"USER: {user_message}\nAI: {ai_response}"
+
+        # Call LLM for fact extraction (use fast model for low latency)
+        extraction_response = await self.llm_service.generate(
+            messages=[
+                {"role": "system", "content": FACT_EXTRACTION_PROMPT.format(conversation_text=conversation_text)}
+            ],
+            model_override="gpt-4o-mini"  # Fast, cheap model for extraction
+        )
+
+        # Parse JSON response
+        try:
+            facts_data = json.loads(extraction_response)
+            if not isinstance(facts_data, list):
+                logger.warning("⚠️ Fact extraction returned non-list, skipping")
+                return []
+        except json.JSONDecodeError as e:
+            logger.error(f"❌ Failed to parse fact extraction JSON: {e}")
+            return []
+
+        # Get or create user
+        user = await self._get_or_create_user(user_id)
+
+        # Process extracted facts
+        extracted_facts = []
+        for fact_data in facts_data:
+            fact = await self._upsert_fact(
+                user=user,
+                agent_id=agent_id,
+                fact_key=fact_data["fact_key"],
+                fact_value=fact_data["fact_value"],
+                fact_text=fact_data["fact_text"],
+                importance=fact_data.get("importance", 0.5)
+            )
+            extracted_facts.append(fact)
+
+        logger.info(
+            f"📝 Extracted {len(extracted_facts)} facts for user {user_id} "
+            f"(agent: {agent_id})"
+        )
+        return extracted_facts
+
+    async def _get_or_create_user(self, user_id: str) -> User:
+        """Get or create user by Discord ID / WebRTC session."""
+        result = await self.db.execute(
+            select(User).where(User.user_id == user_id)
+        )
+        user = result.scalar_one_or_none()
+
+        if not user:
+            user = User(user_id=user_id)
+            self.db.add(user)
+            await self.db.commit()
+            await self.db.refresh(user)
+            logger.info(f"✅ Created new user: {user_id}")
+
+        return user
+
+    async def _upsert_fact(
+        self,
+        user: User,
+        agent_id: UUID,
+        fact_key: str,
+        fact_value: str,
+        fact_text: str,
+        importance: float
+    ) -> UserFact:
+        """
+        Upsert a user fact (deduplication by fact_key + agent_id).
+
+        If fact already exists, update it and invalidate old version.
+        """
+        # Check for existing fact
+        result = await self.db.execute(
+            select(UserFact).where(
+                and_(
+                    UserFact.user_id == user.id,
+                    UserFact.fact_key == fact_key,
+                    or_(UserFact.agent_id == agent_id, UserFact.agent_id.is_(None)),
+                    UserFact.validity_end.is_(None)  # Currently valid
+                )
+            )
+        )
+        existing_fact = result.scalar_one_or_none()
+
+        # Generate embedding
+        embedding_provider = user.embedding_provider
+        embeddings = await self.embedding_service.embed([fact_text], provider=embedding_provider)
+        embedding = embeddings[0]
+
+        # Get embedding model name
+        embedding_model = self.embedding_service.get_model_name(embedding_provider)
+
+        if existing_fact and existing_fact.fact_value == fact_value:
+            # Fact unchanged, just update timestamp
+            logger.debug(f"ℹ️ Fact '{fact_key}' unchanged, skipping")
+            return existing_fact
+
+        if existing_fact:
+            # Fact changed, invalidate old version
+            existing_fact.validity_end = func.now()
+            await self.db.commit()
+            logger.info(f"🔄 Invalidated old fact: {fact_key}")
+
+        # Create new fact version
+        qdrant_id = str(uuid4())
+        new_fact = UserFact(
+            user_id=user.id,
+            agent_id=agent_id,
+            fact_key=fact_key,
+            fact_value=fact_value,
+            fact_text=fact_text,
+            importance=importance,
+            qdrant_id=qdrant_id,
+            embedding_provider=embedding_provider,
+            embedding_model=embedding_model
+        )
+
+        self.db.add(new_fact)
+        await self.db.commit()
+        await self.db.refresh(new_fact)
+
+        # Index in Qdrant
+        metadata = {
+            "user_id": str(user.id),
+            "agent_id": str(agent_id) if agent_id else None,
+            "fact_key": fact_key,
+            "fact_value": fact_value,
+            "fact_text": fact_text,
+            "importance": importance
+        }
+
+        await self.vector_store.index_embedding(
+            collection_name="user_facts",
+            id=qdrant_id,
+            embedding=embedding,
+            metadata=metadata
+        )
+
+        logger.info(f"✅ Indexed fact in Qdrant: {fact_key} (ID: {qdrant_id})")
+        return new_fact
+```
+
+### Integration with LLMService
+
+**File**: `src/services/llm_service.py` (modify existing)
+
+```python
+# Add to LLMService class
+
+async def generate_with_memory_extraction(
+    self,
+    session_id: UUID,
+    user_message: str,
+    agent_id: UUID,
+    user_id: str,
+    memory_service: 'MemoryService'  # type: ignore
+) -> AsyncGenerator[str, None]:
+    """
+    Generate AI response with parallel fact extraction.
+
+    This method:
+    1. Generates AI response (streaming)
+    2. Collects full response
+    3. Extracts facts in background (non-blocking)
+    """
+    # Generate response (existing logic)
+    full_response = ""
+    async for chunk in self.generate_stream(session_id, user_message, agent_id):
+        full_response += chunk
+        yield chunk  # Stream to user
+
+    # Extract facts in background (fire-and-forget)
+    asyncio.create_task(
+        memory_service.extract_facts_from_turn(
+            user_id=user_id,
+            agent_id=agent_id,
+            user_message=user_message,
+            ai_response=full_response
+        )
+    )
+
+    logger.debug(f"🧠 Queued fact extraction for user {user_id}")
+```
+
+### WebRTC & Discord Integration
+
+**File**: `src/voice/webrtc_handler.py` (modify existing)
+
+```python
+# Modify handle_final_transcript to extract facts
+
+async def handle_final_transcript(self, transcript: str):
+    """Handle final transcript with memory extraction."""
+    # ... existing code to get AI response
+
+    # Generate response with fact extraction
+    memory_service = get_memory_service()  # Singleton
+    full_response = ""
+
+    async for chunk in self.llm_service.generate_with_memory_extraction(
+        session_id=self.session_id,
+        user_message=transcript,
+        agent_id=self.agent_id,
+        user_id=self.user_id,  # WebRTC session ID or Discord user ID
+        memory_service=memory_service
+    ):
+        full_response += chunk
+        # ... existing streaming logic
+```
+
+**File**: `src/plugins/discord_plugin.py` (modify existing)
+
+```python
+# Similar modification for Discord voice handler
+```
+
+---
+
+## Phase 4: Memory Retrieval & Context Injection
+
+### Memory Context Retrieval
+
+**File**: `src/services/memory_service.py` (Part 2: Retrieval)
+
+```python
+# Add to MemoryService class
+
+async def get_user_memory_context(
+    self,
+    user_id: str,
+    query: str,
+    agent_id: UUID,
+    limit: int = 5,
+    score_threshold: float = 0.7
+) -> str:
+    """
+    Retrieve relevant user facts for LLM context injection.
+
+    Args:
+        user_id: User identifier
+        query: Current user query (for semantic search)
+        agent_id: Current agent UUID
+        limit: Maximum facts to retrieve
+        score_threshold: Minimum similarity score
+
+    Returns:
+        Formatted context string for LLM prompt
+    """
+    # Get user
+    user = await self._get_or_create_user(user_id)
+
+    # Generate query embedding
+    embedding_provider = user.embedding_provider
+    query_embeddings = await self.embedding_service.embed([query], provider=embedding_provider)
+    query_embedding = query_embeddings[0]
+
+    # Determine memory scope (global vs agent-specific)
+    agent = await self._get_agent(agent_id)
+    memory_scope = agent.memory_scope if hasattr(agent, 'memory_scope') else 'global'
+
+    # Build filters
+    filters = {"user_id": str(user.id)}
+
+    if memory_scope == 'agent_specific':
+        filters["agent_id"] = str(agent_id)
+    elif memory_scope == 'hybrid':
+        # Get both global and agent-specific facts (separate queries)
+        global_facts = await self._search_facts(
+            query_embedding, {"user_id": str(user.id), "agent_id": None}, limit=3
+        )
+        agent_facts = await self._search_facts(
+            query_embedding, {"user_id": str(user.id), "agent_id": str(agent_id)}, limit=2
+        )
+        facts = global_facts + agent_facts
+    else:  # global (default)
+        facts = await self._search_facts(query_embedding, filters, limit=limit, score_threshold=score_threshold)
+
+    # Format context
+    if not facts:
+        return ""
+
+    context_lines = ["## User Context (from memory):"]
+    for fact in facts:
+        importance_stars = "⭐" * min(3, int(fact["metadata"]["importance"] * 3))
+        context_lines.append(
+            f"- {fact['metadata']['fact_text']} {importance_stars}"
+        )
+
+    context = "\n".join(context_lines)
+    logger.debug(f"🧠 Retrieved {len(facts)} facts for user {user_id}")
+    return context
+
+async def _search_facts(
+    self,
+    query_embedding: List[float],
+    filters: Dict,
+    limit: int = 5,
+    score_threshold: float = 0.7
+) -> List[Dict]:
+    """Search Qdrant for similar facts."""
+    results = await self.vector_store.search_similar(
+        collection_name="user_facts",
+        query_embedding=query_embedding,
+        filters=filters,
+        limit=limit,
+        score_threshold=score_threshold
+    )
+    return results
+
+async def _get_agent(self, agent_id: UUID):
+    """Get agent by ID."""
+    result = await self.db.execute(
+        select(Agent).where(Agent.id == agent_id)
+    )
+    return result.scalar_one()
+```
+
+### LLM Context Injection
+
+**File**: `src/services/llm_service.py` (modify existing)
+
+```python
+# Modify generate_stream to inject memory context
+
+async def generate_stream(
+    self,
+    session_id: UUID,
+    user_message: str,
+    agent_id: UUID,
+    user_id: str = None
+) -> AsyncGenerator[str, None]:
+    """Generate streaming response with memory context."""
+    # Get agent
+    agent = await self._get_agent(agent_id)
+
+    # Get memory context (if user_id provided)
+    memory_context = ""
+    if user_id:
+        memory_service = get_memory_service()
+        memory_context = await memory_service.get_user_memory_context(
+            user_id=user_id,
+            query=user_message,
+            agent_id=agent_id
+        )
+
+    # Augment system prompt with memory
+    system_prompt = agent.system_prompt
+    if memory_context:
+        system_prompt = f"{agent.system_prompt}\n\n{memory_context}"
+
+    # Generate response (existing logic)
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_message}
+    ]
+
+    async for chunk in self.provider.generate_stream(messages):
+        yield chunk
+```
+
+---
+
+## Phase 5: Frontend Memory Viewer UI
+
+### Memory API Endpoints
+
+**File**: `src/api/server.py` (add memory routes)
+
+```python
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
+from uuid import UUID
+from typing import List, Optional
+
+memory_router = APIRouter(prefix="/api/memory", tags=["memory"])
+
+# Request/response models
+class FactCreateRequest(BaseModel):
+    fact_key: str
+    fact_value: str
+    fact_text: str
+    importance: float = 0.5
+    agent_id: Optional[UUID] = None
+
+class FactUpdateRequest(BaseModel):
+    fact_text: Optional[str] = None
+    importance: Optional[float] = None
+
+class FactResponse(BaseModel):
+    id: UUID
+    user_id: UUID
+    agent_id: Optional[UUID]
+    fact_key: str
+    fact_value: str
+    fact_text: str
+    importance: float
+    embedding_provider: str
+    validity_start: str
+    validity_end: Optional[str]
+    created_at: str
+
+@memory_router.get("/users/{user_id}/facts", response_model=List[FactResponse])
+async def get_user_facts(
+    user_id: str,
+    agent_id: Optional[UUID] = None,
+    db: AsyncSession = Depends(get_db)
+):
+    """Get all facts for a user, optionally filtered by agent."""
+    memory_service = get_memory_service()
+    user = await memory_service._get_or_create_user(user_id)
+
+    query = select(UserFact).where(
+        and_(
+            UserFact.user_id == user.id,
+            UserFact.validity_end.is_(None)  # Only current facts
+        )
+    )
+
+    if agent_id:
+        query = query.where(UserFact.agent_id == agent_id)
+
+    result = await db.execute(query.order_by(UserFact.importance.desc(), UserFact.created_at.desc()))
+    facts = result.scalars().all()
+
+    return [FactResponse.from_orm(fact) for fact in facts]
+
+@memory_router.post("/users/{user_id}/facts", response_model=FactResponse)
+async def create_user_fact(
+    user_id: str,
+    request: FactCreateRequest,
+    db: AsyncSession = Depends(get_db)
+):
+    """Manually create a user fact."""
+    memory_service = get_memory_service()
+    user = await memory_service._get_or_create_user(user_id)
+
+    fact = await memory_service._upsert_fact(
+        user=user,
+        agent_id=request.agent_id,
+        fact_key=request.fact_key,
+        fact_value=request.fact_value,
+        fact_text=request.fact_text,
+        importance=request.importance
+    )
+
+    return FactResponse.from_orm(fact)
+
+@memory_router.put("/facts/{fact_id}", response_model=FactResponse)
+async def update_fact(
+    fact_id: UUID,
+    request: FactUpdateRequest,
+    db: AsyncSession = Depends(get_db)
+):
+    """Update fact text or importance."""
+    result = await db.execute(
+        select(UserFact).where(UserFact.id == fact_id)
+    )
+    fact = result.scalar_one_or_none()
+
+    if not fact:
+        raise HTTPException(status_code=404, detail="Fact not found")
+
+    # Update fields
+    if request.fact_text:
+        fact.fact_text = request.fact_text
+        # Re-embed and update Qdrant
+        # ... implementation
+
+    if request.importance is not None:
+        fact.importance = request.importance
+        # Update Qdrant metadata
+        # ... implementation
+
+    await db.commit()
+    await db.refresh(fact)
+    return FactResponse.from_orm(fact)
+
+@memory_router.delete("/facts/{fact_id}")
+async def delete_fact(fact_id: UUID, db: AsyncSession = Depends(get_db)):
+    """Soft-delete a fact (set validity_end)."""
+    result = await db.execute(
+        select(UserFact).where(UserFact.id == fact_id)
+    )
+    fact = result.scalar_one_or_none()
+
+    if not fact:
+        raise HTTPException(status_code=404, detail="Fact not found")
+
+    # Soft delete
+    fact.validity_end = func.now()
+    await db.commit()
+
+    # Delete from Qdrant
+    memory_service = get_memory_service()
+    await memory_service.vector_store.delete_embedding("user_facts", fact.qdrant_id)
+
+    return {"success": True}
+
+@memory_router.get("/stats")
+async def get_memory_stats(db: AsyncSession = Depends(get_db)):
+    """Get memory statistics."""
+    # Total facts
+    total_facts = await db.execute(
+        select(func.count(UserFact.id)).where(UserFact.validity_end.is_(None))
+    )
+    total_facts_count = total_facts.scalar()
+
+    # Total users
+    total_users = await db.execute(select(func.count(User.id)))
+    total_users_count = total_users.scalar()
+
+    # Facts per user (average)
+    avg_facts = total_facts_count / max(total_users_count, 1)
+
+    return {
+        "total_facts": total_facts_count,
+        "total_users": total_users_count,
+        "avg_facts_per_user": round(avg_facts, 2)
+    }
+
+# Register router
+app.include_router(memory_router)
+```
+
+### Memory Viewer Page
+
+**File**: `frontend/src/pages/MemoryPage.tsx`
+
+```typescript
+import React, { useState, useEffect } from 'react';
+import { Trash2, Edit2, Plus, Filter, Search } from 'lucide-react';
+
+interface UserFact {
+  id: string;
+  user_id: string;
+  agent_id: string | null;
+  fact_key: string;
+  fact_value: string;
+  fact_text: string;
+  importance: number;
+  embedding_provider: string;
+  validity_start: string;
+  created_at: string;
+}
+
+interface MemoryStats {
+  total_facts: number;
+  total_users: number;
+  avg_facts_per_user: number;
+}
+
+const MemoryPage: React.FC = () => {
+  const [facts, setFacts] = useState<UserFact[]>([]);
+  const [stats, setStats] = useState<MemoryStats | null>(null);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [filterAgent, setFilterAgent] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    loadFacts();
+    loadStats();
+  }, [filterAgent]);
+
+  const loadFacts = async () => {
+    setLoading(true);
+    const params = new URLSearchParams();
+    if (filterAgent) params.append('agent_id', filterAgent);
+
+    const response = await fetch(`/api/memory/users/current/facts?${params}`);
+    const data = await response.json();
+    setFacts(data);
+    setLoading(false);
+  };
+
+  const loadStats = async () => {
+    const response = await fetch('/api/memory/stats');
+    const data = await response.json();
+    setStats(data);
+  };
+
+  const handleDelete = async (factId: string) => {
+    if (!confirm('Delete this fact?')) return;
+
+    await fetch(`/api/memory/facts/${factId}`, { method: 'DELETE' });
+    loadFacts();
+  };
+
+  const filteredFacts = facts.filter(fact =>
+    fact.fact_text.toLowerCase().includes(searchQuery.toLowerCase()) ||
+    fact.fact_key.toLowerCase().includes(searchQuery.toLowerCase())
+  );
+
+  return (
+    <div className="p-6">
+      <div className="mb-6">
+        <h1 className="text-3xl font-bold mb-2">Memory Viewer</h1>
+        <p className="text-gray-400">
+          View and manage user facts extracted from conversations
+        </p>
+      </div>
+
+      {/* Statistics Cards */}
+      {stats && (
+        <div className="grid grid-cols-3 gap-4 mb-6">
+          <div className="bg-gray-800 p-4 rounded-lg">
+            <div className="text-gray-400 text-sm">Total Facts</div>
+            <div className="text-2xl font-bold">{stats.total_facts}</div>
+          </div>
+          <div className="bg-gray-800 p-4 rounded-lg">
+            <div className="text-gray-400 text-sm">Total Users</div>
+            <div className="text-2xl font-bold">{stats.total_users}</div>
+          </div>
+          <div className="bg-gray-800 p-4 rounded-lg">
+            <div className="text-gray-400 text-sm">Avg Facts/User</div>
+            <div className="text-2xl font-bold">{stats.avg_facts_per_user}</div>
+          </div>
+        </div>
+      )}
+
+      {/* Search & Filter */}
+      <div className="flex gap-4 mb-6">
+        <div className="flex-1 relative">
+          <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400" size={20} />
+          <input
+            type="text"
+            placeholder="Search facts..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            className="w-full pl-10 pr-4 py-2 bg-gray-800 border border-gray-700 rounded-lg"
+          />
+        </div>
+        <button className="px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg flex items-center gap-2">
+          <Plus size={20} />
+          Add Fact
+        </button>
+      </div>
+
+      {/* Facts List */}
+      <div className="space-y-3">
+        {loading ? (
+          <div className="text-center py-12 text-gray-400">Loading facts...</div>
+        ) : filteredFacts.length === 0 ? (
+          <div className="text-center py-12 text-gray-400">
+            No facts found. Facts will be automatically extracted during conversations.
+          </div>
+        ) : (
+          filteredFacts.map(fact => (
+            <div key={fact.id} className="bg-gray-800 p-4 rounded-lg flex items-start justify-between">
+              <div className="flex-1">
+                <div className="flex items-center gap-3 mb-2">
+                  <span className="text-sm font-mono bg-gray-700 px-2 py-1 rounded">
+                    {fact.fact_key}
+                  </span>
+                  <div className="flex">
+                    {[...Array(3)].map((_, i) => (
+                      <span
+                        key={i}
+                        className={`text-yellow-500 ${
+                          i < Math.floor(fact.importance * 3) ? '' : 'opacity-30'
+                        }`}
+                      >
+                        ⭐
+                      </span>
+                    ))}
+                  </div>
+                  <span className="text-xs text-gray-500">
+                    {new Date(fact.created_at).toLocaleDateString()}
+                  </span>
+                </div>
+                <div className="text-lg mb-1">{fact.fact_text}</div>
+                <div className="text-sm text-gray-400">
+                  Value: <span className="text-gray-300">{fact.fact_value}</span>
+                  {' • '}
+                  Provider: <span className="text-gray-300">{fact.embedding_provider}</span>
+                  {fact.agent_id && (
+                    <>
+                      {' • '}
+                      Scope: <span className="text-blue-400">Agent-specific</span>
+                    </>
+                  )}
+                </div>
+              </div>
+
+              <div className="flex gap-2 ml-4">
+                <button className="p-2 hover:bg-gray-700 rounded">
+                  <Edit2 size={18} />
+                </button>
+                <button
+                  onClick={() => handleDelete(fact.id)}
+                  className="p-2 hover:bg-red-900/30 rounded text-red-400"
+                >
+                  <Trash2 size={18} />
+                </button>
+              </div>
+            </div>
+          ))
+        )}
+      </div>
+    </div>
+  );
+};
+
+export default MemoryPage;
+```
+
+### WebSocket Real-Time Updates
+
+**File**: `src/api/server.py` (add WebSocket events)
+
+```python
+# Add memory event broadcasting
+
+async def broadcast_fact_extracted(fact: UserFact):
+    """Broadcast new fact to connected clients."""
+    await websocket_manager.broadcast({
+        "type": "fact_extracted",
+        "data": {
+            "id": str(fact.id),
+            "user_id": str(fact.user_id),
+            "fact_text": fact.fact_text,
+            "importance": fact.importance
+        }
+    })
+```
+
+**File**: `frontend/src/pages/MemoryPage.tsx` (add WebSocket listener)
+
+```typescript
+// Add to MemoryPage component
+
+useEffect(() => {
+  const ws = new WebSocket('ws://localhost:4900/ws/events');
+
+  ws.onmessage = (event) => {
+    const message = JSON.parse(event.data);
+
+    if (message.type === 'fact_extracted') {
+      // Reload facts when new fact is extracted
+      loadFacts();
+    }
+  };
+
+  return () => ws.close();
+}, []);
+```
+
+---
+
+## Phase 6: Redis Caching (Optional Enhancement)
+
+### Overview
+
+Redis caching is an **optional Phase 6 enhancement** to improve performance by caching embeddings and search results. **Not required for v1 launch** - the system works without Redis, just with slightly higher latency on repeated queries.
+
+### Why Defer Redis to Phase 6?
+
+1. **Complexity**: Adds another infrastructure component
+2. **Operational Overhead**: Requires monitoring, backups, eviction policies
+3. **Diminishing Returns**: pgvectorscale is already fast (60ms p95 latency)
+4. **Unknown Usage Patterns**: Need production data to optimize cache hit rates
+
+**When to implement**: After v1 launch, if query latency metrics show >30% repeated queries.
+
+### Redis Caching Strategy
+
+#### Two-Level Cache
+
+**Level 1: Embedding Cache** (24-hour TTL)
+- **Key**: `embedding:{hash(user_id:query)}`
+- **Value**: 3072-dimension float array (JSON)
+- **Purpose**: Avoid redundant Azure AI API calls for repeated queries
+- **Expected Hit Rate**: 30-50% (same user asking similar questions)
+
+**Level 2: Search Results Cache** (1-hour TTL)
+- **Key**: `memories:{hash(user_id:query)}`
+- **Value**: List of top-5 memory results (JSON)
+- **Purpose**: Skip pgvectorscale search for exact duplicate queries
+- **Expected Hit Rate**: 10-20% (exact repeated questions)
+
+### Implementation Code (Phase 6)
+
+**File**: `src/services/memory_cache_service.py`
+
+```python
+import redis
+import hashlib
+import json
+from typing import List, Dict, Optional
+
+class MemoryCacheService:
+    """Redis caching for embeddings and memory search results."""
+
+    def __init__(self, redis_url: str = "redis://redis:6379"):
+        self.redis = redis.from_url(redis_url, decode_responses=False)
+        self.embedding_ttl = 86400  # 24 hours
+        self.results_ttl = 3600     # 1 hour
+
+    def _hash_key(self, user_id: str, query: str) -> str:
+        return hashlib.sha256(f"{user_id}:{query}".encode()).hexdigest()
+
+    async def get_cached_embedding(self, user_id: str, query: str) -> Optional[List[float]]:
+        key = f"embedding:{self._hash_key(user_id, query)}"
+        cached = self.redis.get(key)
+        return json.loads(cached) if cached else None
+
+    async def cache_embedding(self, user_id: str, query: str, embedding: List[float]):
+        key = f"embedding:{self._hash_key(user_id, query)}"
+        self.redis.setex(key, self.embedding_ttl, json.dumps(embedding))
+```
+
+### Docker Compose Configuration (Phase 6)
+
+```yaml
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: voxbridge-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    restart: unless-stopped
+    networks:
+      - bot-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    command: redis-server --maxmemory 2gb --maxmemory-policy allkeys-lru
+
+volumes:
+  redis-data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ../zexternal-volumes/voxbridge-redis-data
+```
+
+### Performance Impact Estimates
+
+| Metric | Without Redis | With Redis (50% hit rate) |
+|--------|---------------|---------------------------|
+| Avg Query Latency | 150ms | 90ms (40% improvement) |
+| Azure AI API Calls | 30K/month | 15K/month (50% reduction) |
+| Embedding Cost | ~$1/month | ~$0.50/month |
+
+**Conclusion**: Redis provides moderate performance gains. Implement only if production metrics show need.
+
+---
+
+## Database Schema
+
+### Complete PostgreSQL Schema
+
+```sql
+-- Users table
+CREATE TABLE users (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id VARCHAR(255) UNIQUE NOT NULL,          -- Discord ID or WebRTC session
+    display_name VARCHAR(255),
+    embedding_provider VARCHAR(50) DEFAULT 'azure', -- 'azure' or 'local'
+    memory_extraction_enabled BOOLEAN DEFAULT TRUE,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX idx_users_user_id ON users(user_id);
+
+-- User facts table (metadata for Qdrant embeddings)
+CREATE TABLE user_facts (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    agent_id UUID REFERENCES agents(id) ON DELETE CASCADE,  -- NULL = global
+    fact_key VARCHAR(100) NOT NULL,                         -- 'name', 'preference_food', etc.
+    fact_value TEXT NOT NULL,                               -- Raw value
+    fact_text TEXT NOT NULL,                                -- Natural language
+    importance FLOAT DEFAULT 0.5,                           -- 0.0-1.0
+    qdrant_id VARCHAR(255) UNIQUE NOT NULL,                 -- Qdrant point ID
+    embedding_provider VARCHAR(50) NOT NULL,                -- 'azure' or 'local'
+    embedding_model VARCHAR(100),                           -- Model name
+    validity_start TIMESTAMPTZ DEFAULT NOW(),
+    validity_end TIMESTAMPTZ,                               -- NULL = still valid
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE(user_id, fact_key, agent_id)
+);
+
+CREATE INDEX idx_user_facts_user_id ON user_facts(user_id);
+CREATE INDEX idx_user_facts_agent_id ON user_facts(agent_id);
+CREATE INDEX idx_user_facts_validity ON user_facts(validity_start, validity_end);
+CREATE INDEX idx_user_facts_qdrant_id ON user_facts(qdrant_id);
+
+-- Modify agents table (add memory_scope column)
+ALTER TABLE agents ADD COLUMN memory_scope VARCHAR(20) DEFAULT 'global';
+-- Values: 'global', 'agent_specific', 'hybrid'
+```
+
+### Qdrant Collections
+
+```python
+# user_facts collection
+{
+    "collection_name": "user_facts",
+    "vectors": {
+        "size": 3072,  # Azure AI text-embedding-3-large
+        "distance": "Cosine"
+    },
+    "payload_schema": {
+        "user_id": "keyword",      # User UUID
+        "agent_id": "keyword",     # Agent UUID (null for global)
+        "fact_key": "keyword",     # Fact category
+        "fact_value": "text",      # Raw value
+        "fact_text": "text",       # Natural language
+        "importance": "float"      # 0.0-1.0
+    }
+}
+```
+
+---
+
+## Testing Strategy
+
+### Unit Tests
+
+**File**: `tests/unit/memory/test_memory_service.py`
+
+```python
+"""
+Unit tests for MemoryService.
+"""
+import pytest
+from unittest.mock import AsyncMock, Mock, patch
+from src.services.memory_service import MemoryService
+
+@pytest.mark.asyncio
+async def test_extract_facts_from_turn():
+    """Test real-time fact extraction."""
+    memory_service = MemoryService(db=mock_db, llm_service=mock_llm, embedding_service=mock_embed)
+
+    # Mock LLM extraction response
+    mock_llm.generate.return_value = json.dumps([
+        {"fact_key": "name", "fact_value": "Alice", "fact_text": "User's name is Alice", "importance": 0.9}
+    ])
+
+    facts = await memory_service.extract_facts_from_turn(
+        user_id="discord_123",
+        agent_id=uuid4(),
+        user_message="Hi, I'm Alice",
+        ai_response="Nice to meet you Alice!"
+    )
+
+    assert len(facts) == 1
+    assert facts[0].fact_key == "name"
+
+@pytest.mark.asyncio
+async def test_get_user_memory_context():
+    """Test memory context retrieval."""
+    memory_service = MemoryService(...)
+
+    # Mock Qdrant search
+    mock_vector_store.search_similar.return_value = [
+        {"id": "fact-1", "score": 0.95, "metadata": {"fact_text": "User likes pizza"}}
+    ]
+
+    context = await memory_service.get_user_memory_context(
+        user_id="discord_123",
+        query="What food should I order?",
+        agent_id=uuid4()
+    )
+
+    assert "User likes pizza" in context
+```
+
+### Integration Tests
+
+**File**: `tests/integration/test_memory_pipeline.py`
+
+```python
+"""
+Integration test for complete memory pipeline.
+"""
+import pytest
+from src.services.memory_service import MemoryService
+from src.services.llm_service import LLMService
+from src.services.embedding_service import EmbeddingService
+
+@pytest.mark.asyncio
+async def test_end_to_end_memory_extraction():
+    """Test full pipeline: conversation → fact extraction → retrieval."""
+    # Real database, mock LLM/embeddings
+    memory_service = MemoryService(real_db, mock_llm, mock_embed)
+
+    # 1. Extract facts
+    facts = await memory_service.extract_facts_from_turn(
+        user_id="test_user",
+        agent_id=test_agent.id,
+        user_message="I love hiking in the mountains",
+        ai_response="That sounds amazing!"
+    )
+
+    assert len(facts) > 0
+
+    # 2. Retrieve context
+    context = await memory_service.get_user_memory_context(
+        user_id="test_user",
+        query="What outdoor activities do I enjoy?",
+        agent_id=test_agent.id
+    )
+
+    assert "hiking" in context.lower() or "mountains" in context.lower()
+```
+
+### E2E Tests
+
+**File**: `tests/e2e/test_memory_ux.py`
+
+```python
+"""
+End-to-end test with real Qdrant and LLM.
+"""
+@pytest.mark.asyncio
+@pytest.mark.e2e
+async def test_conversation_with_memory():
+    """Test conversation remembers user facts."""
+    # Real Qdrant, real LLM (OpenRouter or local)
+
+    # Turn 1: User introduces themselves
+    response1 = await webrtc_client.send_message("Hi, I'm Bob from Seattle")
+    # Extract facts (background)
+
+    # Turn 2: Ask question requiring memory
+    response2 = await webrtc_client.send_message("What's my name?")
+
+    assert "Bob" in response2  # AI should remember
+```
+
+---
+
+## Monitoring & Metrics
+
+### Key Metrics to Track
+
+```python
+class MemoryMetrics:
+    # Latency
+    fact_extraction_latency_ms: float      # Time to extract facts from conversation
+    embedding_generation_latency_ms: float # Time to generate embeddings
+    qdrant_index_latency_ms: float         # Time to index in Qdrant
+    memory_retrieval_latency_ms: float     # Time to search and retrieve facts
+
+    # Quality
+    facts_extracted_per_turn: float        # Average facts extracted
+    fact_deduplication_rate: float         # % of facts that were duplicates
+    memory_retrieval_accuracy: float       # % of relevant facts retrieved
+
+    # Volume
+    total_facts_stored: int                # Total facts in system
+    facts_per_user_avg: float              # Average facts per user
+    embeddings_generated_total: int        # Total embeddings created
+
+    # Resources
+    qdrant_collection_size_mb: float       # Qdrant storage usage
+    postgresql_facts_table_size_mb: float  # PostgreSQL storage
+```
+
+### Performance Targets
+
+| Metric | Target | Alert Threshold |
+|--------|--------|----------------|
+| Fact extraction latency | <2000ms | >5000ms |
+| Embedding generation | <500ms | >2000ms |
+| Qdrant indexing | <100ms | >500ms |
+| Memory retrieval | <200ms | >1000ms |
+| Facts per conversation turn | 0-3 | >5 (too noisy) |
+| Qdrant p95 latency | <50ms | >100ms |
+
+---
+
+## Migration Strategy
+
+### pgvectorscale is the Primary Solution (v1)
+
+**No migration needed** - pgvectorscale is a PostgreSQL extension:
+1. Install via Alembic migration (`CREATE EXTENSION vectorscale CASCADE;`)
+2. Mem0 handles vector table creation and indexing automatically
+3. Zero infrastructure changes (uses existing PostgreSQL container)
+
+### ⏳ Optional Future Migration: pgvectorscale → Qdrant (v2+)
+
+**⚠️ NOT PART OF V1 - Future Enhancement Only**
+
+This migration path is **deferred to v2+** and should **NOT be implemented now**. pgvectorscale is the approved v1 solution.
+
+**Only consider migrating to Qdrant if**:
+- pgvectorscale p95 latency exceeds 100ms at scale (>500K facts)
+- Need horizontal scaling (multi-node sharding)
+- Require Qdrant-specific features (hybrid search, advanced filtering)
+
+**Migration Script** (reference for future v2+ work, DO NOT IMPLEMENT NOW):
+
+```python
+# scripts/migrate_pgvectorscale_to_qdrant.py
+async def migrate_to_qdrant():
+    """
+    Migrate from pgvectorscale to Qdrant (optional v2 migration).
+
+    This is ONLY needed if pgvectorscale doesn't meet performance requirements.
+    """
+    # 1. Deploy Qdrant container
+    # docker compose up -d qdrant
+
+    # 2. Export from Mem0 (pgvector backend)
+    memory = Memory.from_config(mem0_config)
+    all_memories = await memory.get_all(user_id="*")  # Export all
+
+    # 3. Re-configure Mem0 to use Qdrant
+    qdrant_config = {
+        "vector_store": {
+            "provider": "qdrant",
+            "config": {
+                "host": "qdrant",
+                "port": 6333,
+                "collection_name": "user_memories"
+            }
+        },
+        # ... same llm + embedder config
+    }
+
+    new_memory = Memory.from_config(qdrant_config)
+
+    # 4. Batch import to Qdrant
+    batch_size = 100
+    for i in range(0, len(all_memories), batch_size):
+        batch = all_memories[i:i+batch_size]
+        for mem in batch:
+            await new_memory.add(
+                user_id=mem["user_id"],
+                messages=mem["messages"],
+                metadata=mem["metadata"]
+            )
+
+    logger.info(f"✅ Migrated {len(all_memories)} memories to Qdrant")
+```
+
+### Rollback Plan
+
+If memory system encounters issues:
+
+1. **Short-term disable**: Set `MEMORY_EXTRACTION_ENABLED=false` in `.env`
+2. **Disable relevance filter**: Set all extractions to pass filter (debug mode)
+3. **Data preservation**: All metadata remains in PostgreSQL (pgvectorscale is just an index)
+
+**No risk of data loss** - pgvectorscale stores vectors in PostgreSQL tables with ACID transactions.
+
+---
+
+## Cost Analysis
+
+### Infrastructure Costs (v1 - Without Redis)
+
+**pgvectorscale** (PostgreSQL extension):
+- **Cost**: $0/month (uses existing PostgreSQL container)
+- **No additional infrastructure**: Zero deployment complexity
+
+**Total Infrastructure** (VoxBridge scale 100K facts):
+- pgvectorscale: $0 (existing PostgreSQL)
+- PostgreSQL: $0 (existing)
+- **Total: $0/month**
+
+### Infrastructure Costs (Phase 6 - With Redis)
+
+**Redis** (embedding + result cache):
+- **Docker container**: redis:alpine (~50MB image)
+- **Memory usage**: ~100MB for 10K cached embeddings
+- **Cost**: $0/month (self-hosted)
+
+**Total Infrastructure** (with Redis):
+- pgvectorscale: $0
+- Redis: $0 (self-hosted)
+- PostgreSQL: $0 (existing)
+- **Total: $0/month** (no infrastructure cost increase)
+
+### Embedding Costs
+
+#### Azure AI Embeddings (text-embedding-3-large)
+
+**Pricing**:
+- **Base cost**: $0.13 per 1M tokens
+- **Avg conversation**: ~250 tokens
+- **VoxBridge estimate**: 1K conversations/day = 30K/month
+
+**Monthly Embedding Costs**:
+
+| Scenario | Conversations | Tokens | Cost |
+|----------|---------------|--------|------|
+| v1 (No Redis) | 30K | 7.5M | **$1/month** |
+| Phase 6 (Redis 50% hit) | 15K | 3.75M | **$0.50/month** |
+
+#### Local Open-Source Embeddings
+
+**Pricing**:
+- **Cost**: **$0/month** (free, self-hosted)
+- **Models**: sentence-transformers/all-mpnet-base-v2 (768 dims)
+- **Resource cost**: CPU time in voxbridge-api container (~200-500ms per embedding)
+
+**Trade-offs**:
+- ✅ Free ($0/month)
+- ❌ Lower quality (768 dims vs 3072 dims Azure)
+- ❌ Slower (200-500ms vs 50ms Azure)
+- ❌ CPU overhead in container
+
+### LLM Costs (Fact Extraction)
+
+**gpt-4o-mini** (via OpenRouter):
+- **Relevance filter**: ~$0.0001/conversation (50 tokens input, 5 tokens output)
+- **Mem0 extraction**: ~$0.0003/conversation (200 tokens input, 100 tokens output)
+- **Total**: ~$0.0004 per conversation with fact extraction
+
+**Monthly LLM Costs**:
+- Relevance filter for all: 30K × $0.0001 = **$3/month**
+- Mem0 extraction (20% pass filter): 6K × $0.0003 = **$1.80/month**
+- **Total**: **~$5/month**
+
+### Total Monthly Cost
+
+**v1 (Azure AI Embeddings, No Redis)**:
+
+| Component | Cost |
+|-----------|------|
+| Infrastructure (pgvectorscale) | $0 |
+| Azure AI embeddings | ~$1 |
+| LLM fact extraction (gpt-4o-mini) | ~$5 |
+| PostgreSQL | $0 (existing) |
+| **Total** | **~$6/month** |
+
+**v1 (Local Embeddings, No Redis)**:
+
+| Component | Cost |
+|-----------|------|
+| Infrastructure (pgvectorscale) | $0 |
+| Local embeddings (sentence-transformers) | $0 |
+| LLM fact extraction (gpt-4o-mini) | ~$5 |
+| PostgreSQL | $0 (existing) |
+| **Total** | **~$5/month** |
+
+**Phase 6 (Azure AI + Redis)**:
+
+| Component | Cost |
+|-----------|------|
+| Infrastructure (pgvectorscale + Redis) | $0 |
+| Azure AI embeddings (50% cached) | ~$0.50 |
+| LLM fact extraction (gpt-4o-mini) | ~$5 |
+| PostgreSQL | $0 (existing) |
+| **Total** | **~$5.50/month** |
+
+**Phase 6 (Local Embeddings + Redis)**:
+
+| Component | Cost |
+|-----------|------|
+| Infrastructure (pgvectorscale + Redis) | $0 |
+| Local embeddings (no cache benefit) | $0 |
+| LLM fact extraction (gpt-4o-mini) | ~$5 |
+| PostgreSQL | $0 (existing) |
+| **Total** | **~$5/month** |
+
+**Cost Comparison**:
+- **Original plan (Qdrant + custom + Azure embeddings)**: $31/month
+- **v1 (Azure AI embeddings)**: $6/month (81% savings)
+- **v1 (Local embeddings)**: $5/month (84% savings)
+- **Phase 6 (Azure + Redis)**: $5.50/month (82% savings)
+- **Phase 6 (Local + Redis)**: $5/month (84% savings, but Redis provides no benefit for local)
+
+**Recommendation**:
+- **Best quality**: Azure AI embeddings ($6/month)
+- **Best value**: Local embeddings ($5/month, 84% savings vs original plan)
+- **Zero cost**: Local embeddings + local LLM for extraction (~$0/month, but lower quality)
+
+---
+
+## Next Steps (Implementation Checklist)
+
+### Phase 1: Setup (Infrastructure)
+
+- [ ] Install pgvectorscale extension via Alembic migration
+- [ ] Install Mem0: `pip install mem0ai`
+- [ ] Configure Azure AI embeddings in `.env`
+- [ ] Test pgvectorscale: Create test vector table + index
+
+### Phase 2: Mem0 Integration
+
+- [ ] Create Mem0 configuration with pgvector + Azure AI
+- [ ] Implement `MemoryService` wrapper around Mem0
+- [ ] Add LLM relevance filter (`should_extract_facts()`)
+- [ ] Test Mem0 add/search/delete operations
+
+### Phase 3: Voice Pipeline Integration
+
+- [ ] Integrate memory into WebRTC handler
+- [ ] Integrate memory into Discord plugin
+- [ ] Add background fact extraction (fire-and-forget)
+- [ ] Implement context injection in LLMService
+- [ ] Test end-to-end conversation with memory
+
+### Phase 4: Frontend & API
+
+- [ ] Add memory API endpoints (`/api/memory/*`)
+- [ ] Build MemoryPage UI (view/edit/delete facts)
+- [ ] Add WebSocket real-time updates for facts
+- [ ] Add memory statistics dashboard
+- [ ] Test GDPR compliance (export/delete user data)
+
+### Phase 5: Testing & Optimization
+
+- [ ] Unit tests for MemoryService (Mem0 wrapper)
+- [ ] Integration tests (real pgvectorscale)
+- [ ] E2E tests (conversation → extraction → retrieval)
+- [ ] Load test pgvectorscale at 10K, 100K facts
+- [ ] Optimize StreamingDiskANN index parameters
+
+### Phase 6: Redis Caching (Optional)
+
+- [ ] Analyze production query patterns (repeated query rate)
+- [ ] Add Redis container to docker-compose.yml
+- [ ] Implement MemoryCacheService (embedding + result caching)
+- [ ] Integrate caching into MemoryService
+- [ ] Monitor cache hit rates (target >50%)
+
+### Outstanding Questions
+
+1. **Azure OpenAI Configuration**:
+   - Which Azure region for lowest latency?
+   - Dedicated vs shared capacity?
+   - Rate limiting strategy?
+
+2. **pgvectorscale Production Tuning**:
+   - Optimal StreamingDiskANN parameters for 3072-dim vectors?
+   - Disk space allocation for vector index?
+   - Monitoring and alerting setup?
+
+3. **Mem0 Customization**:
+   - Test Mem0 extraction accuracy on VoxBridge conversations
+   - Tune Mem0 similarity threshold for deduplication?
+   - Custom fact categories vs default Mem0 categories?
+
+4. **GDPR Compliance**:
+   - User data export API (download all facts)
+   - User data deletion (cascade delete user → facts → pgvectorscale)
+   - Data retention policy (auto-delete old facts?)
+
+5. **Performance Benchmarking**:
+   - Measure end-to-end latency (extraction + retrieval)
+   - Compare Mem0 extraction vs custom (accuracy benchmark)
+   - Analyze query patterns to determine if Redis caching is needed (Phase 6)
+   - Iterate on extraction prompt
+
+3. **Local Embedding Model Selection**:
+   - Benchmark all-mpnet-base-v2 vs bge-large-en-v1.5 vs nomic-embed
+   - Quality comparison vs Azure AI
+   - Resource usage profiling
+
+---
+
+## Appendix: Environment Variables
+
+```bash
+# Mem0 Configuration
+MEM0_ENABLED=true
+
+# Embedding Provider Selection
+EMBEDDING_PROVIDER=azure  # "azure" or "local"
+
+# Azure AI Embeddings (if EMBEDDING_PROVIDER=azure)
+AZURE_EMBEDDING_API_KEY=<your_azure_key>
+AZURE_EMBEDDING_ENDPOINT=https://<your_resource>.openai.azure.com/
+AZURE_EMBEDDING_DEPLOYMENT=text-embedding-3-large
+AZURE_EMBEDDING_API_VERSION=2024-12-01-preview
+AZURE_EMBEDDING_DIMS=3072
+
+# Local Open-Source Embeddings (if EMBEDDING_PROVIDER=local)
+LOCAL_EMBEDDING_MODEL=sentence-transformers/all-mpnet-base-v2
+LOCAL_EMBEDDING_DIMS=768
+
+# LLM Provider (for Mem0 fact extraction)
+OPENROUTER_API_KEY=<your_openrouter_key>  # Already configured for VoxBridge
+MEM0_EXTRACTION_MODEL=gpt-4o-mini  # Fast, cheap model for fact extraction
+
+# Memory Extraction
+MEMORY_EXTRACTION_ENABLED=true
+MEMORY_RELEVANCE_FILTER_ENABLED=true  # LLM filter before extraction
+
+# pgvectorscale Configuration (automatic via Alembic)
+# No manual configuration needed - extension is installed via migration
+
+# Database (existing)
+DATABASE_URL=postgresql+asyncpg://voxbridge:voxbridge_dev_password@postgres:5432/voxbridge
+```
+
+**Add to requirements-bot.txt**:
+```
+# Memory system
+mem0ai>=0.1.0
+sentence-transformers>=2.2.0  # For local embeddings (optional, only if EMBEDDING_PROVIDER=local)
+```
+
+**Optional Phase 6 - Add Redis** (see Phase 6 section for docker-compose.yml configuration)
+
+---
+
+**Document Status**: ✅ FINAL / APPROVED
+**Last Updated**: 2025-11-21
+**Architecture**: pgvectorscale + Mem0 + Azure AI + Redis
+**Ready for Implementation**: Yes

@@ -1,7 +1,8 @@
 services:
   # PostgreSQL - Database for agents, sessions, conversations
+  # Using pgvector/pgvector image for pgvector extension support (memory system)
   postgres:
-    image: postgres:15-alpine
+    image: pgvector/pgvector:pg15
     container_name: voxbridge-postgres
     ports:
       - "5432:5432"

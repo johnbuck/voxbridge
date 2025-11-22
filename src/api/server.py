@@ -26,6 +26,7 @@ from src.services.stt_service import get_stt_service
 from src.services.llm_service import get_llm_service, LLMConfig, ProviderType
 from src.services.tts_service import get_tts_service
 from src.services.plugin_manager import get_plugin_manager
+from src.services.memory_service import MemoryService
 
 # Configuration
 from src.config.streaming import get_streaming_config, update_streaming_config, reset_streaming_config
@@ -455,6 +456,7 @@ stt_service = get_stt_service()
 llm_service = get_llm_service()
 tts_service = get_tts_service()
 plugin_manager = get_plugin_manager()
+memory_service = MemoryService()  # VoxBridge 2.0 Phase 2: Memory System
 
 # ============================================================
 # FAST API SETUP
@@ -508,6 +510,10 @@ async def startup_services():
     # Start existing services
     await conversation_service.start()
     await plugin_manager.start_resource_monitoring()
+
+    # VoxBridge 2.0 Phase 2: Start memory extraction queue processor
+    asyncio.create_task(memory_service.process_extraction_queue())
+    logger.info("🧠 Memory extraction queue processor started")
 
     # NEW Phase 4 Batch 1: Initialize plugins for all agents
     try:
