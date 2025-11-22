@@ -10,13 +10,45 @@ from uuid import UUID
 from datetime import datetime, timedelta
 from mem0 import Memory
 from sqlalchemy import select, and_, func
-from src.database.models import User, UserFact, ExtractionTask, Agent
+from src.database.models import User, UserFact, ExtractionTask, Agent, SystemSettings
 from src.database.session import get_db_session
 from src.services.llm_service import LLMService
 from src.config.logging_config import get_logger
 
 # Configure logging
 logger = get_logger(__name__)
+
+
+async def get_global_embedding_config() -> Optional[dict]:
+    """
+    Fetch global embedding config from database.
+
+    Returns:
+        dict: Embedding config from database or None if not set
+
+    Example:
+        {
+            "provider": "local",
+            "model": "sentence-transformers/all-mpnet-base-v2",
+            "dims": 768
+        }
+    """
+    try:
+        async with get_db_session() as db:
+            result = await db.execute(
+                select(SystemSettings).where(SystemSettings.setting_key == "embedding_config")
+            )
+            setting = result.scalar_one_or_none()
+
+            if setting:
+                logger.debug(f"📊 Retrieved global embedding config from database: {setting.setting_value}")
+                return setting.setting_value  # JSONB field already returns dict
+            else:
+                logger.debug("🌍 No global embedding config in database, will use environment variables")
+                return None
+    except Exception as e:
+        logger.error(f"❌ Failed to fetch global embedding config from database: {e}")
+        return None  # Fall back to environment variables
 
 
 class MemoryService:
@@ -30,44 +62,39 @@ class MemoryService:
     - Metrics tracking for monitoring
     """
 
-    def __init__(self):
-        """Initialize memory service with Mem0."""
+    def __init__(self, db_embedding_config: Optional[dict] = None):
+        """
+        Initialize memory service with Mem0.
+
+        Priority for embedding configuration:
+        1. Database config (db_embedding_config parameter) - highest priority
+        2. Environment variables (EMBEDDING_PROVIDER, AZURE_EMBEDDING_API_KEY)
+        3. Hardcoded defaults (local embeddings)
+
+        Args:
+            db_embedding_config: Optional database embedding config dict
+                {
+                    "provider": "azure" | "local",
+                    "azure_api_key": "...",
+                    "azure_endpoint": "...",
+                    "azure_deployment": "...",
+                    "model": "sentence-transformers/all-mpnet-base-v2",
+                    "dims": 768
+                }
+        """
         self.llm_service = LLMService()
 
-        # Initialize Mem0 based on environment config
-        embedding_provider = os.getenv("EMBEDDING_PROVIDER", "local")
-
-        # Check if Azure credentials are configured
-        azure_api_key = os.getenv("AZURE_EMBEDDING_API_KEY")
-        azure_endpoint = os.getenv("AZURE_EMBEDDING_ENDPOINT")
-
-        # Default to local embeddings if Azure credentials not configured
-        if embedding_provider == "azure" and (not azure_api_key or not azure_endpoint):
-            logger.warning("⚠️ Azure embeddings selected but credentials not configured, falling back to local embeddings")
-            embedding_provider = "local"
-
-        if embedding_provider == "azure":
-            embedder_config = {
-                "provider": "azure_openai",
-                "config": {
-                    "model": "text-embedding-3-large",
-                    "embedding_dims": 3072,
-                    "azure_kwargs": {
-                        "api_version": os.getenv("AZURE_EMBEDDING_API_VERSION", "2024-12-01-preview"),
-                        "azure_deployment": os.getenv("AZURE_EMBEDDING_DEPLOYMENT", "text-embedding-3-large"),
-                        "azure_endpoint": azure_endpoint,
-                        "api_key": azure_api_key
-                    }
-                }
-            }
-        else:  # local
-            embedder_config = {
-                "provider": "huggingface",
-                "config": {
-                    "model": os.getenv("LOCAL_EMBEDDING_MODEL", "sentence-transformers/all-mpnet-base-v2"),
-                    "embedding_dims": int(os.getenv("LOCAL_EMBEDDING_DIMS", "768"))
-                }
-            }
+        # Build embedder config with 3-tier prioritization
+        if db_embedding_config:
+            # Priority 1: Database config (highest)
+            embedder_config = self._build_embedder_config_from_db(db_embedding_config)
+            provider_name = db_embedding_config.get('provider', 'local')
+            logger.info(f"📊 Using database embedding config: {provider_name}")
+        else:
+            # Priority 2: Environment variables
+            embedder_config = self._build_embedder_config_from_env()
+            provider_name = os.getenv("EMBEDDING_PROVIDER", "local")
+            logger.info(f"🌍 Using environment embedding config: {provider_name}")
 
         # Mem0 configuration
         config = {
@@ -93,7 +120,7 @@ class MemoryService:
         }
 
         self.memory = Memory.from_config(config)
-        logger.info(f"✅ MemoryService initialized with {embedding_provider} embeddings")
+        logger.info(f"✅ MemoryService initialized with {provider_name} embeddings")
 
     async def queue_extraction(
         self,
@@ -288,6 +315,83 @@ class MemoryService:
         except Exception as e:
             logger.error(f"❌ Failed to retrieve memories for user {user_id}: {e}")
             return ""  # Degrade gracefully
+
+    def _build_embedder_config_from_db(self, db_config: dict) -> dict:
+        """
+        Build Mem0 embedder config from database settings (Priority 1).
+
+        Args:
+            db_config: Database embedding config dict
+
+        Returns:
+            Mem0 embedder configuration dict
+        """
+        provider = db_config.get('provider', 'local')
+
+        if provider == 'azure':
+            return {
+                "provider": "azure_openai",
+                "config": {
+                    "model": "text-embedding-3-large",
+                    "embedding_dims": 3072,
+                    "azure_kwargs": {
+                        "api_key": db_config.get('azure_api_key'),  # TODO: Decrypt if encrypted
+                        "azure_endpoint": db_config.get('azure_endpoint'),
+                        "azure_deployment": db_config.get('azure_deployment', 'text-embedding-3-large'),
+                        "api_version": db_config.get('azure_api_version', '2024-12-01-preview'),
+                    }
+                }
+            }
+        else:  # local
+            return {
+                "provider": "huggingface",
+                "config": {
+                    "model": db_config.get('model', 'sentence-transformers/all-mpnet-base-v2'),
+                    "embedding_dims": db_config.get('dims', 768)
+                }
+            }
+
+    def _build_embedder_config_from_env(self) -> dict:
+        """
+        Build Mem0 embedder config from environment variables (Priority 2).
+
+        Returns:
+            Mem0 embedder configuration dict
+        """
+        # Check provider selection
+        embedding_provider = os.getenv("EMBEDDING_PROVIDER", "local")
+
+        # Check if Azure credentials are configured
+        azure_api_key = os.getenv("AZURE_EMBEDDING_API_KEY")
+        azure_endpoint = os.getenv("AZURE_EMBEDDING_ENDPOINT")
+
+        # Default to local embeddings if Azure credentials not configured
+        if embedding_provider == "azure" and (not azure_api_key or not azure_endpoint):
+            logger.warning("⚠️ Azure embeddings selected but credentials not configured, falling back to local embeddings")
+            embedding_provider = "local"
+
+        if embedding_provider == "azure":
+            return {
+                "provider": "azure_openai",
+                "config": {
+                    "model": "text-embedding-3-large",
+                    "embedding_dims": 3072,
+                    "azure_kwargs": {
+                        "api_version": os.getenv("AZURE_EMBEDDING_API_VERSION", "2024-12-01-preview"),
+                        "azure_deployment": os.getenv("AZURE_EMBEDDING_DEPLOYMENT", "text-embedding-3-large"),
+                        "azure_endpoint": azure_endpoint,
+                        "api_key": azure_api_key
+                    }
+                }
+            }
+        else:  # local (Priority 3: hardcoded defaults)
+            return {
+                "provider": "huggingface",
+                "config": {
+                    "model": os.getenv("LOCAL_EMBEDDING_MODEL", "sentence-transformers/all-mpnet-base-v2"),
+                    "embedding_dims": int(os.getenv("LOCAL_EMBEDDING_DIMS", "768"))
+                }
+            }
 
     async def _should_extract_facts(self, user_message: str, ai_response: str) -> bool:
         """LLM-based relevance filter to reduce noise."""

@@ -36,6 +36,7 @@ from src.routes.agent_routes import router as agent_router, set_websocket_manage
 from src.routes.session_routes import router as session_router
 from src.routes.discord_plugin_routes import router as discord_plugin_router
 from src.routes.llm_provider_routes import router as llm_provider_router
+from src.routes.system_settings_routes import router as system_settings_router
 
 # LLM exceptions for error handling
 from src.llm import LLMError, LLMConnectionError, LLMTimeoutError
@@ -488,6 +489,9 @@ app.include_router(discord_plugin_router)
 
 # Include LLM provider management routes (VoxBridge 2.0 Phase 6.5.4)
 app.include_router(llm_provider_router)
+
+# Include system settings routes (VoxBridge 2.0 Phase 2 - Memory System)
+app.include_router(system_settings_router)
 
 # Pydantic models for API
 class JoinVoiceRequest(BaseModel):

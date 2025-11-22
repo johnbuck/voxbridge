@@ -385,3 +385,51 @@ class ExtractionTask(Base):
 
     def __repr__(self):
         return f"<ExtractionTask(id={self.id}, user_id='{self.user_id}', status='{self.status}', attempts={self.attempts})>"
+
+
+class SystemSettings(Base):
+    """
+    Global System Settings (VoxBridge 2.0 Phase 2)
+
+    Stores system-wide configuration that can be modified via Admin UI.
+
+    Fields:
+    - setting_key: Unique key for the setting (e.g., 'embedding_config')
+    - setting_value: JSON value of the setting
+    - updated_at: Timestamp of last update
+    - updated_by: User who last updated (for future admin tracking)
+
+    Current Settings:
+    - embedding_config: Global embedding provider configuration
+      {
+        "provider": "azure" | "local",
+        "azure_api_key": "...",  # Encrypted
+        "azure_endpoint": "https://...",
+        "azure_deployment": "text-embedding-3-large",
+        "model": "sentence-transformers/all-mpnet-base-v2",
+        "dims": 768
+      }
+
+    Configuration Priority (matches LLM provider pattern):
+    1. Database (this table) - Highest priority
+    2. Environment variables (.env)
+    3. Hardcoded defaults in code
+
+    NOTE: Settings UI will be restricted to admin-only access in a future phase.
+    """
+
+    __tablename__ = "system_settings"
+
+    # Primary key - UUID for global uniqueness
+    id = Column(UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()"))
+
+    # Setting Data
+    setting_key = Column(String(100), unique=True, nullable=False, index=True)
+    setting_value = Column(JSONB, nullable=False)  # Flexible JSON storage
+
+    # Metadata
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    updated_by = Column(String(255), nullable=True)  # For future admin tracking
+
+    def __repr__(self):
+        return f"<SystemSettings(key='{self.setting_key}', value={self.setting_value})>"

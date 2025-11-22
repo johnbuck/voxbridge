@@ -274,27 +274,41 @@ The background worker continuously polls the extraction_tasks table and processe
 
 ---
 
-### ✅ Configuration Complete
+### ✅ Configuration Complete - Database-Backed Global Settings
 
-**Local Embeddings Configured as Default** (2025-11-22):
-- ✅ `.env.example` updated to use `EMBEDDING_PROVIDER=local`
-- ✅ Default model: `sentence-transformers/all-mpnet-base-v2` (768 dims, 420MB)
+**Global Database-Backed Embeddings Configuration** (2025-11-22):
+
+**3-Tier Prioritization Pattern** (matches LLM provider pattern):
+1. ✅ **Database** - Global system settings table (`system_settings.embedding_config`) - **HIGHEST PRIORITY**
+2. ✅ **Environment Variables** - `.env` fallback (`EMBEDDING_PROVIDER`, `AZURE_EMBEDDING_API_KEY`)
+3. ✅ **Hardcoded Defaults** - `local` embeddings (sentence-transformers/all-mpnet-base-v2)
+
+**Implementation Details**:
+- ✅ Database schema: `system_settings` table with JSONB config storage
+- ✅ Database model: `SystemSettings` class with setting_key/setting_value
+- ✅ Service layer: `MemoryService.__init__(db_embedding_config=None)` with prioritization logic
+- ✅ API endpoints: GET/PUT/POST `/api/system-settings/embedding-config`
+- ✅ Helper function: `get_global_embedding_config()` for database fetching
+- ✅ `.env.example` documentation updated with priority explanation
+- ✅ Default config: Local embeddings (768 dims, sentence-transformers/all-mpnet-base-v2)
 - ✅ Works out of the box - no API keys required
-- ✅ MemoryService defaults to local embeddings if no provider specified
-- ✅ All 21 unit tests passing with local embeddings
-- ✅ user_memories table uses `VECTOR(768)` for local embeddings
+- ✅ All 21 unit tests passing
 
-**Azure Embeddings Available as Optional Upgrade**:
-- Can be configured via Frontend UI settings (Phase 2)
-- Provides higher quality embeddings (3072 dims vs 768 dims)
+**Configuration Methods**:
+1. **Settings UI** (recommended): `/settings/embeddings` - persists across container restarts
+2. **Environment Variables**: `.env` file - fallback if database not configured
+3. **API Endpoints**: Direct API calls for programmatic configuration
+
+**Azure Embeddings Available as Upgrade**:
+- Higher quality embeddings (3072 dims vs 768 dims)
 - Requires Azure OpenAI API key and endpoint
-- Configuration:
-  ```bash
-  EMBEDDING_PROVIDER=azure
-  AZURE_EMBEDDING_API_KEY=<your_key>
-  AZURE_EMBEDDING_ENDPOINT=https://<resource>.openai.azure.com
-  AZURE_EMBEDDING_DEPLOYMENT=text-embedding-3-large
-  ```
+- Configurable via Settings UI or API endpoints
+- API key encryption (TODO: implement before production use)
+
+**Admin Access** (Future):
+- Settings UI currently accessible to all users
+- Will be restricted to admin-only access in Phase 3
+- Admin role system out of scope for Phase 1-2
 
 ---
 
