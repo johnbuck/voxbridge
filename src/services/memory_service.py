@@ -35,7 +35,7 @@ class MemoryService:
         self.llm_service = LLMService()
 
         # Initialize Mem0 based on environment config
-        embedding_provider = os.getenv("EMBEDDING_PROVIDER", "azure")
+        embedding_provider = os.getenv("EMBEDDING_PROVIDER", "local")
 
         # Check if Azure credentials are configured
         azure_api_key = os.getenv("AZURE_EMBEDDING_API_KEY")
