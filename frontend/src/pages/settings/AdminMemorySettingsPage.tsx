@@ -1,0 +1,363 @@
+/**
+ * Admin Memory Settings Page
+ * System-wide control over agent-specific memory policy
+ */
+
+import { useState } from 'react';
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import { Label } from '@/components/ui/label';
+import { Switch } from '@/components/ui/switch';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
+import { Shield, AlertTriangle, RotateCcw, Info, Database, Settings } from 'lucide-react';
+import { useToastHelpers } from '@/components/ui/toast';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import * as memoryApi from '@/services/memory';
+
+export function AdminMemorySettingsPage() {
+  const [disableDialogOpen, setDisableDialogOpen] = useState(false);
+  const [resetDialogOpen, setResetDialogOpen] = useState(false);
+  const toast = useToastHelpers();
+  const queryClient = useQueryClient();
+
+  // Fetch admin memory policy
+  const { data: policyData, isLoading: policyLoading } = useQuery({
+    queryKey: ['adminMemoryPolicy'],
+    queryFn: () => memoryApi.getAdminMemoryPolicy(),
+  });
+
+  // Update admin memory policy
+  const updatePolicyMutation = useMutation({
+    mutationFn: (allow: boolean) =>
+      memoryApi.updateAdminMemoryPolicy({ allow_agent_specific_memory_globally: allow }),
+    onSuccess: (data) => {
+      queryClient.setQueryData(['adminMemoryPolicy'], {
+        source: 'database',
+        policy: data.policy,
+      });
+
+      toast.success(
+        data.policy.allow_agent_specific_memory_globally
+          ? 'Agent-specific memory enabled globally'
+          : 'Agent-specific memory disabled globally',
+        data.policy.allow_agent_specific_memory_globally
+          ? 'Agents can now store private memories'
+          : 'All new memories will be forced to global scope'
+      );
+
+      setDisableDialogOpen(false);
+    },
+    onError: (error: any) => {
+      console.error('[AdminMemorySettings] Failed to update policy:', error);
+      toast.error('Failed to update admin policy', error?.message || 'Unknown error');
+    },
+  });
+
+  // Reset admin memory policy
+  const resetPolicyMutation = useMutation({
+    mutationFn: () => memoryApi.resetAdminMemoryPolicy(),
+    onSuccess: (data) => {
+      queryClient.setQueryData(['adminMemoryPolicy'], {
+        source: 'environment',
+        policy: data.policy,
+      });
+
+      toast.success('Policy reset to defaults', 'Admin policy restored to environment variables');
+      setResetDialogOpen(false);
+    },
+    onError: (error: any) => {
+      console.error('[AdminMemorySettings] Failed to reset policy:', error);
+      toast.error('Failed to reset policy', error?.message || 'Unknown error');
+    },
+  });
+
+  const handleTogglePolicy = (checked: boolean) => {
+    if (!checked) {
+      // Show warning dialog before disabling
+      setDisableDialogOpen(true);
+    } else {
+      // Enable directly (no warning needed)
+      updatePolicyMutation.mutate(true);
+    }
+  };
+
+  const handleReset = () => {
+    setResetDialogOpen(true);
+  };
+
+  if (policyLoading) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <p className="text-muted-foreground">Loading admin settings...</p>
+      </div>
+    );
+  }
+
+  const policy = policyData?.policy;
+  const source = policyData?.source;
+  const isEnabled = policy?.allow_agent_specific_memory_globally ?? true;
+
+  return (
+    <div className="space-y-6">
+      {/* Page Header */}
+      <div>
+        <h1 className="text-3xl font-bold tracking-tight">Admin Memory Policy</h1>
+        <p className="text-muted-foreground mt-2">
+          System-wide control over agent-specific memory capabilities
+        </p>
+      </div>
+
+      {/* Warning Banner - No RBAC Yet */}
+      <Card className="border-yellow-500/50 bg-yellow-500/10">
+        <CardContent className="pt-6">
+          <div className="flex items-start gap-3">
+            <AlertTriangle className="h-5 w-5 text-yellow-600 flex-shrink-0 mt-0.5" />
+            <div className="space-y-2">
+              <p className="text-sm font-medium text-yellow-600">
+                Warning: UI-Only Access Control
+              </p>
+              <p className="text-xs text-yellow-600/90">
+                This page is currently accessible to all users. RBAC (Role-Based Access Control) has
+                not been implemented yet. The admin policy is enforced by the backend, but any user
+                can currently access this settings page and attempt to change the policy. In
+                production, this page should be restricted to admin users only.
+              </p>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Admin Policy Toggle Card */}
+      <Card>
+        <CardHeader>
+          <div className="flex items-center gap-2">
+            <Shield className="h-5 w-5" />
+            <CardTitle>Global Memory Policy</CardTitle>
+          </div>
+          <CardDescription>
+            Control whether agent-specific memories are allowed system-wide
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {/* Policy Source Badge */}
+          <div className="flex items-center gap-2 text-sm">
+            <span className="text-muted-foreground">Policy Source:</span>
+            <span
+              className={`px-2 py-0.5 rounded-md text-xs font-medium ${
+                source === 'database'
+                  ? 'bg-blue-100 text-blue-700'
+                  : 'bg-gray-100 text-gray-700'
+              }`}
+            >
+              {source === 'database' ? 'Database Override' : 'Environment Default'}
+            </span>
+          </div>
+
+          {/* Toggle Switch */}
+          <div className="flex items-center justify-between pt-2">
+            <div className="space-y-0.5">
+              <Label htmlFor="admin-policy">Allow Agent-Specific Memory Globally</Label>
+              <p className="text-sm text-muted-foreground">
+                When enabled: Agents can store private memories (subject to user preferences)
+                <br />
+                When disabled: All memories are forced to global scope system-wide
+              </p>
+            </div>
+            <Switch
+              id="admin-policy"
+              checked={isEnabled}
+              onCheckedChange={handleTogglePolicy}
+              disabled={updatePolicyMutation.isPending}
+            />
+          </div>
+
+          {/* Current Status */}
+          <div className="pt-2 border-t">
+            <p className="text-xs text-muted-foreground">
+              <strong>Current Status:</strong> Agent-specific memory is{' '}
+              <span className={isEnabled ? 'text-green-600' : 'text-red-600'}>
+                {isEnabled ? 'ALLOWED' : 'DISABLED'}
+              </span>{' '}
+              globally.
+            </p>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Three-Tier Hierarchy Explanation */}
+      <Card>
+        <CardHeader>
+          <div className="flex items-center gap-2">
+            <Info className="h-5 w-5" />
+            <CardTitle>Three-Tier Memory Hierarchy</CardTitle>
+          </div>
+          <CardDescription>
+            How admin policy, user preferences, and agent defaults interact
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="space-y-3">
+            {/* Tier 1 */}
+            <div className="flex items-start gap-3">
+              <div className="flex h-6 w-6 items-center justify-center rounded-full bg-red-100 text-red-700 text-xs font-bold flex-shrink-0">
+                1
+              </div>
+              <div>
+                <p className="text-sm font-medium">Admin Global Policy (Highest Priority)</p>
+                <p className="text-xs text-muted-foreground">
+                  Enforced by this page. Sets the maximum capability system-wide.
+                </p>
+              </div>
+            </div>
+
+            {/* Tier 2 */}
+            <div className="flex items-start gap-3">
+              <div className="flex h-6 w-6 items-center justify-center rounded-full bg-yellow-100 text-yellow-700 text-xs font-bold flex-shrink-0">
+                2
+              </div>
+              <div>
+                <p className="text-sm font-medium">User Restriction (Middle Priority)</p>
+                <p className="text-xs text-muted-foreground">
+                  Users can restrict further (but cannot expand beyond admin policy).
+                </p>
+              </div>
+            </div>
+
+            {/* Tier 3 */}
+            <div className="flex items-start gap-3">
+              <div className="flex h-6 w-6 items-center justify-center rounded-full bg-blue-100 text-blue-700 text-xs font-bold flex-shrink-0">
+                3
+              </div>
+              <div>
+                <p className="text-sm font-medium">Agent Default (Lowest Priority)</p>
+                <p className="text-xs text-muted-foreground">
+                  Per-agent memory_scope setting (only applies if admin and user allow).
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <div className="pt-2 border-t">
+            <p className="text-xs text-muted-foreground">
+              <strong>Enforcement Principle:</strong> "Admin sets the ceiling, users can only lower
+              it, not raise it." This ensures admin has ultimate control while allowing user
+              privacy preferences.
+            </p>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Policy Management Actions */}
+      <Card>
+        <CardHeader>
+          <div className="flex items-center gap-2">
+            <Settings className="h-5 w-5" />
+            <CardTitle>Policy Management</CardTitle>
+          </div>
+          <CardDescription>Reset policy to environment defaults</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="space-y-2">
+            <Button
+              variant="outline"
+              onClick={handleReset}
+              className="w-full gap-2"
+              disabled={resetPolicyMutation.isPending || source === 'environment'}
+            >
+              <RotateCcw className="h-4 w-4" />
+              Reset to Environment Defaults
+            </Button>
+            <p className="text-xs text-muted-foreground">
+              {source === 'environment'
+                ? 'Policy is already using environment defaults'
+                : 'Delete database override and restore environment variable defaults'}
+            </p>
+          </div>
+
+          <div className="pt-2 border-t">
+            <div className="flex items-start gap-2">
+              <Database className="h-4 w-4 text-muted-foreground mt-0.5 flex-shrink-0" />
+              <p className="text-xs text-muted-foreground">
+                <strong>Environment Variable:</strong> ADMIN_ALLOW_AGENT_SPECIFIC_MEMORY (default: true)
+                <br />
+                Database overrides take precedence over environment variables. Reset to use
+                environment defaults.
+              </p>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Disable Policy Confirmation Dialog */}
+      <AlertDialog open={disableDialogOpen} onOpenChange={setDisableDialogOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Disable Agent-Specific Memory Globally?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will enforce global memory scope for ALL users and agents system-wide.
+              <br />
+              <br />
+              <strong>Impact:</strong>
+              <ul className="list-disc list-inside mt-2 space-y-1">
+                <li>All NEW memories will be forced to global scope (agent_id = NULL)</li>
+                <li>Existing agent-specific memories will remain but won't be accessible</li>
+                <li>Users CANNOT override this policy (admin has ultimate control)</li>
+                <li>Per-agent memory_scope settings will be ignored</li>
+              </ul>
+              <br />
+              Are you sure you want to disable agent-specific memory globally?
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={updatePolicyMutation.isPending}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => updatePolicyMutation.mutate(false)}
+              disabled={updatePolicyMutation.isPending}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              {updatePolicyMutation.isPending ? 'Disabling...' : 'Disable Globally'}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Reset Policy Confirmation Dialog */}
+      <AlertDialog open={resetDialogOpen} onOpenChange={setResetDialogOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Reset to Environment Defaults?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will delete the database override and restore the policy from environment
+              variables.
+              <br />
+              <br />
+              <strong>Current environment default:</strong> ADMIN_ALLOW_AGENT_SPECIFIC_MEMORY = true
+              (maintains current behavior)
+              <br />
+              <br />
+              Are you sure you want to reset to environment defaults?
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={resetPolicyMutation.isPending}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => resetPolicyMutation.mutate()}
+              disabled={resetPolicyMutation.isPending}
+            >
+              {resetPolicyMutation.isPending ? 'Resetting...' : 'Reset to Defaults'}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </div>
+  );
+}
