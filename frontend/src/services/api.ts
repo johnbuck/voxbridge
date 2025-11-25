@@ -224,6 +224,21 @@ export interface AgentUpdateRequest {
   };
 }
 
+// Per-Agent Memory Preferences (Phase 3: Per-Agent Memory Preferences)
+export interface UserAgentMemoryPreference {
+  id: string;
+  user_id: string;
+  agent_id: string;
+  allow_agent_specific_memory: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface UserAgentMemoryPreferenceRequest {
+  user_id: string;
+  allow_agent_specific_memory: boolean;
+}
+
 // VoxBridge 2.0 Phase 4: Session Management
 export interface Session {
   id: string;
@@ -335,6 +350,48 @@ export interface StreamingConfig {
   max_concurrent_tts: number;
   error_strategy: 'skip' | 'retry' | 'fallback';
   interruption_strategy: 'immediate' | 'graceful' | 'drain';
+}
+
+// VoxBridge 2.0 Phase 2: Embeddings Configuration
+export interface EmbeddingConfig {
+  provider: 'azure' | 'local';
+  // Azure settings
+  azure_api_key?: string;
+  azure_endpoint?: string;
+  azure_deployment?: string;
+  azure_api_version?: string;
+  // Local settings
+  local_model?: string;
+  local_dims?: number;
+}
+
+export interface EmbeddingConfigResponse {
+  source: 'database' | 'environment';
+  config: {
+    provider: string;
+    // Azure fields
+    azure_endpoint?: string;
+    azure_deployment?: string;
+    azure_api_version?: string;
+    // Local fields
+    model?: string;
+    dims?: number;
+  };
+}
+
+export interface EmbeddingModelStatus {
+  provider: 'azure' | 'local';
+  model: string;
+  status: {
+    is_cached: boolean;
+    cache_size_mb?: number;
+    cache_location?: string;
+    last_modified?: string;
+    files_count?: number;
+    message?: string; // For Azure: "API-based, no cache needed"
+    error?: string;
+  };
+  source: 'database' | 'environment';
 }
 
 class ApiClient {
@@ -503,6 +560,24 @@ class ApiClient {
     });
   }
 
+  // Per-Agent Memory Preferences (Phase 3: Per-Agent Memory Preferences)
+  async getAgentMemoryPreference(agentId: string, userId: string): Promise<UserAgentMemoryPreference> {
+    return this.request<UserAgentMemoryPreference>(`/api/agents/${agentId}/memory-preference?user_id=${encodeURIComponent(userId)}`);
+  }
+
+  async setAgentMemoryPreference(agentId: string, request: UserAgentMemoryPreferenceRequest): Promise<UserAgentMemoryPreference> {
+    return this.request<UserAgentMemoryPreference>(`/api/agents/${agentId}/memory-preference`, {
+      method: 'PUT',
+      body: JSON.stringify(request),
+    });
+  }
+
+  async deleteAgentMemoryPreference(agentId: string, userId: string): Promise<{ message: string }> {
+    return this.request<{ message: string }>(`/api/agents/${agentId}/memory-preference?user_id=${encodeURIComponent(userId)}`, {
+      method: 'DELETE',
+    });
+  }
+
   // VoxBridge 2.0 Phase 4: Session Management
   async getSessions(userId?: string | null, activeOnly: boolean = false, limit: number = 50): Promise<Session[]> {
     // If userId is provided, filter by user; otherwise return all sessions
@@ -621,6 +696,48 @@ class ApiClient {
 
   async fetchLLMProviderModels(providerId: string): Promise<{ success: boolean; models_count: number; models: string[] }> {
     return this.request(`/api/settings/llm-providers/${providerId}/fetch-models`, {
+      method: 'POST',
+    });
+  }
+
+  // VoxBridge 2.0 Phase 2: Embeddings Configuration
+  async getEmbeddingConfig(): Promise<EmbeddingConfigResponse> {
+    return this.request<EmbeddingConfigResponse>('/api/system-settings/embedding-config');
+  }
+
+  async updateEmbeddingConfig(config: EmbeddingConfig): Promise<{ status: string; config: any; updated_at: string }> {
+    return this.request('/api/system-settings/embedding-config', {
+      method: 'PUT',
+      body: JSON.stringify(config),
+    });
+  }
+
+  async resetEmbeddingConfig(): Promise<{ status: string; config: any }> {
+    return this.request('/api/system-settings/embedding-config/reset', {
+      method: 'POST',
+    });
+  }
+
+  async getEmbeddingModelStatus(model?: string): Promise<EmbeddingModelStatus> {
+    const url = model
+      ? `/api/system-settings/embedding-model-status?model=${encodeURIComponent(model)}`
+      : '/api/system-settings/embedding-model-status';
+    return this.request<EmbeddingModelStatus>(url);
+  }
+
+  async downloadEmbeddingModel(): Promise<{ status: string; model: string; message: string }> {
+    return this.request('/api/system-settings/embedding-model/download', {
+      method: 'POST',
+    });
+  }
+
+  async cleanupEmbeddingModels(): Promise<{
+    status: string;
+    models_deleted: string[];
+    space_reclaimed_mb: number;
+    current_model: string;
+  }> {
+    return this.request('/api/system-settings/embedding-model/cleanup', {
       method: 'POST',
     });
   }
