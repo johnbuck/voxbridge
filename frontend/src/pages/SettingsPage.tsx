@@ -6,10 +6,13 @@
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { SettingsSidebar } from '@/components/SettingsSidebar';
 import { Link, useLocation } from 'wouter';
-import { Settings, Mic, Volume2, Plug, Brain } from 'lucide-react';
+import { Settings, Mic, Volume2, Plug, Brain, Database, Shield } from 'lucide-react';
 import { WhisperXSettingsPage } from './settings/WhisperXSettingsPage';
 import { ChatterboxSettingsPage } from './settings/ChatterboxSettingsPage';
 import { PluginsSettingsPage } from './settings/PluginsSettingsPage';
+import { EmbeddingsSettingsPage } from './settings/EmbeddingsSettingsPage';
+import { MemorySettingsPage } from './settings/MemorySettingsPage';
+import { AdminMemorySettingsPage } from './settings/AdminMemorySettingsPage';
 import { LLMProvidersPage } from './LLMProvidersPage';
 
 /**
@@ -47,6 +50,38 @@ function OverviewCards() {
           </Card>
         </Link>
 
+        <Link href="/settings/memory">
+          <Card className="hover:border-primary/50 cursor-pointer transition-colors">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Brain className="h-5 w-5" />
+                Memory
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <p className="text-sm text-muted-foreground">
+                Configure memory extraction and data management
+              </p>
+            </CardContent>
+          </Card>
+        </Link>
+
+        <Link href="/settings/admin-policy">
+          <Card className="hover:border-primary/50 cursor-pointer transition-colors">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Shield className="h-5 w-5" />
+                Admin Policy
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <p className="text-sm text-muted-foreground">
+                System-wide control over agent-specific memory
+              </p>
+            </CardContent>
+          </Card>
+        </Link>
+
         <Link href="/settings/whisperx">
           <Card className="hover:border-primary/50 cursor-pointer transition-colors">
             <CardHeader>
@@ -74,6 +109,22 @@ function OverviewCards() {
             <CardContent>
               <p className="text-sm text-muted-foreground">
                 Configure text-to-speech service
+              </p>
+            </CardContent>
+          </Card>
+        </Link>
+
+        <Link href="/settings/embeddings">
+          <Card className="hover:border-primary/50 cursor-pointer transition-colors">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Database className="h-5 w-5" />
+                Embeddings
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <p className="text-sm text-muted-foreground">
+                Configure global embedding provider for memory system
               </p>
             </CardContent>
           </Card>
@@ -108,10 +159,16 @@ export function SettingsPage() {
     content = <OverviewCards />;
   } else if (location === '/settings/llm-providers') {
     content = <LLMProvidersPage />;
+  } else if (location === '/settings/memory') {
+    content = <MemorySettingsPage />;
+  } else if (location === '/settings/admin-policy') {
+    content = <AdminMemorySettingsPage />;
   } else if (location === '/settings/whisperx') {
     content = <WhisperXSettingsPage />;
   } else if (location === '/settings/chatterbox') {
     content = <ChatterboxSettingsPage />;
+  } else if (location === '/settings/embeddings') {
+    content = <EmbeddingsSettingsPage />;
   } else if (location === '/settings/plugins') {
     content = <PluginsSettingsPage />;
   }
