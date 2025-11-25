@@ -9,6 +9,7 @@ import { ThemeProvider } from '@/components/theme-provider';
 import Header from '@/components/Header';
 import { VoxbridgePage } from '@/pages/VoxbridgePage';
 import { AgentsPage } from '@/pages/AgentsPage';
+import { MemoryPage } from '@/pages/MemoryPage';
 import { SettingsPage } from '@/pages/SettingsPage';
 import { ToastProvider } from '@/components/ui/toast';
 import '@/styles/globals.css';
@@ -42,11 +43,17 @@ function App() {
                 {/* Agent Management */}
                 <Route path="/agents" component={AgentsPage} />
 
+                {/* Memory Management */}
+                <Route path="/memory" component={MemoryPage} />
+
                 {/* Settings Hub - all routes render SettingsPage which handles content internally */}
                 <Route path="/settings" component={SettingsPage} />
                 <Route path="/settings/llm-providers" component={SettingsPage} />
+                <Route path="/settings/memory" component={SettingsPage} />
+                <Route path="/settings/admin-policy" component={SettingsPage} />
                 <Route path="/settings/whisperx" component={SettingsPage} />
                 <Route path="/settings/chatterbox" component={SettingsPage} />
+                <Route path="/settings/embeddings" component={SettingsPage} />
                 <Route path="/settings/plugins" component={SettingsPage} />
 
                 {/* 404 Route */}
