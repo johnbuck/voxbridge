@@ -6,10 +6,13 @@ FastAPI routes for managing AI agents in VoxBridge 2.0.
 
 from typing import List, Optional
 from uuid import UUID
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, status, Query
 from pydantic import BaseModel, Field
+from sqlalchemy import select, func
 
 from src.services.agent_service import AgentService
+from src.database.session import get_db_session
+from src.database.models import UserAgentMemorySetting
 
 # WebSocket manager will be set by discord_bot.py
 _ws_manager = None
@@ -93,6 +96,27 @@ class AgentResponse(BaseModel):
 
     class Config:
         from_attributes = True  # Allows conversion from SQLAlchemy models
+
+
+class UserAgentMemoryPreferenceRequest(BaseModel):
+    """Request body for setting per-agent memory preference"""
+
+    user_id: str = Field(..., description="User identifier (e.g., 'discord:123456789')")
+    allow_agent_specific_memory: bool = Field(..., description="Enable agent-specific memory for this user-agent pair")
+
+
+class UserAgentMemoryPreferenceResponse(BaseModel):
+    """Response model for per-agent memory preference"""
+
+    id: str
+    user_id: str
+    agent_id: str
+    allow_agent_specific_memory: bool
+    created_at: str
+    updated_at: str
+
+    class Config:
+        from_attributes = True
 
 
 # ============================================================================
@@ -449,4 +473,192 @@ async def set_default_agent(agent_id: UUID):
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to set default agent: {str(e)}"
+        )
+
+
+@router.get(
+    "/{agent_id}/memory-preference",
+    response_model=Optional[UserAgentMemoryPreferenceResponse],
+    summary="Get Memory Preference",
+    description="Get user's memory preference for a specific agent (per-agent memory settings)"
+)
+async def get_memory_preference(
+    agent_id: UUID,
+    user_id: str = Query(..., description="User identifier (e.g., 'discord:123456789')")
+):
+    """
+    Get user's memory preference for a specific agent.
+
+    Args:
+        agent_id: Agent UUID
+        user_id: User identifier
+
+    Returns:
+        Memory preference settings if user has set an explicit preference, None otherwise
+
+    Raises:
+        404: No preference set (user falls back to agent default)
+    """
+    try:
+        async with get_db_session() as db:
+            result = await db.execute(
+                select(UserAgentMemorySetting).where(
+                    UserAgentMemorySetting.user_id == user_id,
+                    UserAgentMemorySetting.agent_id == agent_id
+                )
+            )
+            setting = result.scalar_one_or_none()
+
+            if setting is None:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"No memory preference set for user {user_id} and agent {agent_id}"
+                )
+
+            return UserAgentMemoryPreferenceResponse(
+                id=str(setting.id),
+                user_id=setting.user_id,
+                agent_id=str(setting.agent_id),
+                allow_agent_specific_memory=setting.allow_agent_specific_memory,
+                created_at=setting.created_at.isoformat(),
+                updated_at=setting.updated_at.isoformat(),
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get memory preference: {str(e)}"
+        )
+
+
+@router.put(
+    "/{agent_id}/memory-preference",
+    response_model=UserAgentMemoryPreferenceResponse,
+    summary="Set Memory Preference",
+    description="Set user's memory preference for a specific agent (create or update)"
+)
+async def set_memory_preference(
+    agent_id: UUID,
+    request: UserAgentMemoryPreferenceRequest
+):
+    """
+    Set user's memory preference for a specific agent.
+
+    Creates a new preference or updates existing preference.
+
+    Args:
+        agent_id: Agent UUID
+        request: Memory preference settings (user_id, allow_agent_specific_memory)
+
+    Returns:
+        Updated memory preference settings
+
+    Raises:
+        404: Agent not found
+        400: Validation error
+    """
+    try:
+        # Verify agent exists
+        agent = await AgentService.get_agent(agent_id)
+        if not agent:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Agent with ID {agent_id} not found"
+            )
+
+        async with get_db_session() as db:
+            # Check if preference exists
+            result = await db.execute(
+                select(UserAgentMemorySetting).where(
+                    UserAgentMemorySetting.user_id == request.user_id,
+                    UserAgentMemorySetting.agent_id == agent_id
+                )
+            )
+            setting = result.scalar_one_or_none()
+
+            if setting:
+                # Update existing
+                setting.allow_agent_specific_memory = request.allow_agent_specific_memory
+                setting.updated_at = func.now()
+            else:
+                # Create new
+                setting = UserAgentMemorySetting(
+                    user_id=request.user_id,
+                    agent_id=agent_id,
+                    allow_agent_specific_memory=request.allow_agent_specific_memory
+                )
+                db.add(setting)
+
+            await db.commit()
+            await db.refresh(setting)
+
+            return UserAgentMemoryPreferenceResponse(
+                id=str(setting.id),
+                user_id=setting.user_id,
+                agent_id=str(setting.agent_id),
+                allow_agent_specific_memory=setting.allow_agent_specific_memory,
+                created_at=setting.created_at.isoformat(),
+                updated_at=setting.updated_at.isoformat(),
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to set memory preference: {str(e)}"
+        )
+
+
+@router.delete(
+    "/{agent_id}/memory-preference",
+    status_code=status.HTTP_200_OK,
+    summary="Delete Memory Preference",
+    description="Delete user's memory preference for a specific agent (reset to agent default)"
+)
+async def delete_memory_preference(
+    agent_id: UUID,
+    user_id: str = Query(..., description="User identifier (e.g., 'discord:123456789')")
+):
+    """
+    Delete user's memory preference for a specific agent.
+
+    This resets the user's preference to use the agent's default memory scope.
+
+    Args:
+        agent_id: Agent UUID
+        user_id: User identifier
+
+    Returns:
+        Success message
+
+    Raises:
+        404: No preference to delete
+    """
+    try:
+        async with get_db_session() as db:
+            result = await db.execute(
+                select(UserAgentMemorySetting).where(
+                    UserAgentMemorySetting.user_id == user_id,
+                    UserAgentMemorySetting.agent_id == agent_id
+                )
+            )
+            setting = result.scalar_one_or_none()
+
+            if setting is None:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"No memory preference to delete for user {user_id} and agent {agent_id}"
+                )
+
+            await db.delete(setting)
+            await db.commit()
+
+            return {"message": "Memory preference deleted, reverted to agent default"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to delete memory preference: {str(e)}"
         )
