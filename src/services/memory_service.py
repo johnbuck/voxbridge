@@ -10,7 +10,7 @@ from uuid import UUID
 from datetime import datetime, timedelta
 from mem0 import Memory
 from sqlalchemy import select, and_, func
-from src.database.models import User, UserFact, ExtractionTask, Agent, SystemSettings
+from src.database.models import User, UserFact, ExtractionTask, Agent, SystemSettings, UserAgentMemorySetting
 from src.database.session import get_db_session
 from src.services.llm_service import LLMService, LLMConfig, ProviderType
 from src.config.logging_config import get_logger
@@ -55,10 +55,9 @@ async def get_admin_memory_policy() -> bool:
     """
     Fetch admin memory policy from database with fallback to environment variable.
 
-    THREE-TIER HIERARCHY for agent-specific memory:
-    1. Admin Global Policy (this function) - Highest priority
-    2. Per-Agent Default (Agent.memory_scope) - Only if admin allows
-    3. User Restriction (User.allow_agent_specific_memory) - Can further restrict
+    TWO-TIER HIERARCHY for agent-specific memory (updated Phase 2):
+    1. Admin Global Policy (this function) - Hard constraint
+    2. Per-Agent User Preference (UserAgentMemorySetting) - Falls back to Agent.memory_scope
 
     Returns:
         bool: True if agent-specific memories are allowed globally, False if forced to global
@@ -88,6 +87,80 @@ async def get_admin_memory_policy() -> bool:
         logger.error(f"❌ Failed to fetch admin memory policy from database: {e}")
         # Fall back to safe default (allow agent-specific memory)
         return True
+
+
+async def resolve_memory_scope(
+    user_id: str,
+    agent_id: UUID,
+    agent: Agent,
+    user: Optional[User] = None
+) -> tuple[str, Optional[UUID]]:
+    """
+    Resolve final memory scope using two-tier hierarchy (Phase 2: Per-Agent Memory Preferences).
+
+    TWO-TIER HIERARCHY:
+    1. Admin Global Policy - Hard constraint that cannot be overridden
+    2. Per-Agent User Preference - User can configure memory scope per agent
+       - Falls back to Agent.memory_scope if no preference set
+       - BACKWARDS COMPAT: Falls back to User.allow_agent_specific_memory (deprecated)
+
+    Args:
+        user_id: User identifier (e.g., "discord:123456789")
+        agent_id: Agent UUID
+        agent: Agent model instance
+        user: Optional User model instance (for backwards compat check)
+
+    Returns:
+        tuple[scope, fact_agent_id]:
+            - ('global', None) for global scope
+            - ('agent', agent_id) for agent-specific scope
+
+    Examples:
+        >>> scope, fact_agent_id = await resolve_memory_scope("user:123", agent_id, agent)
+        >>> mem_user_id = f"{user_id}:{agent_id}" if scope == 'agent' else user_id
+    """
+    # Tier 1: Admin Global Policy (hard constraint)
+    admin_allows = await get_admin_memory_policy()
+    if not admin_allows:
+        logger.info("🔒 Admin policy: agent-specific memory disabled globally, forcing facts to global")
+        return ('global', None)
+
+    # Tier 2: Per-Agent User Preference
+    async with get_db_session() as db:
+        # Check for explicit user preference
+        result = await db.execute(
+            select(UserAgentMemorySetting).where(
+                UserAgentMemorySetting.user_id == user_id,
+                UserAgentMemorySetting.agent_id == agent_id
+            )
+        )
+        user_pref = result.scalar_one_or_none()
+
+        if user_pref is not None:
+            # User has explicitly set preference for this agent
+            if user_pref.allow_agent_specific_memory:
+                logger.info(f"🎯 User {user_id} preference: agent-specific memory for agent {agent_id}")
+                return ('agent', agent_id)
+            else:
+                logger.info(f"🌍 User {user_id} preference: global memory for agent {agent_id}")
+                return ('global', None)
+
+        # BACKWARDS COMPATIBILITY: Check global toggle (deprecated)
+        # TODO: Remove after migration period (migration 024)
+        if user and not user.allow_agent_specific_memory:
+            logger.warning(
+                f"⚠️ DEPRECATED: User {user_id} using global toggle (User.allow_agent_specific_memory=False). "
+                f"Migrate to per-agent preferences via user_agent_memory_settings table."
+            )
+            return ('global', None)
+
+        # Fall back to agent default
+        if agent.memory_scope == "agent":
+            logger.info(f"🎯 Agent {agent_id} default: agent-specific memory")
+            return ('agent', agent_id)
+        else:
+            logger.info(f"🌍 Agent {agent_id} default: global memory")
+            return ('global', None)
 
 
 async def get_embedding_model_status(model_name: str) -> dict:
@@ -608,33 +681,11 @@ class MemoryService:
             # Get agent
             agent = await self._get_agent(agent_id, db)
 
-            # THREE-TIER HIERARCHY: Determine memory scope
-            # Tier 1: Check admin global policy (highest priority)
-            admin_allows_agent_memory = await get_admin_memory_policy()
+            # TWO-TIER HIERARCHY: Determine memory scope using resolve_memory_scope()
+            scope, fact_agent_id = await resolve_memory_scope(user_id, agent_id, agent, user)
+            mem_user_id = f"{user_id}:{agent_id}" if scope == 'agent' else user_id
 
-            if not admin_allows_agent_memory:
-                # Admin enforces global memory system-wide
-                logger.info("🔒 Admin policy: agent-specific memory disabled globally, forcing facts to global")
-                mem_user_id = user_id  # Force global memory
-                fact_agent_id = None  # Force NULL (global fact)
-
-            # Tier 2: Check user restriction (can further restrict what admin allows)
-            elif not user.allow_agent_specific_memory:
-                logger.info(f"🔒 User {user_id} has disabled agent-specific memory, forcing facts to global")
-                mem_user_id = user_id  # Force global memory
-                fact_agent_id = None  # Force NULL (global fact)
-
-            # Tier 3: Check agent default (only if admin and user both allow)
-            elif agent.memory_scope == "global":
-                logger.info(f"🌍 Agent {agent_id} configured for global memory")
-                mem_user_id = user_id  # Global memory across all agents
-                fact_agent_id = None  # NULL for global facts
-            else:
-                logger.info(f"🎯 Agent {agent_id} configured for agent-specific memory")
-                mem_user_id = f"{user_id}:{agent_id}"  # Agent-specific memory
-                fact_agent_id = agent_id  # UUID for agent-specific facts
-
-            logger.info(f"📝 Final memory scope: agent.memory_scope={agent.memory_scope}, fact_agent_id={fact_agent_id}")
+            logger.info(f"📝 Final memory scope: scope={scope}, mem_user_id={mem_user_id}, fact_agent_id={fact_agent_id}")
 
             # Call Mem0 to extract facts
             result = self.memory.add(
@@ -682,14 +733,15 @@ class MemoryService:
         """
         try:
             async with get_db_session() as db:
+                # Get user for backwards compat check
+                user = await self._get_or_create_user(user_id, db)
+
                 # Get agent to determine memory scope
                 agent = await self._get_agent(agent_id, db)
 
-                # Determine memory scope
-                if agent.memory_scope == "global":
-                    mem_user_id = user_id  # Global memory across all agents
-                else:
-                    mem_user_id = f"{user_id}:{agent_id}"  # Agent-specific memory
+                # TWO-TIER HIERARCHY: Determine memory scope using resolve_memory_scope()
+                scope, _ = await resolve_memory_scope(user_id, agent_id, agent, user)
+                mem_user_id = f"{user_id}:{agent_id}" if scope == 'agent' else user_id
 
             # Search Mem0 for relevant memories
             memories = self.memory.search(
