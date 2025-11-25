@@ -37,6 +37,12 @@ export function MemorySettingsPage() {
     queryFn: () => memoryApi.getMemorySettings(USER_ID),
   });
 
+  // Fetch admin memory policy
+  const { data: adminPolicy } = useQuery({
+    queryKey: ['adminMemoryPolicy'],
+    queryFn: () => memoryApi.getAdminMemoryPolicy(),
+  });
+
   // Update memory settings
   const updateSettingsMutation = useMutation({
     mutationFn: (updates: { memory_extraction_enabled?: boolean; allow_agent_specific_memory?: boolean }) =>
@@ -121,6 +127,8 @@ export function MemorySettingsPage() {
     );
   }
 
+  const adminAllowsAgentMemory = adminPolicy?.policy?.allow_agent_specific_memory_globally ?? true;
+
   return (
     <div className="space-y-6">
       {/* Page Header */}
@@ -130,6 +138,27 @@ export function MemorySettingsPage() {
           Configure how VoxBridge remembers information from your conversations
         </p>
       </div>
+
+      {/* Admin Policy Warning Banner */}
+      {!adminAllowsAgentMemory && (
+        <Card className="border-yellow-500/50 bg-yellow-500/10">
+          <CardContent className="pt-6">
+            <div className="flex items-start gap-3">
+              <AlertTriangle className="h-5 w-5 text-yellow-600 flex-shrink-0 mt-0.5" />
+              <div className="space-y-2">
+                <p className="text-sm font-medium text-yellow-600">
+                  Admin Policy: Agent-Specific Memory Disabled Globally
+                </p>
+                <p className="text-xs text-yellow-600/90">
+                  The administrator has disabled agent-specific memory system-wide. All new
+                  memories will be forced to global scope regardless of your preference. You cannot
+                  enable agent-specific memory until the admin policy is changed.
+                </p>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {/* Memory Extraction Card */}
       <Card>
@@ -183,7 +212,9 @@ export function MemorySettingsPage() {
             <div className="space-y-0.5">
               <Label htmlFor="agent-memory">Allow Agent-Specific Memory</Label>
               <p className="text-sm text-muted-foreground">
-                Let each agent store private memories specific to conversations with that agent
+                {adminAllowsAgentMemory
+                  ? 'Let each agent store private memories specific to conversations with that agent'
+                  : 'Cannot enable: Administrator has disabled agent-specific memory globally'}
               </p>
             </div>
             <Switch
@@ -198,7 +229,7 @@ export function MemorySettingsPage() {
                   updateSettingsMutation.mutate({ allow_agent_specific_memory: checked });
                 }
               }}
-              disabled={updateSettingsMutation.isPending}
+              disabled={updateSettingsMutation.isPending || !adminAllowsAgentMemory}
             />
           </div>
 
