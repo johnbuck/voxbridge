@@ -11,6 +11,7 @@ import { VoxbridgePage } from '@/pages/VoxbridgePage';
 import { AgentsPage } from '@/pages/AgentsPage';
 import { MemoryPage } from '@/pages/MemoryPage';
 import { SettingsPage } from '@/pages/SettingsPage';
+import { AdminPage } from '@/pages/AdminPage';
 import { ToastProvider } from '@/components/ui/toast';
 import '@/styles/globals.css';
 
@@ -46,11 +47,14 @@ function App() {
                 {/* Memory Management */}
                 <Route path="/memory" component={MemoryPage} />
 
+                {/* Admin Panel - all routes render AdminPage which handles content internally */}
+                <Route path="/admin" component={AdminPage} />
+                <Route path="/admin/memory-policy" component={AdminPage} />
+
                 {/* Settings Hub - all routes render SettingsPage which handles content internally */}
                 <Route path="/settings" component={SettingsPage} />
                 <Route path="/settings/llm-providers" component={SettingsPage} />
                 <Route path="/settings/memory" component={SettingsPage} />
-                <Route path="/settings/admin-policy" component={SettingsPage} />
                 <Route path="/settings/whisperx" component={SettingsPage} />
                 <Route path="/settings/chatterbox" component={SettingsPage} />
                 <Route path="/settings/embeddings" component={SettingsPage} />
