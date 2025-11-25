@@ -19,7 +19,7 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
 import { Brain, Download, Trash2, Database, AlertTriangle, Settings } from 'lucide-react';
-import { Link } from 'react-router-dom';
+import { Link } from 'wouter';
 import { useToastHelpers } from '@/components/ui/toast';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import * as memoryApi from '@/services/memory';

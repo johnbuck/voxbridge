@@ -85,6 +85,7 @@ class AgentResponse(BaseModel):
     use_n8n: bool
     n8n_webhook_url: Optional[str]
     is_default: bool
+    memory_scope: str = Field('global', description="Default memory scope (global or agent)")
     tts_voice: Optional[str]
     tts_exaggeration: float
     tts_cfg_weight: float
@@ -171,6 +172,7 @@ async def create_agent(request: AgentCreateRequest):
             use_n8n=agent.use_n8n,
             n8n_webhook_url=agent.n8n_webhook_url,
             is_default=agent.is_default,
+            memory_scope=agent.memory_scope,
             tts_voice=agent.tts_voice,
             tts_exaggeration=agent.tts_exaggeration,
             tts_cfg_weight=agent.tts_cfg_weight,
@@ -220,6 +222,7 @@ async def list_agents():
                 use_n8n=agent.use_n8n,
                 n8n_webhook_url=agent.n8n_webhook_url,
                 is_default=agent.is_default,
+                memory_scope=agent.memory_scope,
                 tts_voice=agent.tts_voice,
                 tts_exaggeration=agent.tts_exaggeration,
                 tts_cfg_weight=agent.tts_cfg_weight,
@@ -276,6 +279,7 @@ async def get_agent(agent_id: UUID):
             use_n8n=agent.use_n8n,
             n8n_webhook_url=agent.n8n_webhook_url,
             is_default=agent.is_default,
+            memory_scope=agent.memory_scope,
             tts_voice=agent.tts_voice,
             tts_exaggeration=agent.tts_exaggeration,
             tts_cfg_weight=agent.tts_cfg_weight,
@@ -350,6 +354,7 @@ async def update_agent(agent_id: UUID, request: AgentUpdateRequest):
             use_n8n=agent.use_n8n,
             n8n_webhook_url=agent.n8n_webhook_url,
             is_default=agent.is_default,
+            memory_scope=agent.memory_scope,
             tts_voice=agent.tts_voice,
             tts_exaggeration=agent.tts_exaggeration,
             tts_cfg_weight=agent.tts_cfg_weight,
@@ -453,6 +458,7 @@ async def set_default_agent(agent_id: UUID):
             use_n8n=agent.use_n8n,
             n8n_webhook_url=agent.n8n_webhook_url,
             is_default=agent.is_default,
+            memory_scope=agent.memory_scope,
             tts_voice=agent.tts_voice,
             tts_exaggeration=agent.tts_exaggeration,
             tts_cfg_weight=agent.tts_cfg_weight,

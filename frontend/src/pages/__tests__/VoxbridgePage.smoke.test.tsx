@@ -71,6 +71,7 @@ describe('VoxbridgePage Smoke Tests', () => {
     use_n8n: false,
     n8n_webhook_url: null,
     is_default: true,
+    memory_scope: 'global',
     tts_voice: 'default',
     tts_exaggeration: 1.0,
     tts_cfg_weight: 0.7,
