@@ -233,3 +233,66 @@ export async function deleteAllUserData(
 
   return response.json();
 }
+
+// Admin Memory Policy API (System Settings)
+const SYSTEM_SETTINGS_API_BASE = 'http://localhost:4900/api/system-settings';
+
+export interface AdminMemoryPolicy {
+  allow_agent_specific_memory_globally: boolean;
+}
+
+export interface AdminMemoryPolicyResponse {
+  source: 'database' | 'environment';
+  policy: AdminMemoryPolicy;
+}
+
+export interface AdminMemoryPolicyUpdateRequest {
+  allow_agent_specific_memory_globally: boolean;
+}
+
+/**
+ * Get admin-level memory policy
+ */
+export async function getAdminMemoryPolicy(): Promise<AdminMemoryPolicyResponse> {
+  const response = await fetch(`${SYSTEM_SETTINGS_API_BASE}/admin-memory-policy`);
+
+  if (!response.ok) {
+    throw new Error(`Failed to get admin memory policy: ${response.statusText}`);
+  }
+
+  return response.json();
+}
+
+/**
+ * Update admin-level memory policy
+ */
+export async function updateAdminMemoryPolicy(
+  request: AdminMemoryPolicyUpdateRequest
+): Promise<{ status: string; policy: AdminMemoryPolicy; updated_at: string }> {
+  const response = await fetch(`${SYSTEM_SETTINGS_API_BASE}/admin-memory-policy`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(request),
+  });
+
+  if (!response.ok) {
+    throw new Error(`Failed to update admin memory policy: ${response.statusText}`);
+  }
+
+  return response.json();
+}
+
+/**
+ * Reset admin memory policy to environment defaults
+ */
+export async function resetAdminMemoryPolicy(): Promise<{ status: string; policy: AdminMemoryPolicy }> {
+  const response = await fetch(`${SYSTEM_SETTINGS_API_BASE}/admin-memory-policy/reset`, {
+    method: 'POST',
+  });
+
+  if (!response.ok) {
+    throw new Error(`Failed to reset admin memory policy: ${response.statusText}`);
+  }
+
+  return response.json();
+}
