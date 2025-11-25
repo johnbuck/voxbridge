@@ -1,5 +1,5 @@
 import { Link, useLocation } from 'wouter';
-import { Home, Brain, Settings } from 'lucide-react';
+import { Home, Brain, Database, Settings, Shield } from 'lucide-react';
 import { cn } from '../lib/utils';
 
 export default function Navigation() {
@@ -19,10 +19,22 @@ export default function Navigation() {
       description: 'Manage AI Agents'
     },
     {
+      path: '/memory',
+      label: 'Memory',
+      icon: Database,
+      description: 'Manage User Facts & Memory Settings'
+    },
+    {
       path: '/settings',
       label: 'Settings',
       icon: Settings,
       description: 'Configure Services & Integrations'
+    },
+    {
+      path: '/admin',
+      label: 'Admin',
+      icon: Shield,
+      description: 'Admin Panel - System Configuration'
     }
   ];
 

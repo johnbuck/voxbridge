@@ -4,12 +4,11 @@
 
 import { Link, useLocation } from 'wouter';
 import { cn } from '@/lib/utils';
-import { Brain, Mic, Volume2, Plug, Database, Shield } from 'lucide-react';
+import { Brain, Mic, Volume2, Plug, Database } from 'lucide-react';
 
 const settingsItems = [
   { href: '/settings/llm-providers', label: 'LLM Providers', icon: Brain },
   { href: '/settings/memory', label: 'Memory', icon: Brain },
-  { href: '/settings/admin-policy', label: 'Admin Policy', icon: Shield },
   { href: '/settings/whisperx', label: 'WhisperX STT', icon: Mic },
   { href: '/settings/chatterbox', label: 'Chatterbox TTS', icon: Volume2 },
   { href: '/settings/embeddings', label: 'Embeddings', icon: Database },
