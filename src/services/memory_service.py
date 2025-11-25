@@ -12,7 +12,7 @@ from mem0 import Memory
 from sqlalchemy import select, and_, func
 from src.database.models import User, UserFact, ExtractionTask, Agent, SystemSettings
 from src.database.session import get_db_session
-from src.services.llm_service import LLMService
+from src.services.llm_service import LLMService, LLMConfig, ProviderType
 from src.config.logging_config import get_logger
 
 # Configure logging
@@ -51,6 +51,74 @@ async def get_global_embedding_config() -> Optional[dict]:
         return None  # Fall back to environment variables
 
 
+async def get_embedding_model_status(model_name: str) -> dict:
+    """
+    Check if a HuggingFace embedding model is cached locally.
+
+    Args:
+        model_name: Model name (e.g., "sentence-transformers/all-mpnet-base-v2")
+
+    Returns:
+        dict with cache status:
+        {
+            "is_cached": bool,
+            "cache_size_mb": float,
+            "cache_location": str,
+            "last_modified": str,
+            "files_count": int
+        }
+    """
+    try:
+        from huggingface_hub import scan_cache_dir
+        from pathlib import Path
+
+        # Scan HuggingFace cache directory
+        cache_info = scan_cache_dir()
+
+        # Find the model in cache
+        for repo in cache_info.repos:
+            if repo.repo_id == model_name:
+                # Model is cached
+                size_mb = round(repo.size_on_disk / (1024 * 1024), 2)
+
+                # Get last modified time from most recent revision
+                last_modified = None
+                if repo.revisions:
+                    # Get the most recent revision's last modified time
+                    latest_revision = max(repo.revisions, key=lambda r: r.last_modified)
+                    last_modified = latest_revision.last_modified.isoformat()
+
+                # Count files in cache
+                files_count = sum(len(rev.files) for rev in repo.revisions)
+
+                logger.debug(f"📦 Model {model_name} found in cache: {size_mb} MB, {files_count} files")
+
+                return {
+                    "is_cached": True,
+                    "cache_size_mb": size_mb,
+                    "cache_location": str(repo.repo_path),
+                    "last_modified": last_modified,
+                    "files_count": files_count
+                }
+
+        # Model not found in cache
+        logger.debug(f"📦 Model {model_name} not found in cache")
+        return {
+            "is_cached": False,
+            "cache_size_mb": 0,
+            "cache_location": None,
+            "last_modified": None,
+            "files_count": 0
+        }
+
+    except Exception as e:
+        logger.error(f"❌ Failed to check embedding model cache status: {e}")
+        return {
+            "is_cached": False,
+            "error": str(e)
+        }
+
+
 class MemoryService:
     """
     Memory service for VoxBridge conversational memory system.
@@ -62,7 +130,7 @@ class MemoryService:
     - Metrics tracking for monitoring
     """
 
-    def __init__(self, db_embedding_config: Optional[dict] = None):
+    def __init__(self, db_embedding_config: Optional[dict] = None, ws_manager=None):
         """
         Initialize memory service with Mem0.
 
@@ -81,22 +149,45 @@ class MemoryService:
                     "model": "sentence-transformers/all-mpnet-base-v2",
                     "dims": 768
                 }
+            ws_manager: Optional WebSocketManager for broadcasting extraction status events
         """
         self.llm_service = LLMService()
+        self.ws_manager = ws_manager
+
+        # Initialize ThreadPoolExecutor for blocking Mem0 calls
+        from concurrent.futures import ThreadPoolExecutor
+        self.executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="mem0_extraction")
 
         # Build embedder config with 3-tier prioritization
         if db_embedding_config:
             # Priority 1: Database config (highest)
             embedder_config = self._build_embedder_config_from_db(db_embedding_config)
             provider_name = db_embedding_config.get('provider', 'local')
+            # Store original config for fact metadata
+            self.embedding_config = {
+                "provider": provider_name,
+                "model": db_embedding_config.get('model', 'sentence-transformers/all-mpnet-base-v2'),
+                "dimensions": db_embedding_config.get('dims', 768)
+            }
             logger.info(f"📊 Using database embedding config: {provider_name}")
+            logger.info(f"📊 Embedder config for Mem0: {embedder_config}")
         else:
             # Priority 2: Environment variables
             embedder_config = self._build_embedder_config_from_env()
             provider_name = os.getenv("EMBEDDING_PROVIDER", "local")
+            # Store original config for fact metadata
+            self.embedding_config = {
+                "provider": provider_name,
+                "model": os.getenv("EMBEDDING_MODEL", "sentence-transformers/all-mpnet-base-v2"),
+                "dimensions": int(os.getenv("EMBEDDING_DIMENSIONS", "768"))
+            }
             logger.info(f"🌍 Using environment embedding config: {provider_name}")
+            logger.info(f"🌍 Embedder config for Mem0: {embedder_config}")
 
         # Mem0 configuration
+        # Note: Ollama native API doesn't use /v1 suffix (only OpenAI-compatible API does)
+        ollama_base_url = os.getenv("LOCAL_LLM_BASE_URL", "http://ollama:11434").rstrip("/v1")
+
         config = {
             "vector_store": {
                 "provider": "pgvector",
@@ -110,10 +201,10 @@ class MemoryService:
                 }
             },
             "llm": {
-                "provider": "openai",
+                "provider": "ollama",
                 "config": {
-                    "model": "gpt-4o-mini",
-                    "api_key": os.getenv("OPENROUTER_API_KEY") or "dummy-key"  # OpenRouter API key for fact extraction
+                    "model": "gemma3n:latest",
+                    "ollama_base_url": ollama_base_url
                 }
             },
             "embedder": embedder_config
@@ -180,20 +271,87 @@ class MemoryService:
                             task.attempts += 1
                             await db.commit()
 
-                            # Extract facts (this will create its own db session)
-                            await self._extract_facts_from_turn(
-                                task.user_id,
-                                task.agent_id,
-                                task.user_message,
-                                task.ai_response
+                            # Broadcast processing event
+                            if self.ws_manager:
+                                try:
+                                    await self.ws_manager.broadcast({
+                                        "event": "memory_extraction_processing",
+                                        "data": {
+                                            "task_id": str(task.id),
+                                            "user_id": task.user_id,
+                                            "agent_id": str(task.agent_id),
+                                            "status": "processing",
+                                            "attempts": task.attempts
+                                        }
+                                    })
+                                except Exception as ws_error:
+                                    logger.warning(f"⚠️ Failed to broadcast processing event: {ws_error}")
+
+                            # Check if this is a manual fact creation (skip extraction pipeline)
+                            if task.user_message.startswith("MANUAL_FACT_CREATION:"):
+                                # Parse manual fact data from task
+                                import json
+                                json_data = task.user_message.replace("MANUAL_FACT_CREATION:", "")
+                                manual_data = json.loads(json_data)
+
+                                logger.info(f"📝 Processing manual fact creation: {manual_data['fact_key']} = {manual_data['fact_value']} (scope={manual_data.get('scope', 'agent')})")
+
+                                # Create fact directly (bypassing Mem0 relevance filter)
+                                await self._create_manual_fact(
+                                    task.user_id,
+                                    str(task.agent_id),              # Agent UUID for embedding config
+                                    manual_data.get('scope', 'agent'),  # 'global' or 'agent' from frontend
+                                    manual_data['fact_key'],
+                                    manual_data['fact_value'],
+                                    task.ai_response,  # fact_text
+                                    manual_data.get('importance', 0.8)
+                                )
+                            else:
+                                # Extract facts from conversation (this will create its own db session)
+                                await self._extract_facts_from_turn(
+                                    task.user_id,
+                                    task.agent_id,
+                                    task.user_message,
+                                    task.ai_response
+                                )
+
+                            # Count facts created for this task
+                            # Query UserFact table for facts created in this extraction
+                            facts_result = await db.execute(
+                                select(UserFact).where(
+                                    and_(
+                                        UserFact.user_id == (await db.execute(select(User.id).where(User.user_id == task.user_id))).scalar_one_or_none(),
+                                        UserFact.created_at >= task.created_at
+                                    )
+                                ).order_by(UserFact.created_at.desc())
                             )
+                            recent_facts = facts_result.scalars().all()
+                            facts_count = len(recent_facts)
+                            fact_ids = [str(f.id) for f in recent_facts[:5]]  # Limit to 5 most recent
 
                             # Mark as completed
                             task.status = "completed"
                             task.completed_at = func.now()
                             await db.commit()
 
-                            logger.info(f"✅ Completed extraction task {task.id}")
+                            logger.info(f"✅ Completed extraction task {task.id} ({facts_count} facts)")
+
+                            # Broadcast completed event
+                            if self.ws_manager:
+                                try:
+                                    await self.ws_manager.broadcast({
+                                        "event": "memory_extraction_completed",
+                                        "data": {
+                                            "task_id": str(task.id),
+                                            "user_id": task.user_id,
+                                            "agent_id": str(task.agent_id),
+                                            "status": "completed",
+                                            "facts_count": facts_count,
+                                            "fact_ids": fact_ids
+                                        }
+                                    })
+                                except Exception as ws_error:
+                                    logger.warning(f"⚠️ Failed to broadcast completed event: {ws_error}")
 
                         except Exception as e:
                             logger.error(f"❌ Extraction task {task.id} failed (attempt {task.attempts}): {e}")
@@ -201,12 +359,185 @@ class MemoryService:
                             task.error = str(e)
                             await db.commit()
 
+                            # Broadcast failed event
+                            if self.ws_manager:
+                                try:
+                                    await self.ws_manager.broadcast({
+                                        "event": "memory_extraction_failed",
+                                        "data": {
+                                            "task_id": str(task.id),
+                                            "user_id": task.user_id,
+                                            "agent_id": str(task.agent_id),
+                                            "status": "retrying" if task.attempts < 3 else "failed",
+                                            "attempts": task.attempts,
+                                            "error": str(e)
+                                        }
+                                    })
+                                except Exception as ws_error:
+                                    logger.warning(f"⚠️ Failed to broadcast failed event: {ws_error}")
+
                 # Sleep before next batch
                 await asyncio.sleep(5)
 
             except Exception as e:
                 logger.error(f"❌ Queue processor error: {e}")
                 await asyncio.sleep(10)
+
+    async def _create_manual_fact(
+        self,
+        user_id: str,
+        agent_id: str,
+        scope: str,
+        fact_key: str,
+        fact_value: str,
+        fact_text: str,
+        importance: float
+    ):
+        """
+        Create a fact directly without Mem0's relevance filter.
+        Used for manual fact creation from the UI.
+
+        Args:
+            user_id: User identifier
+            agent_id: Agent UUID (used for embedding configuration)
+            scope: 'global' (agent_id=NULL in DB, shared across agents) or 'agent' (agent_id=UUID, agent-specific)
+            fact_key: Fact key (e.g., 'name', 'location')
+            fact_value: Fact value (e.g., 'Alice', 'San Francisco')
+            fact_text: Natural language representation
+            importance: Importance score (0.0-1.0)
+        """
+        try:
+            logger.info(f"📝 [Step 1] Starting manual fact creation for '{fact_key}'...")
+            async with get_db_session() as db:
+                # Get or create user
+                logger.info(f"📝 [Step 2] Getting user '{user_id}'...")
+                result = await db.execute(
+                    select(User).where(User.user_id == user_id)
+                )
+                user = result.scalar_one_or_none()
+                if not user:
+                    logger.info(f"📝 [Step 2a] User not found, creating new user...")
+                    user = User(user_id=user_id, memory_extraction_enabled=True)
+                    db.add(user)
+                    await db.flush()
+                logger.info(f"✅ [Step 2] User obtained: {user.id}")
+
+                # Get agent for embedding configuration (always required)
+                logger.info(f"📝 [Step 3] Getting agent '{agent_id}' for embedding config...")
+                agent_result = await db.execute(
+                    select(Agent).where(Agent.id == UUID(agent_id))
+                )
+                agent = agent_result.scalar_one_or_none()
+                if not agent:
+                    raise ValueError(f"Agent {agent_id} not found")
+                logger.info(f"✅ [Step 3] Agent obtained: {agent.name}")
+
+                # Enforce user's allow_agent_specific_memory setting
+                if scope == 'agent' and not user.allow_agent_specific_memory:
+                    logger.warning(f"⚠️ User {user_id} tried to create agent-specific fact but has disabled agent memory, forcing to global")
+                    scope = 'global'
+
+                # Determine memory scope based on user's explicit choice (or enforced setting)
+                # - scope='global': shared across all agents (agent_id=NULL, vector=user_id)
+                # - scope='agent': agent-specific (agent_id=UUID, vector=user_id:agent_id)
+                if scope == 'global':
+                    mem_user_id = user_id  # Global vector
+                    fact_agent_id_for_db = None  # NULL in database
+                    logger.info(f"📝 [Step 4] Memory scope: GLOBAL (vector={mem_user_id}, db_agent_id=NULL)")
+                else:  # scope == 'agent'
+                    mem_user_id = f"{user_id}:{agent_id}"  # Agent-specific vector
+                    fact_agent_id_for_db = UUID(agent_id)  # UUID in database
+                    logger.info(f"📝 [Step 4] Memory scope: AGENT-SPECIFIC (vector={mem_user_id}, db_agent_id={agent_id})")
+
+                # Create vector embedding using Mem0 (bypassing relevance filter)
+                logger.info(f"📝 [Step 5] Creating vector embedding via Mem0 for text: '{fact_text[:50]}...'")
+                logger.info(f"📝 [Step 5a] Using embedding config: {self.embedding_config}")
+                logger.info(f"📝 [Step 5b] Calling memory.add() with infer=False to force creation (no relevance filter)")
+                loop = asyncio.get_event_loop()
+                mem0_result = await loop.run_in_executor(
+                    self.executor,
+                    lambda: self.memory.add(
+                        messages=[{"role": "user", "content": fact_text}],
+                        user_id=mem_user_id,
+                        infer=False  # CRITICAL: Disable relevance filter for manual facts
+                    )
+                )
+                logger.info(f"📝 [Step 5c] Mem0 result received: {mem0_result}")
+
+                # Manual facts (infer=False) return {'results': [...]} instead of {'memories': [...]}
+                if not mem0_result or "results" not in mem0_result or len(mem0_result["results"]) == 0:
+                    raise ValueError("Mem0 failed to create vector embedding")
+
+                vector_id = mem0_result["results"][0]["id"]
+                logger.info(f"✅ [Step 5] Created vector embedding: {vector_id}")
+
+                # Create fact in database
+                logger.info(f"📝 [Step 6] Creating UserFact database record...")
+                logger.info(f"📝 [Step 6a] agent_id for fact: {fact_agent_id_for_db} (scope={scope}, user-selected)")
+
+                fact = UserFact(
+                    user_id=user.id,
+                    agent_id=fact_agent_id_for_db,
+                    fact_key=fact_key,
+                    fact_value=fact_value,
+                    fact_text=fact_text,
+                    vector_id=vector_id,
+                    importance=importance,
+                    embedding_provider=self.embedding_config["provider"],
+                    embedding_model=self.embedding_config["model"],
+                    validity_start=func.now()
+                )
+
+                try:
+                    logger.info(f"📝 [Step 7] Committing fact to database...")
+                    db.add(fact)
+                    await db.commit()
+                    await db.refresh(fact)
+
+                    logger.info(f"✅ Created manual fact: {fact_key} = {fact_value} (fact_id={fact.id}, vector_id={vector_id})")
+
+                except Exception as db_error:
+                    # COMPENSATING TRANSACTION: Database commit failed after Mem0 vector created
+                    # Delete the orphaned vector to maintain consistency
+                    logger.error(f"❌ Database commit failed after vector creation: {db_error}")
+                    logger.warning(f"🔄 COMPENSATING TRANSACTION: Deleting orphaned vector {vector_id}")
+
+                    try:
+                        # Delete the vector from Mem0
+                        loop = asyncio.get_event_loop()
+                        await loop.run_in_executor(
+                            self.executor,
+                            lambda: self.memory.delete(memory_id=vector_id)
+                        )
+                        logger.info(f"✅ Compensating transaction successful: Deleted orphaned vector {vector_id}")
+                    except Exception as compensation_error:
+                        logger.error(f"❌ COMPENSATION FAILED: Could not delete orphaned vector {vector_id}: {compensation_error}")
+                        logger.error(f"⚠️ Orphaned vector {vector_id} will remain without fact")
+
+                        # Broadcast compensation failure to frontend
+                        if self.ws_manager:
+                            try:
+                                await self.ws_manager.broadcast({
+                                    "type": "memory_error",
+                                    "message": "Failed to create memory due to database error. Please try again.",
+                                    "details": {
+                                        "vector_id": vector_id,
+                                        "error": str(db_error),
+                                        "compensation_failed": True
+                                    }
+                                })
+                            except Exception as ws_error:
+                                logger.error(f"❌ WebSocket broadcast failed: {ws_error}")
+
+                    # Re-raise original database error
+                    raise db_error
+
+        except Exception as e:
+            import traceback
+            logger.error(f"❌ Failed to create manual fact: {e}")
+            logger.error(f"📋 Exception type: {type(e).__name__}")
+            logger.error(f"📋 Full traceback:\n{traceback.format_exc()}")
+            raise
 
     async def _extract_facts_from_turn(
         self,
@@ -231,8 +562,18 @@ class MemoryService:
             # Determine memory scope
             if agent.memory_scope == "global":
                 mem_user_id = user_id  # Global memory across all agents
+                fact_agent_id = None  # NULL for global facts
             else:
                 mem_user_id = f"{user_id}:{agent_id}"  # Agent-specific memory
+                fact_agent_id = agent_id  # UUID for agent-specific facts
+
+            # Override agent_id if user has disabled agent-specific memory
+            if not user.allow_agent_specific_memory:
+                logger.info(f"🔒 User {user_id} has disabled agent-specific memory, forcing facts to global")
+                mem_user_id = user_id  # Force global memory
+                fact_agent_id = None  # Force NULL (global fact)
+
+            logger.info(f"📝 Memory scope: {agent.memory_scope}, fact_agent_id: {fact_agent_id}")
 
             # Call Mem0 to extract facts
             result = self.memory.add(
@@ -248,7 +589,7 @@ class MemoryService:
                 for memory in result["memories"]:
                     await self._upsert_fact(
                         user=user,
-                        agent_id=agent_id,
+                        agent_id=fact_agent_id,
                         vector_id=memory["id"],
                         fact_text=memory["memory"],
                         importance=memory.get("score", 0.5),
@@ -415,9 +756,19 @@ Should we extract and store facts from this conversation?
 Answer with only "yes" or "no".
 """
 
-        response = await self.llm_service.generate(
+        # Create LLM config for relevance check
+        # Use LOCAL provider since OpenRouter may not be configured
+        config = LLMConfig(
+            provider=ProviderType.LOCAL,
+            model=os.getenv("LOCAL_LLM_RELEVANCE_MODEL", "gemma3n:latest"),
+            temperature=0.3,
+        )
+
+        response = await self.llm_service.generate_response(
+            session_id="memory_relevance_check",
             messages=[{"role": "system", "content": relevance_prompt}],
-            model_override="gpt-4o-mini"
+            config=config,
+            stream=False
         )
 
         return response.strip().lower() == "yes"
@@ -448,7 +799,7 @@ Answer with only "yes" or "no".
     async def _upsert_fact(
         self,
         user: User,
-        agent_id: UUID,
+        agent_id: UUID | None,
         vector_id: str,
         fact_text: str,
         importance: float,
@@ -458,19 +809,33 @@ Answer with only "yes" or "no".
     ):
         """
         Upsert fact to PostgreSQL (for relational queries and metadata).
+
+        Args:
+            agent_id: UUID for agent-specific facts, None for global facts
         """
         # Extract fact key from text (e.g., "name", "location")
         fact_key = fact_text.split(":")[0].strip().lower() if ":" in fact_text else "general"
         fact_value = fact_text.split(":", 1)[1].strip() if ":" in fact_text else fact_text
 
-        # Check if fact exists
-        result = await db.execute(
-            select(UserFact).where(and_(
-                UserFact.user_id == user.id,
-                UserFact.fact_key == fact_key,
-                UserFact.agent_id == agent_id
-            ))
-        )
+        # Check if fact exists - handle NULL agent_id for global facts
+        if agent_id is None:
+            # Global fact: agent_id IS NULL
+            result = await db.execute(
+                select(UserFact).where(and_(
+                    UserFact.user_id == user.id,
+                    UserFact.fact_key == fact_key,
+                    UserFact.agent_id.is_(None)
+                ))
+            )
+        else:
+            # Agent-specific fact: agent_id = UUID
+            result = await db.execute(
+                select(UserFact).where(and_(
+                    UserFact.user_id == user.id,
+                    UserFact.fact_key == fact_key,
+                    UserFact.agent_id == agent_id
+                ))
+            )
         existing = result.scalar_one_or_none()
 
         if existing:
@@ -495,4 +860,40 @@ Answer with only "yes" or "no".
             )
             db.add(fact)
 
-        await db.commit()
+        try:
+            await db.commit()
+        except Exception as db_error:
+            # COMPENSATING TRANSACTION: Database commit failed after Mem0 vector created
+            # Delete the orphaned vector to maintain consistency
+            logger.error(f"❌ Database commit failed in _upsert_fact after vector creation: {db_error}")
+            logger.warning(f"🔄 COMPENSATING TRANSACTION: Deleting orphaned vector {vector_id}")
+
+            try:
+                # Delete the vector from Mem0
+                loop = asyncio.get_event_loop()
+                await loop.run_in_executor(
+                    self.executor,
+                    lambda: self.memory.delete(memory_id=vector_id)
+                )
+                logger.info(f"✅ Compensating transaction successful: Deleted orphaned vector {vector_id}")
+            except Exception as compensation_error:
+                logger.error(f"❌ COMPENSATION FAILED: Could not delete orphaned vector {vector_id}: {compensation_error}")
+                logger.error(f"⚠️ Orphaned vector {vector_id} will remain without fact")
+
+                # Broadcast compensation failure to frontend
+                if self.ws_manager:
+                    try:
+                        await self.ws_manager.broadcast({
+                            "type": "memory_error",
+                            "message": "Failed to create memory due to database error. Please try again.",
+                            "details": {
+                                "vector_id": vector_id,
+                                "error": str(db_error),
+                                "compensation_failed": True
+                            }
+                        })
+                    except Exception as ws_error:
+                        logger.error(f"❌ WebSocket broadcast failed: {ws_error}")
+
+            # Re-raise original database error
+            raise db_error
