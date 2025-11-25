@@ -22,6 +22,8 @@ from sqlalchemy import (
     Boolean,
     ForeignKey,
     Integer,
+    UniqueConstraint,
+    Index,
 )
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import declarative_base, relationship
@@ -109,6 +111,7 @@ class Agent(Base):
     # Relationships
     sessions = relationship("Session", back_populates="agent", cascade="all, delete-orphan")
     llm_provider_ref = relationship("LLMProvider", foreign_keys=[llm_provider_id])
+    user_memory_settings = relationship("UserAgentMemorySetting", back_populates="agent", cascade="all, delete-orphan")
 
     def __repr__(self):
         return f"<Agent(id={self.id}, name='{self.name}', llm_provider='{self.llm_provider}')>"
@@ -293,9 +296,61 @@ class User(Base):
 
     # Relationships
     facts = relationship("UserFact", back_populates="user", cascade="all, delete-orphan")
+    agent_memory_settings = relationship("UserAgentMemorySetting", back_populates="user", cascade="all, delete-orphan")
 
     def __repr__(self):
         return f"<User(id={self.id}, user_id='{self.user_id}', display_name='{self.display_name}')>"
+
+
+class UserAgentMemorySetting(Base):
+    """
+    Per-Agent Memory Preferences for Users
+
+    Stores user's memory scope preference for each agent.
+    Enables fine-grained control: User can configure Agent A for private memory,
+    Agent B for global memory, etc.
+
+    Phase 2: Per-Agent Memory Preferences
+    - Absence of row = user hasn't set preference (use agent default from Agent.memory_scope)
+    - allow_agent_specific_memory = True: Private memories (user_id:agent_id namespace)
+    - allow_agent_specific_memory = False: Global memories (user_id namespace)
+
+    Hierarchy (Two-Tier):
+    1. Admin Policy (allow_agent_specific_memory_globally) - Hard constraint
+    2. Per-Agent User Preference (this table) - Falls back to Agent.memory_scope
+    """
+
+    __tablename__ = "user_agent_memory_settings"
+
+    # Primary key - UUID for global uniqueness
+    id = Column(UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()"))
+
+    # Associations
+    user_id = Column(String(255), ForeignKey("users.user_id", ondelete="CASCADE"), nullable=False, index=True)
+    agent_id = Column(UUID(as_uuid=True), ForeignKey("agents.id", ondelete="CASCADE"), nullable=False, index=True)
+
+    # Preference
+    allow_agent_specific_memory = Column(Boolean, nullable=False)
+
+    # Metadata
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    # Relationships
+    user = relationship("User", back_populates="agent_memory_settings")
+    agent = relationship("Agent", back_populates="user_memory_settings")
+
+    # Table constraints
+    __table_args__ = (
+        # Unique constraint: One preference per user-agent pair
+        # If user wants different setting, they update existing row
+        # If row doesn't exist, fall back to agent default
+        UniqueConstraint('user_id', 'agent_id', name='uq_user_agent_memory_settings'),
+        # Indexes for performance (user_id and agent_id are already indexed via Column index=True)
+    )
+
+    def __repr__(self):
+        return f"<UserAgentMemorySetting(user_id='{self.user_id}', agent_id={self.agent_id}, allow={self.allow_agent_specific_memory})>"
 
 
 class UserFact(Base):
