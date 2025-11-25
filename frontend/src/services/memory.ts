@@ -296,3 +296,147 @@ export async function resetAdminMemoryPolicy(): Promise<{ status: string; policy
 
   return response.json();
 }
+
+// Per-Agent Memory Configuration (Phase 6: Interactive Memory Controls)
+const AGENTS_API_BASE = 'http://localhost:4900/api/agents';
+
+export interface AgentMemoryConfig {
+  effective_scope: 'global' | 'agent';
+  source: 'admin' | 'user' | 'agent';
+  admin_allows: boolean;
+  user_preference: {
+    id: string;
+    user_id: string;
+    agent_id: string;
+    allow_agent_specific_memory: boolean;
+    created_at: string;
+    updated_at: string;
+  } | null;
+  agent_default: 'global' | 'agent';
+}
+
+/**
+ * Get effective memory configuration for an agent
+ * Implements two-tier hierarchy: Admin Policy → User Preference → Agent Default
+ */
+export async function getAgentMemoryConfig(
+  agentId: string,
+  userId: string,
+  agentDefault: 'global' | 'agent'
+): Promise<AgentMemoryConfig> {
+  // Tier 1: Check admin policy
+  const adminPolicyResponse = await getAdminMemoryPolicy();
+  const adminAllows = adminPolicyResponse.policy.allow_agent_specific_memory_globally;
+
+  if (!adminAllows) {
+    // Admin policy blocks agent-specific memory
+    return {
+      effective_scope: 'global',
+      source: 'admin',
+      admin_allows: false,
+      user_preference: null,
+      agent_default: agentDefault,
+    };
+  }
+
+  // Tier 2: Check user preference
+  try {
+    const response = await fetch(
+      `${AGENTS_API_BASE}/${agentId}/memory-preference?user_id=${encodeURIComponent(userId)}`
+    );
+
+    if (response.ok) {
+      const userPref = await response.json();
+      return {
+        effective_scope: userPref.allow_agent_specific_memory ? 'agent' : 'global',
+        source: 'user',
+        admin_allows: true,
+        user_preference: userPref,
+        agent_default: agentDefault,
+      };
+    }
+
+    // 404 means no user preference set, fall through to agent default
+    if (response.status !== 404) {
+      throw new Error(`Failed to get user preference: ${response.statusText}`);
+    }
+  } catch (error) {
+    console.error('[getAgentMemoryConfig] Error fetching user preference:', error);
+    // Fall through to agent default
+  }
+
+  // Tier 3: Use agent default
+  return {
+    effective_scope: agentDefault,
+    source: 'agent',
+    admin_allows: true,
+    user_preference: null,
+    agent_default: agentDefault,
+  };
+}
+
+/**
+ * Set user's memory preference for an agent
+ */
+export async function setUserAgentMemorySetting(
+  agentId: string,
+  userId: string,
+  allowAgentSpecific: boolean
+): Promise<AgentMemoryConfig> {
+  const response = await fetch(`${AGENTS_API_BASE}/${agentId}/memory-preference`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      user_id: userId,
+      allow_agent_specific_memory: allowAgentSpecific,
+    }),
+  });
+
+  if (!response.ok) {
+    throw new Error(`Failed to set memory preference: ${response.statusText}`);
+  }
+
+  const userPref = await response.json();
+
+  // Re-fetch config to get effective scope with admin policy considered
+  const adminPolicyResponse = await getAdminMemoryPolicy();
+  const adminAllows = adminPolicyResponse.policy.allow_agent_specific_memory_globally;
+
+  return {
+    effective_scope: adminAllows && userPref.allow_agent_specific_memory ? 'agent' : 'global',
+    source: 'user',
+    admin_allows: adminAllows,
+    user_preference: userPref,
+    agent_default: userPref.allow_agent_specific_memory ? 'agent' : 'global', // Fallback approximation
+  };
+}
+
+/**
+ * Reset user's memory preference for an agent (delete override, revert to agent default)
+ */
+export async function resetUserAgentMemorySetting(
+  agentId: string,
+  userId: string,
+  agentDefault: 'global' | 'agent'
+): Promise<AgentMemoryConfig> {
+  const response = await fetch(
+    `${AGENTS_API_BASE}/${agentId}/memory-preference?user_id=${encodeURIComponent(userId)}`,
+    { method: 'DELETE' }
+  );
+
+  if (!response.ok) {
+    throw new Error(`Failed to reset memory preference: ${response.statusText}`);
+  }
+
+  // After deleting, effective scope reverts to agent default (if admin allows)
+  const adminPolicyResponse = await getAdminMemoryPolicy();
+  const adminAllows = adminPolicyResponse.policy.allow_agent_specific_memory_globally;
+
+  return {
+    effective_scope: adminAllows && agentDefault === 'agent' ? 'agent' : 'global',
+    source: 'agent',
+    admin_allows: adminAllows,
+    user_preference: null,
+    agent_default: agentDefault,
+  };
+}
