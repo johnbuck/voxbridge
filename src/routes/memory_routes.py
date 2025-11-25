@@ -33,7 +33,7 @@ from sqlalchemy import select, delete as sql_delete, and_, func
 
 from src.database.models import User, UserFact, Agent, ExtractionTask
 from src.database.session import get_db_session
-from src.services.memory_service import MemoryService, get_global_embedding_config
+from src.services.memory_service import MemoryService, get_global_embedding_config, get_admin_memory_policy
 from src.config.logging_config import get_logger
 
 # Import global memory_service instance
@@ -577,6 +577,15 @@ async def update_memory_settings(user_id: str, request: MemorySettingsUpdateRequ
 
                 # Handle allow_agent_specific_memory toggle
                 if request.allow_agent_specific_memory is not None:
+                    # VALIDATION: Prevent user from enabling if admin has disabled globally
+                    if request.allow_agent_specific_memory:
+                        admin_allows_agent_memory = await get_admin_memory_policy()
+                        if not admin_allows_agent_memory:
+                            raise HTTPException(
+                                status_code=403,
+                                detail="Cannot enable agent-specific memory: disabled by administrator"
+                            )
+
                     # If toggling from True to False, delete all agent-specific facts
                     if user.allow_agent_specific_memory and not request.allow_agent_specific_memory:
                         logger.info(f"🗑️ Deleting agent-specific facts for user {user_id} (toggle OFF)")
