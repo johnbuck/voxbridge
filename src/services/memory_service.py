@@ -51,6 +51,45 @@ async def get_global_embedding_config() -> Optional[dict]:
         return None  # Fall back to environment variables
 
 
+async def get_admin_memory_policy() -> bool:
+    """
+    Fetch admin memory policy from database with fallback to environment variable.
+
+    THREE-TIER HIERARCHY for agent-specific memory:
+    1. Admin Global Policy (this function) - Highest priority
+    2. Per-Agent Default (Agent.memory_scope) - Only if admin allows
+    3. User Restriction (User.allow_agent_specific_memory) - Can further restrict
+
+    Returns:
+        bool: True if agent-specific memories are allowed globally, False if forced to global
+
+    Priority:
+        1. Database (system_settings.admin_memory_policy)
+        2. Environment variable (ADMIN_ALLOW_AGENT_SPECIFIC_MEMORY)
+        3. Hardcoded default (True - maintains current behavior)
+    """
+    try:
+        async with get_db_session() as db:
+            result = await db.execute(
+                select(SystemSettings).where(SystemSettings.setting_key == "admin_memory_policy")
+            )
+            setting = result.scalar_one_or_none()
+
+            if setting:
+                policy = setting.setting_value.get("allow_agent_specific_memory_globally", True)
+                logger.debug(f"📊 Retrieved admin memory policy from database: {policy}")
+                return policy
+            else:
+                # Fall back to environment variable
+                env_policy = os.getenv("ADMIN_ALLOW_AGENT_SPECIFIC_MEMORY", "true").lower() == "true"
+                logger.debug(f"🌍 Using admin memory policy from environment/default: {env_policy}")
+                return env_policy
+    except Exception as e:
+        logger.error(f"❌ Failed to fetch admin memory policy from database: {e}")
+        # Fall back to safe default (allow agent-specific memory)
+        return True
+
+
 async def get_embedding_model_status(model_name: str) -> dict:
     """
     Check if a HuggingFace embedding model is cached locally.
@@ -432,12 +471,22 @@ class MemoryService:
                     raise ValueError(f"Agent {agent_id} not found")
                 logger.info(f"✅ [Step 3] Agent obtained: {agent.name}")
 
-                # Enforce user's allow_agent_specific_memory setting
-                if scope == 'agent' and not user.allow_agent_specific_memory:
-                    logger.warning(f"⚠️ User {user_id} tried to create agent-specific fact but has disabled agent memory, forcing to global")
+                # THREE-TIER HIERARCHY: Enforce memory scope policy
+                # Tier 1: Check admin global policy (highest priority)
+                admin_allows_agent_memory = await get_admin_memory_policy()
+                if scope == 'agent' and not admin_allows_agent_memory:
+                    logger.warning("⚠️ Admin policy: agent-specific memory disabled globally, forcing to global")
                     scope = 'global'
 
-                # Determine memory scope based on user's explicit choice (or enforced setting)
+                # Tier 2: Check user restriction (can further restrict what admin allows)
+                elif scope == 'agent' and not user.allow_agent_specific_memory:
+                    logger.warning(f"⚠️ User {user_id} has disabled agent-specific memory, forcing to global")
+                    scope = 'global'
+
+                # Tier 3: Agent default is already reflected in the scope parameter
+                # (no additional check needed here - agent.memory_scope not used in manual creation)
+
+                # Determine memory scope based on final enforced scope
                 # - scope='global': shared across all agents (agent_id=NULL, vector=user_id)
                 # - scope='agent': agent-specific (agent_id=UUID, vector=user_id:agent_id)
                 if scope == 'global':
@@ -559,21 +608,33 @@ class MemoryService:
             # Get agent
             agent = await self._get_agent(agent_id, db)
 
-            # Determine memory scope
-            if agent.memory_scope == "global":
-                mem_user_id = user_id  # Global memory across all agents
-                fact_agent_id = None  # NULL for global facts
-            else:
-                mem_user_id = f"{user_id}:{agent_id}"  # Agent-specific memory
-                fact_agent_id = agent_id  # UUID for agent-specific facts
+            # THREE-TIER HIERARCHY: Determine memory scope
+            # Tier 1: Check admin global policy (highest priority)
+            admin_allows_agent_memory = await get_admin_memory_policy()
 
-            # Override agent_id if user has disabled agent-specific memory
-            if not user.allow_agent_specific_memory:
+            if not admin_allows_agent_memory:
+                # Admin enforces global memory system-wide
+                logger.info("🔒 Admin policy: agent-specific memory disabled globally, forcing facts to global")
+                mem_user_id = user_id  # Force global memory
+                fact_agent_id = None  # Force NULL (global fact)
+
+            # Tier 2: Check user restriction (can further restrict what admin allows)
+            elif not user.allow_agent_specific_memory:
                 logger.info(f"🔒 User {user_id} has disabled agent-specific memory, forcing facts to global")
                 mem_user_id = user_id  # Force global memory
                 fact_agent_id = None  # Force NULL (global fact)
 
-            logger.info(f"📝 Memory scope: {agent.memory_scope}, fact_agent_id: {fact_agent_id}")
+            # Tier 3: Check agent default (only if admin and user both allow)
+            elif agent.memory_scope == "global":
+                logger.info(f"🌍 Agent {agent_id} configured for global memory")
+                mem_user_id = user_id  # Global memory across all agents
+                fact_agent_id = None  # NULL for global facts
+            else:
+                logger.info(f"🎯 Agent {agent_id} configured for agent-specific memory")
+                mem_user_id = f"{user_id}:{agent_id}"  # Agent-specific memory
+                fact_agent_id = agent_id  # UUID for agent-specific facts
+
+            logger.info(f"📝 Final memory scope: agent.memory_scope={agent.memory_scope}, fact_agent_id={fact_agent_id}")
 
             # Call Mem0 to extract facts
             result = self.memory.add(
