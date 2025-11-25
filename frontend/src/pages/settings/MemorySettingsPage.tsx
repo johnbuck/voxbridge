@@ -152,7 +152,10 @@ export function MemorySettingsPage() {
                 <p className="text-xs text-yellow-600/90">
                   The administrator has disabled agent-specific memory system-wide. All new
                   memories will be forced to global scope regardless of your preference. You cannot
-                  enable agent-specific memory until the admin policy is changed.
+                  enable agent-specific memory until the admin policy is changed in the{' '}
+                  <a href="/admin/memory-policy" className="underline hover:text-yellow-700">
+                    Admin Panel
+                  </a>.
                 </p>
               </div>
             </div>
