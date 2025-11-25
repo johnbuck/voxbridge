@@ -280,6 +280,7 @@ class User(Base):
     # Memory Configuration
     embedding_provider = Column(String(50), server_default='azure')  # 'azure' or 'local'
     memory_extraction_enabled = Column(Boolean, server_default=text('false'))  # Opt-in (GDPR)
+    allow_agent_specific_memory = Column(Boolean, server_default=text('true'))  # When False: forces all facts to global, deletes existing agent-specific facts
 
     # Authentication (WebRTC users only)
     auth_token = Column(String(255), unique=True, nullable=True, index=True)  # JWT or random token
