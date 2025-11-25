@@ -7,7 +7,7 @@ import type { Agent } from '@/services/api';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { Edit2, Trash2, Brain, Mic, ThermometerIcon, Star } from 'lucide-react';
+import { Edit2, Trash2, Brain, Mic, ThermometerIcon, Star, Globe, Lock } from 'lucide-react';
 import { DiscordPluginCard } from '@/components/DiscordPluginCard';
 
 interface AgentCardProps {
@@ -48,6 +48,27 @@ export function AgentCard({ agent, onEdit, onDelete, onSetDefault }: AgentCardPr
                     Default
                   </Badge>
                 )}
+                {/* Memory Scope Badge (Phase 6: Per-Agent Memory Preferences) */}
+                <Badge
+                  variant="outline"
+                  className={agent.memory_scope === 'agent'
+                    ? 'bg-green-500/20 text-green-400 border-green-500/50'
+                    : 'bg-blue-500/20 text-blue-400 border-blue-500/50'
+                  }
+                  title={agent.memory_scope === 'agent' ? 'Private memories per user' : 'Shared global memories'}
+                >
+                  {agent.memory_scope === 'agent' ? (
+                    <>
+                      <Lock className="h-3 w-3 mr-1" />
+                      Private
+                    </>
+                  ) : (
+                    <>
+                      <Globe className="h-3 w-3 mr-1" />
+                      Global
+                    </>
+                  )}
+                </Badge>
               </div>
             </div>
             <div className="flex gap-1 ml-2">

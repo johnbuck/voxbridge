@@ -56,6 +56,9 @@ export function AgentForm({ open, onOpenChange, agent, onSubmit }: AgentFormProp
   const [ttsLanguage, setTtsLanguage] = useState('en');
   const [filterActionsForTts, setFilterActionsForTts] = useState(false);
 
+  // Memory Scope (Phase 5: Per-Agent Memory Preferences)
+  const [memoryScope, setMemoryScope] = useState<'global' | 'agent'>('global');
+
   // Voice Configuration
   const [maxUtteranceTimeMs, setMaxUtteranceTimeMs] = useState<number>(120000); // 2 minutes default
 
@@ -124,6 +127,7 @@ export function AgentForm({ open, onOpenChange, agent, onSubmit }: AgentFormProp
       setTtsLanguage(agent.tts_language);
       setFilterActionsForTts(agent.filter_actions_for_tts || false);
       setMaxUtteranceTimeMs(agent.max_utterance_time_ms ?? 120000);
+      setMemoryScope(agent.memory_scope);
 
       // Load Discord plugin config if present
       if (agent.plugins?.discord) {
@@ -153,6 +157,7 @@ export function AgentForm({ open, onOpenChange, agent, onSubmit }: AgentFormProp
       setTtsLanguage('en');
       setFilterActionsForTts(false);
       setMaxUtteranceTimeMs(120000);
+      setMemoryScope('global');
       setDiscordEnabled(false);
       setDiscordBotToken('');
       setDiscordAutoJoin(false);
@@ -185,6 +190,7 @@ export function AgentForm({ open, onOpenChange, agent, onSubmit }: AgentFormProp
         llm_model: llmModel,
         use_n8n: useN8n,
         n8n_webhook_url: n8nWebhookUrl || null,
+        memory_scope: memoryScope,
         tts_voice: ttsVoice || null,
         tts_exaggeration: ttsExaggeration,
         tts_cfg_weight: ttsCfgWeight,
@@ -321,6 +327,23 @@ export function AgentForm({ open, onOpenChange, agent, onSubmit }: AgentFormProp
               </p>
             </div>
           )}
+
+          {/* Memory Scope Configuration (Phase 5: Per-Agent Memory Preferences) */}
+          <div className="space-y-2">
+            <Label htmlFor="memoryScope">Default Memory Scope</Label>
+            <Select value={memoryScope} onValueChange={(val) => setMemoryScope(val as 'global' | 'agent')}>
+              <SelectTrigger id="memoryScope">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="global">Global Memory (Shared across users)</SelectItem>
+                <SelectItem value="agent">Agent Memory (Private per user)</SelectItem>
+              </SelectContent>
+            </Select>
+            <p className="text-xs text-muted-foreground">
+              Choose the default memory scope for this agent. Users can override this on a per-agent basis in their preferences.
+            </p>
+          </div>
 
           {/* TTS Configuration - Aligned with Chatterbox TTS API */}
           <div className="space-y-4 pt-4 border-t">

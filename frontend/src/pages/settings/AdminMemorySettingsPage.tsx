@@ -193,20 +193,20 @@ export function AdminMemorySettingsPage() {
         </CardContent>
       </Card>
 
-      {/* Three-Tier Hierarchy Explanation */}
+      {/* Two-Tier Hierarchy Explanation (Phase 8: Per-Agent Memory Preferences) */}
       <Card>
         <CardHeader>
           <div className="flex items-center gap-2">
             <Info className="h-5 w-5" />
-            <CardTitle>Three-Tier Memory Hierarchy</CardTitle>
+            <CardTitle>Two-Tier Memory Hierarchy</CardTitle>
           </div>
           <CardDescription>
-            How admin policy, user preferences, and agent defaults interact
+            How admin policy and user preferences interact
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="space-y-3">
-            {/* Tier 1 */}
+            {/* Tier 1: Admin Global Policy */}
             <div className="flex items-start gap-3">
               <div className="flex h-6 w-6 items-center justify-center rounded-full bg-red-100 text-red-700 text-xs font-bold flex-shrink-0">
                 1
@@ -214,33 +214,22 @@ export function AdminMemorySettingsPage() {
               <div>
                 <p className="text-sm font-medium">Admin Global Policy (Highest Priority)</p>
                 <p className="text-xs text-muted-foreground">
-                  Enforced by this page. Sets the maximum capability system-wide.
+                  System-wide on/off switch. When disabled, ALL memories forced to global
+                  regardless of user or agent preferences.
                 </p>
               </div>
             </div>
 
-            {/* Tier 2 */}
+            {/* Tier 2: Per-Agent User Preference */}
             <div className="flex items-start gap-3">
-              <div className="flex h-6 w-6 items-center justify-center rounded-full bg-yellow-100 text-yellow-700 text-xs font-bold flex-shrink-0">
+              <div className="flex h-6 w-6 items-center justify-center rounded-full bg-blue-100 text-blue-700 text-xs font-bold flex-shrink-0">
                 2
               </div>
               <div>
-                <p className="text-sm font-medium">User Restriction (Middle Priority)</p>
+                <p className="text-sm font-medium">Per-Agent User Preference</p>
                 <p className="text-xs text-muted-foreground">
-                  Users can restrict further (but cannot expand beyond admin policy).
-                </p>
-              </div>
-            </div>
-
-            {/* Tier 3 */}
-            <div className="flex items-start gap-3">
-              <div className="flex h-6 w-6 items-center justify-center rounded-full bg-blue-100 text-blue-700 text-xs font-bold flex-shrink-0">
-                3
-              </div>
-              <div>
-                <p className="text-sm font-medium">Agent Default (Lowest Priority)</p>
-                <p className="text-xs text-muted-foreground">
-                  Per-agent memory_scope setting (only applies if admin and user allow).
+                  Users configure memory scope for each agent individually. Falls back to
+                  agent's default memory_scope if no preference set.
                 </p>
               </div>
             </div>
@@ -248,9 +237,9 @@ export function AdminMemorySettingsPage() {
 
           <div className="pt-2 border-t">
             <p className="text-xs text-muted-foreground">
-              <strong>Enforcement Principle:</strong> "Admin sets the ceiling, users can only lower
-              it, not raise it." This ensures admin has ultimate control while allowing user
-              privacy preferences.
+              <strong>Key Changes:</strong> Removed global user toggle. Memory preferences now
+              managed per-agent in the Agents page, providing fine-grained control while
+              respecting admin policy.
             </p>
           </div>
         </CardContent>

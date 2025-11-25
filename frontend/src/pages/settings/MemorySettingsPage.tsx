@@ -18,7 +18,8 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
-import { Brain, Download, Trash2, Database, AlertTriangle } from 'lucide-react';
+import { Brain, Download, Trash2, Database, AlertTriangle, Settings } from 'lucide-react';
+import { Link } from 'react-router-dom';
 import { useToastHelpers } from '@/components/ui/toast';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import * as memoryApi from '@/services/memory';
@@ -199,7 +200,7 @@ export function MemorySettingsPage() {
         </CardContent>
       </Card>
 
-      {/* Agent-Specific Memory Toggle Card */}
+      {/* Per-Agent Memory Management Link (Phase 7: Per-Agent Memory Preferences) */}
       <Card>
         <CardHeader>
           <div className="flex items-center gap-2">
@@ -207,46 +208,35 @@ export function MemorySettingsPage() {
             <CardTitle>Agent-Specific Memory</CardTitle>
           </div>
           <CardDescription>
-            Control whether agents can store agent-specific memories
+            Manage memory preferences per agent
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
-          <div className="flex items-center justify-between">
-            <div className="space-y-0.5">
-              <Label htmlFor="agent-memory">Allow Agent-Specific Memory</Label>
-              <p className="text-sm text-muted-foreground">
-                {adminAllowsAgentMemory
-                  ? 'Let each agent store private memories specific to conversations with that agent'
-                  : 'Cannot enable: Administrator has disabled agent-specific memory globally'}
-              </p>
-            </div>
-            <Switch
-              id="agent-memory"
-              checked={settings?.allow_agent_specific_memory ?? true}
-              onCheckedChange={(checked) => {
-                if (!checked && settings && settings.agent_specific_facts > 0) {
-                  // Show warning dialog before toggling OFF
-                  setAgentMemoryDialogOpen(true);
-                } else {
-                  // Toggle ON or no facts to delete
-                  updateSettingsMutation.mutate({ allow_agent_specific_memory: checked });
-                }
-              }}
-              disabled={updateSettingsMutation.isPending || !adminAllowsAgentMemory}
-            />
-          </div>
+          <p className="text-sm text-muted-foreground">
+            Memory preferences are now managed per-agent instead of globally.
+            Configure whether each agent stores private memories or uses shared
+            knowledge in the Agents page.
+          </p>
+
+          <Link to="/agents">
+            <Button variant="outline" className="w-full gap-2">
+              <Settings className="h-4 w-4" />
+              Manage Per-Agent Memory Settings
+            </Button>
+          </Link>
 
           <div className="pt-2 border-t">
             <p className="text-xs text-muted-foreground">
-              When enabled: Each agent stores memories independently (current behavior).<br/>
-              When disabled: All memories become global and shared across all agents.
+              <strong>How it works:</strong>
+              <br />
+              • Each agent has a default memory scope (global or agent-specific)
+              <br />
+              • You can override this default for your own conversations
+              <br />
+              • Private memories are specific to you + that agent
+              <br />
+              • Global memories are shared across all users
             </p>
-            {settings && settings.agent_specific_facts > 0 && (
-              <p className="text-xs text-yellow-600 mt-2 flex items-start gap-1">
-                <AlertTriangle className="h-3 w-3 mt-0.5 flex-shrink-0" />
-                <span>Disabling will permanently delete {settings.agent_specific_facts} agent-specific memories</span>
-              </p>
-            )}
           </div>
         </CardContent>
       </Card>

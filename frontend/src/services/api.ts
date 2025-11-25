@@ -147,6 +147,7 @@ export interface Agent {
   use_n8n: boolean; // Phase 3: Use n8n webhook instead of direct LLM
   n8n_webhook_url: string | null; // Phase 3: Per-agent n8n webhook URL
   is_default: boolean; // Phase 5: Mark as default agent
+  memory_scope: 'global' | 'agent'; // Default memory scope for this agent
   // TTS Configuration - Aligned with Chatterbox TTS API
   tts_voice: string | null;
   tts_exaggeration: number; // Emotion intensity (0.25-2.0)
@@ -177,6 +178,7 @@ export interface AgentCreateRequest {
   use_n8n?: boolean; // Phase 3: Use n8n webhook instead of direct LLM
   n8n_webhook_url?: string | null; // Phase 3: Per-agent n8n webhook URL
   is_default?: boolean; // Phase 5: Mark as default agent
+  memory_scope?: 'global' | 'agent'; // Default memory scope for this agent
   // TTS Configuration - Aligned with Chatterbox TTS API
   tts_voice?: string | null;
   tts_exaggeration?: number; // Emotion intensity (0.25-2.0, default 1.0)
@@ -205,6 +207,7 @@ export interface AgentUpdateRequest {
   use_n8n?: boolean; // Phase 3: Use n8n webhook instead of direct LLM
   n8n_webhook_url?: string | null; // Phase 3: Per-agent n8n webhook URL
   is_default?: boolean; // Phase 5: Mark as default agent
+  memory_scope?: 'global' | 'agent'; // Default memory scope for this agent
   // TTS Configuration - Aligned with Chatterbox TTS API
   tts_voice?: string | null;
   tts_exaggeration?: number; // Emotion intensity (0.25-2.0)
