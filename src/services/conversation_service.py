@@ -34,7 +34,7 @@ from sqlalchemy.orm import selectinload
 from src.config.logging_config import get_logger
 from src.database.models import Agent, Session, Conversation
 from src.database.session import get_db_session
-from src.services.memory_service import MemoryService, get_global_embedding_config
+from src.services.memory_service import MemoryService
 
 # Configure logging with emoji prefixes
 logger = get_logger(__name__)
@@ -125,14 +125,17 @@ class ConversationService:
         await conv_service.stop()
     """
 
-    def __init__(self, cache_ttl_minutes: int = CONVERSATION_CACHE_TTL_MINUTES,
-                 max_context_messages: int = MAX_CONTEXT_MESSAGES):
+    def __init__(self,
+                 cache_ttl_minutes: int = CONVERSATION_CACHE_TTL_MINUTES,
+                 max_context_messages: int = MAX_CONTEXT_MESSAGES,
+                 memory_service: Optional['MemoryService'] = None):
         """
         Initialize ConversationService.
 
         Args:
             cache_ttl_minutes: How long to keep inactive sessions in cache (default: 15)
             max_context_messages: Maximum messages to cache per session (default: 20)
+            memory_service: Optional MemoryService instance (provided by factory)
         """
         self._cache: Dict[str, CachedContext] = {}
         self._cache_ttl = timedelta(minutes=cache_ttl_minutes)
@@ -140,18 +143,18 @@ class ConversationService:
         self._cleanup_task: Optional[asyncio.Task] = None
         self._running = False
 
-        # Initialize MemoryService (optional - gracefully degrade if initialization fails)
-        try:
-            db_embedding_config = asyncio.run(get_global_embedding_config())
-            self._memory_service = MemoryService(db_embedding_config=db_embedding_config)
-            logger.info("🧠 MemoryService integrated with ConversationService")
-        except Exception as e:
-            logger.warning(f"⚠️ MemoryService initialization failed, memory features disabled: {e}")
-            self._memory_service = None
+        # Accept MemoryService from factory (no async initialization here)
+        self._memory_service = memory_service
+        if self._memory_service:
+            logger.debug("🧠 MemoryService injected into ConversationService")
+        else:
+            logger.debug("🧠 ConversationService created without MemoryService")
 
+        cache_ttl_log = f"{cache_ttl_minutes}min"
         logger.info(
             f"🎤 ConversationService initialized: "
-            f"cache_ttl={cache_ttl_minutes}min, max_context={max_context_messages}"
+            f"cache_ttl={cache_ttl_log}, max_context={max_context_messages}, "
+            f"memory_enabled={self._memory_service is not None}"
         )
 
     async def start(self) -> None:
@@ -325,21 +328,54 @@ class ConversationService:
                     last_user_msg = next((m for m in reversed(cached.messages) if m.role == "user"), None)
                     if last_user_msg:
                         try:
+                            # Log memory retrieval attempt
+                            query_preview = last_user_msg.content[:100] + '...' if len(last_user_msg.content) > 100 else last_user_msg.content
+                            logger.info(
+                                f"🧠 Memory retrieval started: "
+                                f"session={session_id[:8]}, "
+                                f"user={str(cached.session.user_id)[:8]}, "
+                                f"agent={str(cached.agent.id)[:8]}, "
+                                f"query=\"{query_preview}\""
+                            )
+
                             memory_context = await self._memory_service.get_user_memory_context(
                                 user_id=cached.session.user_id,
                                 agent_id=cached.agent.id,
                                 query=last_user_msg.content,
                                 limit=5
                             )
+
                             if memory_context:
+                                # Log successful retrieval with content preview
+                                context_preview = memory_context[:150] + '...' if len(memory_context) > 150 else memory_context
+                                logger.info(
+                                    f"🧠 Memory retrieval successful: "
+                                    f"session={session_id[:8]}, "
+                                    f"context_length={len(memory_context)}, "
+                                    f"preview=\"{context_preview}\""
+                                )
+
                                 messages.append(Message(
                                     role="system",
                                     content=memory_context,
                                     timestamp=datetime.utcnow()
                                 ))
-                                logger.debug(f"🧠 Injected user memories into conversation context for session {session_id[:8]}")
+                                logger.info(f"✅ Injected user memories into conversation context: session={session_id[:8]}")
+                            else:
+                                # Log when no memories found
+                                logger.info(
+                                    f"🧠 Memory retrieval returned empty context: "
+                                    f"session={session_id[:8]}, "
+                                    f"user={str(cached.session.user_id)[:8]}, "
+                                    f"agent={str(cached.agent.id)[:8]}"
+                                )
                         except Exception as e:
-                            logger.error(f"❌ Failed to retrieve memories for session {session_id[:8]}: {e}")
+                            logger.error(
+                                f"❌ Memory retrieval failed: "
+                                f"session={session_id[:8]}, "
+                                f"user={str(cached.session.user_id)[:8]}, "
+                                f"error={str(e)}"
+                            )
 
                 # Add conversation messages (convert from Conversation to Message)
                 # ✅ FIX: cached.messages are now in ASC order (oldest first)
