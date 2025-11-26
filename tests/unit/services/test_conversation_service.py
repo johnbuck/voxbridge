@@ -114,16 +114,24 @@ async def test_get_or_create_session_new():
         mock_db_ctx = AsyncMock()
         mock_db.return_value.__aenter__.return_value = mock_db_ctx
 
-        # Mock queries
-        mock_db_ctx.execute = AsyncMock()
+        # Mock execute with proper result objects
+        # First execute: check if session exists (return None)
+        # Second execute: get agent (return mock_agent)
+        # Third execute: _ensure_session_cached loads session from DB
+        # Fourth execute: _ensure_session_cached loads messages
+        session_result = MagicMock()
+        session_result.scalar_one_or_none.return_value = None
 
-        # First query: check if session exists (return None)
-        # Second query: get agent (return mock_agent)
-        results = [
-            MagicMock(scalar_one_or_none=MagicMock(return_value=None)),  # Session not found
-            MagicMock(scalar_one_or_none=MagicMock(return_value=mock_agent)),  # Agent found
-        ]
-        mock_db_ctx.execute.side_effect = results
+        agent_result = MagicMock()
+        agent_result.scalar_one_or_none.return_value = mock_agent
+
+        session_load_result = MagicMock()
+        session_load_result.scalar_one_or_none.return_value = mock_session
+
+        messages_result = MagicMock()
+        messages_result.scalars.return_value.all.return_value = []
+
+        mock_db_ctx.execute = AsyncMock(side_effect=[session_result, agent_result, session_load_result, messages_result])
         mock_db_ctx.add = MagicMock()
         mock_db_ctx.commit = AsyncMock()
         mock_db_ctx.refresh = AsyncMock()
@@ -181,16 +189,18 @@ async def test_get_or_create_session_existing():
         mock_db.return_value.__aenter__.return_value = mock_db_ctx
 
         # Mock existing session found
-        result = MagicMock()
-        result.scalar_one_or_none.return_value = mock_session
-        mock_db_ctx.execute = AsyncMock(return_value=result)
+        session_result = MagicMock()
+        session_result.scalar_one_or_none.return_value = mock_session
 
-        # Mock loading messages
+        # Mock _ensure_session_cached loading session and messages
+        session_load_result = MagicMock()
+        session_load_result.scalar_one_or_none.return_value = mock_session
+
         messages_result = MagicMock()
         messages_result.scalars.return_value.all.return_value = []
 
-        # Two executes: one for session, one for messages
-        mock_db_ctx.execute = AsyncMock(side_effect=[result, messages_result])
+        # Three executes: get_or_create session lookup, _ensure_session_cached session, _ensure_session_cached messages
+        mock_db_ctx.execute = AsyncMock(side_effect=[session_result, session_load_result, messages_result])
 
         # Call method
         session = await service.get_or_create_session(
@@ -309,6 +319,7 @@ async def test_get_conversation_context_with_messages():
     )
 
     # Create mock conversation messages
+    # Note: Service expects messages in ASC order (oldest first)
     conv1 = Conversation(
         session_id=UUID(session_id),
         role="user",
@@ -321,15 +332,15 @@ async def test_get_conversation_context_with_messages():
         session_id=UUID(session_id),
         role="assistant",
         content="Hi there!",
-        timestamp=datetime.utcnow(),
+        timestamp=datetime.utcnow() + timedelta(seconds=1),
         tts_duration_ms=500
     )
 
-    # Create cached context (messages in DESC order by timestamp)
+    # Create cached context (messages in ASC order by timestamp - oldest first)
     cached = CachedContext(
         session=mock_session,
         agent=mock_agent,
-        messages=[conv2, conv1],  # Reversed chronological
+        messages=[conv1, conv2],  # Chronological order (user first, then assistant)
         last_activity=datetime.utcnow(),
         expires_at=datetime.utcnow() + timedelta(minutes=15)
     )
@@ -489,6 +500,11 @@ async def test_add_message_user():
         mock_db_ctx = AsyncMock()
         mock_db.return_value.__aenter__.return_value = mock_db_ctx
 
+        # Mock duplicate check (should return None - no duplicate)
+        duplicate_check_result = MagicMock()
+        duplicate_check_result.scalar_one_or_none.return_value = None
+
+        mock_db_ctx.execute = AsyncMock(return_value=duplicate_check_result)
         mock_db_ctx.add = MagicMock()
         mock_db_ctx.commit = AsyncMock()
 
@@ -498,9 +514,12 @@ async def test_add_message_user():
             content="Hello",
             timestamp=datetime.utcnow()
         )
+        mock_conv.id = uuid4()
 
         async def refresh_side_effect(conv):
-            pass
+            # Set id after refresh (simulating database auto-generation)
+            conv.id = mock_conv.id
+            conv.timestamp = mock_conv.timestamp
         mock_db_ctx.refresh = AsyncMock(side_effect=refresh_side_effect)
 
         # Add message
@@ -563,9 +582,27 @@ async def test_add_message_with_metadata():
         mock_db_ctx = AsyncMock()
         mock_db.return_value.__aenter__.return_value = mock_db_ctx
 
+        # Mock duplicate check (should return None - no duplicate)
+        duplicate_check_result = MagicMock()
+        duplicate_check_result.scalar_one_or_none.return_value = None
+
+        mock_db_ctx.execute = AsyncMock(return_value=duplicate_check_result)
         mock_db_ctx.add = MagicMock()
         mock_db_ctx.commit = AsyncMock()
-        mock_db_ctx.refresh = AsyncMock()
+
+        mock_conv = Conversation(
+            session_id=UUID(session_id),
+            role="assistant",
+            content="Hello there!",
+            timestamp=datetime.utcnow()
+        )
+        mock_conv.id = uuid4()
+
+        async def refresh_side_effect(conv):
+            # Set id after refresh (simulating database auto-generation)
+            conv.id = mock_conv.id
+            conv.timestamp = mock_conv.timestamp
+        mock_db_ctx.refresh = AsyncMock(side_effect=refresh_side_effect)
 
         # Add message with full metadata
         metadata = {
@@ -820,9 +857,22 @@ async def test_concurrent_session_access():
         mock_db_ctx = AsyncMock()
         mock_db.return_value.__aenter__.return_value = mock_db_ctx
 
+        # Mock duplicate check (should return None - no duplicate)
+        duplicate_check_result = MagicMock()
+        duplicate_check_result.scalar_one_or_none.return_value = None
+
+        mock_db_ctx.execute = AsyncMock(return_value=duplicate_check_result)
         mock_db_ctx.add = MagicMock()
         mock_db_ctx.commit = AsyncMock()
-        mock_db_ctx.refresh = AsyncMock()
+
+        # Mock refresh to set id and timestamp
+        def make_refresh_side_effect(index):
+            async def refresh_side_effect(conv):
+                conv.id = uuid4()
+                conv.timestamp = datetime.utcnow()
+            return refresh_side_effect
+
+        mock_db_ctx.refresh = AsyncMock(side_effect=lambda conv: make_refresh_side_effect(0)(conv))
 
         # Concurrent operations
         tasks = [
