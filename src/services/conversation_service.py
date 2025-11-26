@@ -34,7 +34,7 @@ from sqlalchemy.orm import selectinload
 from src.config.logging_config import get_logger
 from src.database.models import Agent, Session, Conversation
 from src.database.session import get_db_session
-from src.services.memory_service import MemoryService
+from src.services.memory_service import MemoryService, get_global_embedding_config
 
 # Configure logging with emoji prefixes
 logger = get_logger(__name__)
@@ -142,7 +142,8 @@ class ConversationService:
 
         # Initialize MemoryService (optional - gracefully degrade if initialization fails)
         try:
-            self._memory_service = MemoryService()
+            db_embedding_config = asyncio.run(get_global_embedding_config())
+            self._memory_service = MemoryService(db_embedding_config=db_embedding_config)
             logger.info("🧠 MemoryService integrated with ConversationService")
         except Exception as e:
             logger.warning(f"⚠️ MemoryService initialization failed, memory features disabled: {e}")

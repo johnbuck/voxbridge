@@ -26,7 +26,7 @@ from src.services.stt_service import get_stt_service
 from src.services.llm_service import get_llm_service, LLMConfig, ProviderType
 from src.services.tts_service import get_tts_service
 from src.services.plugin_manager import get_plugin_manager
-from src.services.memory_service import MemoryService
+from src.services.memory_service import MemoryService, get_global_embedding_config
 
 # Configuration
 from src.config.streaming import get_streaming_config, update_streaming_config, reset_streaming_config
@@ -37,6 +37,7 @@ from src.routes.session_routes import router as session_router
 from src.routes.discord_plugin_routes import router as discord_plugin_router
 from src.routes.llm_provider_routes import router as llm_provider_router
 from src.routes.system_settings_routes import router as system_settings_router
+from src.routes.memory_routes import router as memory_router
 
 # LLM exceptions for error handling
 from src.llm import LLMError, LLMConnectionError, LLMTimeoutError
@@ -457,7 +458,10 @@ stt_service = get_stt_service()
 llm_service = get_llm_service()
 tts_service = get_tts_service()
 plugin_manager = get_plugin_manager()
-memory_service = MemoryService()  # VoxBridge 2.0 Phase 2: Memory System
+
+# VoxBridge 2.0 Phase 2: Memory System with database embedding config
+# Initialized in startup_event() to avoid asyncio event loop conflicts
+memory_service: Optional[MemoryService] = None
 
 # ============================================================
 # FAST API SETUP
@@ -493,6 +497,9 @@ app.include_router(llm_provider_router)
 # Include system settings routes (VoxBridge 2.0 Phase 2 - Memory System)
 app.include_router(system_settings_router)
 
+# Include memory management routes (VoxBridge 2.0 Phase 2 - User-Facing Features)
+app.include_router(memory_router)
+
 # Pydantic models for API
 class JoinVoiceRequest(BaseModel):
     channelId: str
@@ -509,13 +516,24 @@ class SpeakRequest(BaseModel):
 @app.on_event("startup")
 async def startup_services():
     """Start background service tasks"""
+    global memory_service
     logger.info("🚀 Starting VoxBridge services...")
 
     # Start existing services
     await conversation_service.start()
     await plugin_manager.start_resource_monitoring()
 
-    # VoxBridge 2.0 Phase 2: Start memory extraction queue processor
+    # VoxBridge 2.0 Phase 2: Initialize memory service with database embedding config
+    # Dispose any old database connections to prevent event loop conflicts
+    from src.database.session import engine
+    await engine.dispose()
+    logger.info("🔄 Database engine disposed (preparing for fresh connections)")
+
+    db_embedding_config = await get_global_embedding_config()
+    memory_service = MemoryService(db_embedding_config=db_embedding_config, ws_manager=ws_manager)
+    logger.info("🧠 MemoryService initialized")
+
+    # Start memory extraction queue processor
     asyncio.create_task(memory_service.process_extraction_queue())
     logger.info("🧠 Memory extraction queue processor started")
 
@@ -694,6 +712,64 @@ async def get_metrics():
         Performance metrics including latency, counts, error rate
     """
     return metrics_tracker.get_metrics()
+
+@app.get("/api/metrics/extraction-queue")
+async def get_extraction_queue_metrics():
+    """
+    Get memory extraction queue metrics (VoxBridge 2.0 Phase 2)
+
+    Returns:
+        Queue statistics including pending, processing, completed, failed counts
+        and average processing duration
+    """
+    from sqlalchemy import select, func
+    from src.database.models import ExtractionTask
+    from src.database.session import get_db_session
+
+    async with get_db_session() as db:
+        # Get counts by status
+        status_counts = await db.execute(
+            select(
+                ExtractionTask.status,
+                func.count(ExtractionTask.id).label('count')
+            ).group_by(ExtractionTask.status)
+        )
+
+        counts = {row.status: row.count for row in status_counts}
+
+        # Get average processing duration for completed tasks
+        avg_duration_query = await db.execute(
+            select(
+                func.avg(
+                    func.extract('epoch', ExtractionTask.completed_at - ExtractionTask.created_at)
+                ).label('avg_duration_sec')
+            ).where(ExtractionTask.status == 'completed')
+        )
+        avg_duration_result = avg_duration_query.scalar()
+
+        # Get oldest pending task age
+        oldest_pending_query = await db.execute(
+            select(
+                func.min(ExtractionTask.created_at).label('oldest_created_at')
+            ).where(ExtractionTask.status == 'pending')
+        )
+        oldest_pending = oldest_pending_query.scalar()
+
+        # Calculate age in seconds if there is a pending task
+        oldest_pending_age_sec = None
+        if oldest_pending:
+            from datetime import datetime, timezone
+            now = datetime.now(timezone.utc)
+            oldest_pending_age_sec = (now - oldest_pending).total_seconds()
+
+        return {
+            "pending": counts.get("pending", 0),
+            "processing": counts.get("processing", 0),
+            "completed": counts.get("completed", 0),
+            "failed": counts.get("failed", 0),
+            "avg_duration_sec": round(avg_duration_result, 2) if avg_duration_result else None,
+            "oldest_pending_age_sec": round(oldest_pending_age_sec, 2) if oldest_pending_age_sec else None
+        }
 
 class FrontendLogEntry(BaseModel):
     """Frontend log entry for remote logging"""
@@ -1207,6 +1283,8 @@ ws_manager = ConnectionManager()
 
 # Set WebSocket manager for agent routes (VoxBridge 2.0)
 set_websocket_manager(ws_manager)
+
+# Note: memory_service.ws_manager is set in startup_services() when MemoryService is initialized
 
 @app.websocket("/ws/events")
 async def websocket_endpoint(websocket: WebSocket):
