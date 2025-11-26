@@ -69,6 +69,7 @@ services:
       - ./src:/app/src                                            # Mount entire src directory for live updates
       - ./requirements-bot.txt:/app/requirements-bot.txt          # For reference
       - ./assets:/app/assets                                      # Thinking indicator sound effects
+      - voxbridge-models:/home/appuser/.cache/huggingface         # Cache for ML models (embeddings, etc.)
     environment:
       # Discord
       - DISCORD_TOKEN=${DISCORD_TOKEN}
@@ -120,9 +121,13 @@ services:
       # LLM Provider Configuration (VoxBridge 2.0 Phase 3)
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
       - LOCAL_LLM_BASE_URL=${LOCAL_LLM_BASE_URL}
+      - LOCAL_LLM_RELEVANCE_MODEL=${LOCAL_LLM_RELEVANCE_MODEL:-gemma3n:latest}
 
       # Plugin System Security (VoxBridge 2.0 Phase 6)
       - PLUGIN_ENCRYPTION_KEY=${PLUGIN_ENCRYPTION_KEY}
+
+      # Memory System - Model Cache (VoxBridge 2.0 Phase 2)
+      - HF_HOME=/home/appuser/.cache/huggingface               # HuggingFace cache location for embedding models
     depends_on:
       postgres:
         condition: service_healthy
@@ -175,3 +180,9 @@ volumes:
       type: none
       o: bind
       device: ../zexternal-volumes/voxbridge-postgres-data
+  voxbridge-models:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ../zexternal-volumes/voxbridge-models

@@ -43,3 +43,4 @@ mem0ai>=0.1.0  # Conversational memory with Mem0 framework
 sentence-transformers>=2.2.0  # Local embeddings (optional, for EMBEDDING_PROVIDER=local)
 azure-identity>=1.15.0  # Azure auth (optional, for EMBEDDING_PROVIDER=azure)
 openai[azure]>=1.90.0  # Azure OpenAI SDK (optional, for EMBEDDING_PROVIDER=azure)
+ollama>=0.1.0  # Ollama LLM provider for Mem0 (local-only operation)
