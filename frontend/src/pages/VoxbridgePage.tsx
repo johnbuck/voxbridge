@@ -816,6 +816,12 @@ export function VoxbridgePage() {
       return;
     }
 
+    // Memory error notification (compensating transaction failure)
+    if (message.event === 'memory_error') {
+      toast.error("Memory Error", message.data.message);
+      return;
+    }
+
     // Track speaker activity for status cards
     if (message.event === 'speaker_started') {
       setActiveSpeaker(message.data.userId);

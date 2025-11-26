@@ -234,12 +234,80 @@ VoxBridge 2.0 introduces a service-oriented architecture with 4 core services:
 - 90%+ test coverage
 - ~300ms latency reduction per conversation turn
 
+### Memory System Architecture (VoxBridge 2.0 Phase 2)
+
+**Industry-Validated Dual-Table Design:**
+
+VoxBridge uses a **dual-table architecture** for memory management, validated through comparison with Open WebUI (November 2025):
+
+- **user_memories** (Mem0-managed) - Vector embeddings for semantic similarity search
+  - Table: `user_memories` (VECTOR(1024) data type via pgvector)
+  - Model: BAAI/bge-large-en-v1.5 (1024 dimensions)
+  - Purpose: Semantic search ("Find facts similar to 'favorite food'")
+  - Managed by: Mem0 framework (automatic CRUD)
+
+- **user_facts** (VoxBridge-managed) - Relational metadata for CRUD operations
+  - Table: `user_facts` (PostgreSQL with foreign keys)
+  - Fields: fact_key, fact_value, fact_text, importance, validity_start/end, vector_id
+  - Purpose: Frontend display, filtering, sorting, joins
+  - Queries: SQL (WHERE, ORDER BY, GROUP BY)
+
+**1:1 Relationship:**
+- Each `user_fact` has **exactly ONE** corresponding `user_memory` vector
+- Linked via `user_facts.vector_id` → `user_memories.id` (UNIQUE constraint)
+- Migration `019` (Nov 23, 2025) restored UNIQUE constraint after incorrect removal
+
+**Why Dual-Table?**
+- ✅ Mixing relational + vector operations in one table is inefficient
+- ✅ Vector columns don't support SQL indexes (ORDER BY, GROUP BY)
+- ✅ Relational columns don't support similarity search
+- ✅ Separation allows independent optimization (SQL vs vector)
+- ✅ Industry-standard pattern (Open WebUI, LangChain, LlamaIndex all use this)
+
+**Mem0 Framework Benefits:**
+- ✅ Automatic fact extraction from conversations (LLM-based)
+- ✅ Vector CRUD management (pgvector operations)
+- ✅ Relevance filtering ("Does this conversation contain facts?")
+- ✅ +26% accuracy improvement over custom RAG implementations
+- ✅ Automatic orphan cleanup (syncs vector deletions with metadata)
+
+**Key Features:**
+1. **Automatic Extraction**: Queue-based background worker extracts facts from conversations
+2. **Temporal Validity**: `validity_start`/`validity_end` for soft deletion and audit trails
+3. **Importance Scoring**: 0.0-1.0 scale for fact prioritization (1.0 = critical, 0.0 = trivial)
+4. **Complete Cascade Deletion**: When fact is deleted, vector is also deleted (no orphaned data)
+5. **Real-time WebSocket Updates**: Frontend receives extraction events (queued → processing → completed)
+
+**Documentation:**
+- **Architecture Analysis**: [docs/architecture/open-webui-comparison.md](docs/architecture/open-webui-comparison.md) - Comprehensive validation via Open WebUI comparison
+- **FAQ**: [docs/faq/memory-system-faq.md](docs/faq/memory-system-faq.md) - 16 Q&A covering all aspects
+- **Migration**: `alembic/versions/20251123_2030_019_restore_vector_id_unique.py` - UNIQUE constraint restoration
+- **Sync Script**: `src/database/sync_facts.py` - Re-embed orphaned facts (vector_id IS NULL)
+
+**Common Operations:**
+```bash
+# Sync orphaned facts (facts with no vectors)
+docker exec voxbridge-api python -m src.database.sync_facts
+
+# View memory extraction queue metrics
+curl http://localhost:4900/api/metrics/extraction-queue | python3 -m json.tool
+
+# View all facts for a user
+docker exec voxbridge-postgres psql -U voxbridge -d voxbridge -c \
+  "SELECT fact_key, fact_value, importance FROM user_facts WHERE user_id = '<uuid>';"
+
+# Check for orphaned facts (should return 0)
+docker exec voxbridge-postgres psql -U voxbridge -d voxbridge -c \
+  "SELECT COUNT(*) FROM user_facts WHERE vector_id IS NULL;"
+```
+
 **Key Integration Points:**
 - Discord → PostgreSQL: Async SQLAlchemy (agent/session storage)
 - Discord → Services: ConversationService, STTService, LLMService, TTSService
 - Services → WhisperX: WebSocket at `ws://whisperx:4901`
 - Services → Chatterbox TTS: HTTP at `http://chatterbox:4800`
 - Services → LLM Providers: OpenRouter API, Local LLM (Ollama/vLLM)
+- Services → Mem0: Automatic fact extraction and vector management
 - Frontend → Discord: WebSocket at `ws://localhost:4900/ws`
 
 ## Key Files
@@ -280,6 +348,7 @@ VoxBridge 2.0 introduces a service-oriented architecture with 4 core services:
 - **src/services/llm_service.py** (499 lines) - LLM provider routing
 - **src/services/tts_service.py** (614 lines) - Chatterbox abstraction
 - **src/services/agent_service.py** (340 lines) - Agent CRUD operations
+- **src/services/memory_service.py** (602 lines) - Mem0 integration, fact extraction, queue management (Phase 2)
 - **src/services/plugin_manager.py** (621 lines) - Plugin orchestration (Phase 6.4.1)
 
 ### Voice Module (Phase 4 + Phase 5)
@@ -287,10 +356,12 @@ VoxBridge 2.0 introduces a service-oriented architecture with 4 core services:
 - **src/voice/__init__.py** (7 lines) - Module initialization
 
 ### Database (VoxBridge 2.0)
-- **src/database/models.py** (170 lines) - SQLAlchemy ORM models (Agent, Session, Conversation)
+- **src/database/models.py** (170 lines) - SQLAlchemy ORM models (Agent, Session, Conversation, UserFact, ExtractionTask)
 - **src/database/session.py** (140 lines) - Async session management with connection pooling
 - **src/database/seed.py** (160 lines) - Example agent seeding script
+- **src/database/sync_facts.py** (136 lines) - Re-embed orphaned facts (vector_id IS NULL)
 - **alembic/versions/001_initial_schema.py** - Initial database migration
+- **alembic/versions/20251123_2030_019_restore_vector_id_unique.py** - Restore UNIQUE constraint on vector_id
 
 ### LLM Providers (VoxBridge 2.0 Phase 3)
 - **src/llm/base.py** (66 lines) - Abstract LLMProvider class with generate_stream() and health_check()
@@ -448,6 +519,26 @@ docker compose restart voxbridge-api
 docker compose up -d --force-recreate --build voxbridge-api
 ```
 
+**⚠️ CRITICAL: When to REBUILD vs RESTART**
+
+**REBUILD required** (changes are baked into Docker image):
+- ✅ **voxbridge-frontend** - Uses Dockerfile COPY for source code
+  ```bash
+  docker compose build voxbridge-frontend && docker compose up -d voxbridge-frontend
+  ```
+- ✅ **When Dockerfile changes** (any service)
+- ✅ **When dependencies change** (package.json, requirements.txt)
+
+**RESTART sufficient** (changes are volume-mounted):
+- ✅ **voxbridge-api** - Source code is volume-mounted at runtime
+  ```bash
+  docker compose restart voxbridge-api
+  ```
+- ✅ **Environment variable changes** (in docker-compose.yml)
+- ✅ **Configuration file changes** (if volume-mounted)
+
+**Rule of thumb**: If you changed frontend code → REBUILD. If you changed backend code → RESTART.
+
 ### Debugging
 ```bash
 # Check health
@@ -464,6 +555,12 @@ docker logs voxbridge-api --tail 300 | grep -E "(🌊|streaming|chunk|sentence)"
 
 # View thinking indicator logs
 docker logs voxbridge-api --tail 200 | grep -E "(💭|thinking indicator|🎵)"
+
+# View memory extraction queue logs
+docker logs voxbridge-api --tail 200 | grep -E "(🧠|🧵|memory|extraction)"
+
+# Check memory extraction queue metrics
+curl http://localhost:4900/api/metrics/extraction-queue | python3 -m json.tool
 ```
 
 ### Testing Shortcuts
@@ -504,6 +601,102 @@ docker compose up -d
 3. Document in this file (Environment Variables section)
 4. Add to README.md (Environment Variables section)
 
+## Memory Queue Patterns
+
+### ThreadPoolExecutor for Blocking Operations
+
+VoxBridge uses ThreadPoolExecutor to prevent event loop blocking when calling Mem0's synchronous APIs.
+
+**Problem**: Mem0's `memory.add()` uses `concurrent.futures.wait()` which blocks the async event loop for ~56 seconds during fact extraction (35s LLM + 20s embeddings + 1s storage).
+
+**Solution**: Wrap blocking Mem0 calls with `loop.run_in_executor()` to run them in a thread pool:
+
+```python
+# In MemoryService.__init__
+self.executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="mem0_extraction")
+
+# When calling blocking Mem0 methods
+loop = asyncio.get_event_loop()
+result = await loop.run_in_executor(
+    self.executor,
+    lambda: self.memory.add(messages=[...], user_id=...)
+)
+```
+
+**Key Implementation Points**:
+- ThreadPoolExecutor initialized in `src/services/memory_service.py` (lines 90-94)
+- Used in automatic extraction: `_extract_facts_from_turn()` (lines 269-278)
+- Used in manual fact creation: `src/routes/memory_routes.py` (lines 250-259)
+- Cleanup via `__del__()` method (lines 597-602)
+
+### WebSocket Real-Time Notifications
+
+Memory extraction events are broadcast via WebSocket for real-time UI updates:
+
+**Events**:
+- `memory_extraction_queued` - Task added to queue
+- `memory_extraction_processing` - Processing started
+- `memory_extraction_completed` - Successfully completed (includes `facts_count`)
+- `memory_extraction_failed` - Failed or retrying (includes `error`, `attempts`)
+
+**Frontend Integration**:
+```typescript
+// In MemoryPage.tsx
+useMemoryExtractionStatus({
+  onCompleted: (task) => {
+    toast.success(`Extracted ${task.facts_count} facts`);
+    queryClient.invalidateQueries({ queryKey: ['facts', userId] });
+  },
+  onFailed: (task) => {
+    toast.error(task.error || 'Extraction failed');
+  }
+});
+```
+
+**Files**:
+- Backend: `src/services/memory_service.py` (broadcasting logic)
+- Frontend: `frontend/src/hooks/useMemoryExtractionStatus.ts` (WebSocket subscription)
+
+### Queue Metrics & Observability
+
+**Metrics Endpoint**: `GET /api/metrics/extraction-queue`
+
+Returns:
+```json
+{
+  "pending": 5,
+  "processing": 2,
+  "completed": 142,
+  "failed": 3,
+  "avg_duration_sec": 58.3,
+  "oldest_pending_age_sec": 12.5
+}
+```
+
+**Periodic Logging**: Queue worker logs metrics every 60 seconds (every 12 iterations of 5-second polling):
+```
+🧠 Memory extraction queue metrics: 3 tasks processed this batch
+```
+
+### Troubleshooting Memory Extraction
+
+**Issue**: Facts not being extracted
+1. Check queue status: `curl http://localhost:4900/api/metrics/extraction-queue`
+2. View extraction logs: `docker logs voxbridge-api | grep -E "🧠|🧵"`
+3. Verify MemoryService initialized: Look for "✅ MemoryService initialized" in startup logs
+4. Check database connectivity: `docker exec voxbridge-postgres psql -U voxbridge -c "SELECT COUNT(*) FROM extraction_tasks;"`
+
+**Issue**: Event loop blocking (heartbeat failures)
+- If you see "heartbeat blocked for more than 20 seconds", verify ThreadPoolExecutor is being used
+- Check `src/services/memory_service.py` lines 269-278 for `run_in_executor()` wrapper
+- Check `src/routes/memory_routes.py` lines 250-259 for manual creation wrapper
+
+**Issue**: WebSocket notifications not appearing
+1. Check WebSocket connection: Frontend should show "🔌 WebSocket client connected"
+2. Verify `ws_manager` connected to `memory_service` (server.py:1216-1217)
+3. Check browser console for WebSocket errors
+4. Verify WebSocket URL: `ws://localhost:4900/ws/events`
+
 ## API Endpoints
 
 ### Voice Control
@@ -531,6 +724,7 @@ docker compose up -d
 - **GET /api/streaming-config** - Get global streaming configuration with chunking strategies (runtime overrides or environment defaults)
 - **PUT /api/streaming-config** - Update streaming configuration at runtime (`{enabled?, chunking_strategy?, min_chunk_length?, max_concurrent_tts?, error_strategy?, interruption_strategy?}`)
 - **POST /api/streaming-config/reset** - Reset streaming configuration to environment variable defaults
+- **GET /api/system-settings/embedding-model-status** - Get embedding model cache status (download status, size, file count)
 - **GET /api/channels** - Available Discord channels
 - **WS /ws** - WebSocket for real-time events
 
@@ -557,8 +751,13 @@ docker compose up -d
 
 ## Links to Detailed Documentation
 
+### Architecture & Patterns
 - **[AGENTS.md](./AGENTS.md)** - Comprehensive architecture, patterns, and guidelines (637 lines)
 - **[README.md](./README.md)** - User-facing documentation and setup guide (671 lines)
+- **[docs/architecture/open-webui-comparison.md](docs/architecture/open-webui-comparison.md)** - Memory architecture validation (31KB, Open WebUI comparison)
+- **[docs/faq/memory-system-faq.md](docs/faq/memory-system-faq.md)** - Memory system FAQ (16 Q&A)
+
+### Testing
 - **[tests/README.md](./tests/README.md)** - Testing framework guide (432 lines)
 - **[tests/TESTING_FRAMEWORK_SUMMARY.md](./tests/TESTING_FRAMEWORK_SUMMARY.md)** - Testing architecture
 - **[tests/INTEGRATION_TEST_SUMMARY.md](./tests/INTEGRATION_TEST_SUMMARY.md)** - Integration test results

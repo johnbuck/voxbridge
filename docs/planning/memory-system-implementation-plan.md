@@ -1,8 +1,8 @@
 # VoxBridge Memory System - Implementation Plan
 
-> **Status**: Active Development - Phase 1 In Progress (~50% Complete)
+> **Status**: Active Development - Phase 2 In Progress (~50% Complete)
 >
-> **Last Updated**: 2025-11-22
+> **Last Updated**: 2025-11-23 (Frontend UI Complete)
 > **Approach**: Mem0 Framework Integration (Simplified from Original Custom Provider Plan)
 
 ---
@@ -310,39 +310,421 @@ The background worker continuously polls the extraction_tasks table and processe
 - Will be restricted to admin-only access in Phase 3
 - Admin role system out of scope for Phase 1-2
 
+### ✅ Model Cache Volume - Provider-Agnostic Storage (COMPLETE)
+
+**Docker Volume for ML Model Caching** (2025-11-22):
+
+**Volume Name**: `voxbridge-models` (provider-agnostic, scalable for future ML caching needs)
+
+**Purpose**:
+- Cache downloaded embedding models from HuggingFace
+- Persist models across container rebuilds
+- Prevent re-downloading ~420MB-1.34GB on every `docker compose build`
+- Support future ML model caching (not just embeddings)
+
+**Implementation**:
+- ✅ Volume mount: `/home/appuser/.cache/huggingface` → `voxbridge-models`
+- ✅ Environment variable: `HF_HOME=/home/appuser/.cache/huggingface`
+- ✅ Model Status API: `GET /api/system-settings/embedding-model-status?model={optional}`
+- ✅ Model Download API: `POST /api/system-settings/embedding-model/download`
+- ✅ Model Cleanup API: `POST /api/system-settings/embedding-model/cleanup`
+- ✅ Frontend UI: Model cache status card in Embeddings Settings page
+
+**Model Selection** (7 models organized by quality/speed):
+- ✅ **384 dims (Fast)**:
+  - `sentence-transformers/all-MiniLM-L6-v2` (80MB, fast)
+  - `BAAI/bge-small-en-v1.5` (130MB, better quality)
+- ✅ **768 dims (Balanced)**:
+  - `sentence-transformers/all-mpnet-base-v2` (420MB) [default]
+  - `BAAI/bge-base-en-v1.5` (420MB, recommended)
+  - `jinaai/jina-embeddings-v2-base-en` (500MB, 8K context)
+- ✅ **1024 dims (High Quality)**:
+  - `BAAI/bge-large-en-v1.5` (1.34GB, best quality)
+  - `intfloat/e5-large-v2` (1.34GB, high quality)
+
+**Advanced Features**:
+- ✅ **Live Cache Status**: Real-time cache updates as user browses models (before saving)
+- ✅ **Auto-Download**: Models download immediately when selected (not on first use)
+- ✅ **Smart Toasts**: Pre-checks cache before showing "downloading" notification
+- ✅ **Cleanup Feature**: Delete all cached models except currently selected one
+  - Confirmation dialog prevents accidental deletions
+  - Shows models deleted and space reclaimed (e.g., "Reclaimed 1697.86 MB")
+  - Uses HuggingFace `delete_revisions()` API with revision hashes
+- ✅ **Dimension Detection**: Auto-detects and saves correct dimensions for each model
+
+**Model Download Status API**:
+- Returns cache status, size, file count, last modified timestamp
+- Provider-aware: Shows "no cache needed" for Azure (API-based)
+- Accepts optional `?model=` parameter to check arbitrary models
+- Uses `huggingface_hub.scan_cache_dir()` for inspection
+
+**Benefits**:
+- 80MB-1.34GB saved per rebuild (depending on model)
+- 1-5 min saved per rebuild (network-dependent)
+- User visibility into download status before using embeddings
+- Efficient disk space management (cleanup unused models)
+- Follows existing WhisperX model caching pattern
+
 ---
 
-## PHASE 2: User-Facing Features (Not Started)
+## PHASE 2: User-Facing Features (~33% Complete)
 
 **Goal**: Complete the memory system with user-accessible UI and API endpoints.
 
-### Tasks
+**Progress**: 2 of 6 tasks complete (Task 1: Memory API Endpoints ✅, Task 2: Ollama Integration ✅)
 
-1. **Implement Memory API Endpoints**:
-   - Memory settings (GET/PUT)
-   - Fact management (GET/POST/PUT/DELETE)
-   - GDPR export/delete
+### ✅ Task 1: Memory API Endpoints (COMPLETE - 2025-11-22)
 
-2. **Build Frontend UI**:
-   - User Profile Page with fact viewer
-   - Memory Settings Page
-   - FactCard component
-   - Memory metrics dashboard
+**Implementation**: `src/routes/memory_routes.py` (495 lines, 8 endpoints)
 
-3. **Add Integration Tests**:
-   - E2E conversation flow with memory
-   - Global vs agent-specific scoping
-   - GDPR export/delete validation
+**Endpoints Implemented**:
+1. ✅ `GET /api/memory/users/{user_id}/facts` - List all user facts (with filtering)
+2. ✅ `POST /api/memory/users/{user_id}/facts` - Manually create a fact
+3. ✅ `PUT /api/memory/users/{user_id}/facts/{fact_id}` - Update existing fact
+4. ✅ `DELETE /api/memory/users/{user_id}/facts/{fact_id}` - Delete specific fact
+5. ✅ `GET /api/memory/users/{user_id}/settings` - Get user memory settings
+6. ✅ `PUT /api/memory/users/{user_id}/settings` - Update memory settings
+7. ✅ `GET /api/memory/users/{user_id}/export` - GDPR data export (JSON)
+8. ✅ `DELETE /api/memory/users/{user_id}` - GDPR right to erasure (delete all data)
 
-4. **Performance Validation**:
-   - Benchmark retrieval latency (target: <100ms)
-   - Monitor extraction queue processing
-   - Track Mem0 accuracy
+**Key Features**:
+- **Automatic fact creation**: Integrated with Mem0 for embedding generation and pgvector storage
+- **Ollama integration**: Uses local Ollama LLM (gemma3n:latest) for fact extraction when OpenRouter unavailable
+- **OpenRouter fallback**: Prioritizes OpenRouter (gpt-4o-mini) when API key is available
+- **Agent-specific scoping**: Facts can be global or agent-specific (via `agent_id` parameter)
+- **Filtering support**: Query parameters for `agent_id` and `include_invalid`
+- **GDPR compliant**: Export and deletion endpoints for data privacy
+- **Error handling**: Comprehensive error logging and user-friendly error messages
 
-5. **Documentation**:
-   - Update README.md with memory section
-   - Update CLAUDE.md with configuration instructions
-   - Create MEMORY.md architecture guide
+**Fixes Applied During Implementation**:
+1. **Environment variable fix**: Added `LOCAL_LLM_BASE_URL=http://ollama:11434` to `.env` (was missing, causing empty string)
+2. **Vector dimension mismatch fix**: Recreated `user_memories` table with 1024 dimensions (was 1536, but BAAI/bge-large-en-v1.5 generates 1024)
+3. **Mem0 result format fix**: Changed from `mem0_result["memories"]` to `mem0_result["results"]` (API breaking change)
+4. **Enhanced error logging**: Added detailed traceback logging and Ollama URL logging for troubleshooting
+
+**Testing Results** (2025-11-22):
+- ✅ Test 1: List facts - Working
+- ✅ Test 2: Create fact - Working (Ollama + Mem0 integration successful)
+- ✅ Test 3: Update fact - Working
+- ✅ Test 4: Get memory settings - Working
+- ✅ Test 5: Update memory settings - Working
+- ✅ Test 6: GDPR export - Working
+- ✅ Test 7: Delete fact - Working
+- ✅ Test 8: GDPR delete - Working
+
+**Database Integration**:
+- Fact creation triggers Mem0 embedding generation
+- Vector embeddings stored in pgvector (`user_memories` table)
+- Metadata stored in PostgreSQL (`user_facts` table)
+- Cross-reference via `vector_id` field
+
+### ✅ Task 2: Ollama Integration (COMPLETE - External Service)
+
+**Goal**: Ensure VoxBridge can connect to external Ollama service for fact extraction
+
+**Decision**: Keep Ollama as **shared external service** (not VoxBridge-specific)
+
+**Rationale**:
+- Ollama is used by multiple services across the Docker infrastructure
+- Deploying Ollama within VoxBridge would duplicate resources
+- Current setup on `pinkleberry_bridge` network allows multi-service access
+- VoxBridge already successfully connects via `http://ollama:11434`
+
+**Current Configuration**:
+- Ollama running on parent Docker network (`pinkleberry_bridge`)
+- VoxBridge API connects via shared network
+- Model: `gemma3n:latest` for fact extraction
+- Environment variable: `LOCAL_LLM_BASE_URL=http://ollama:11434`
+
+**Integration Status**:
+- ✅ Network connectivity verified
+- ✅ Fact creation working with Ollama LLM
+- ✅ Automatic fallback from OpenRouter to Ollama
+- ✅ Mem0 successfully uses Ollama for fact extraction
+
+**No changes needed** - current external Ollama setup is optimal for multi-service architecture.
+
+### ✅ Task 3: Build Frontend UI (COMPLETE - 2025-11-23)
+
+**Implementation**: Full CRUD interface for memory management
+
+**Files Created** (3 files, ~1,000 lines):
+1. **frontend/src/services/memory.ts** (210 lines) - TypeScript API client
+   - 8 functions: listUserFacts, createUserFact, updateUserFact, deleteUserFact, getMemorySettings, updateMemorySettings, exportUserData, deleteAllUserData
+   - Full TypeScript interfaces: UserFact, MemorySettings, CreateFactRequest, UpdateFactRequest, GDPRExport
+   - Error handling with typed error responses
+
+2. **frontend/src/components/FactCard.tsx** (119 lines) - Fact display component
+   - Edit/delete action buttons with confirmation dialogs
+   - Color-coded importance badges (green ≥80%, yellow ≥50%, gray <50%)
+   - Badges for: importance, agent scope, validity, created date, embedding provider
+   - Natural language fact text display
+   - Responsive card layout with shadcn/ui
+
+3. **frontend/src/pages/MemoryPage.tsx** (645 lines) - Complete CRUD interface
+   - React Query for data fetching and mutations with cache invalidation
+   - Create and Edit modals with form validation
+   - Filters for agent_id (dropdown) and include_invalid (toggle)
+   - Stats cards showing: total facts, global facts, agent-specific facts
+   - Settings panel with memory extraction toggle
+   - GDPR export (downloads JSON file)
+   - GDPR delete with double confirmation
+   - Toast notifications for all operations
+   - Loading states and error handling
+
+**Routing Integration**:
+- Added `/memory` route to `frontend/src/App.tsx`
+- Added "Memory" navigation link with Database icon to `frontend/src/components/Navigation.tsx`
+- Frontend accessible at http://localhost:4903/memory
+
+**Key Features**:
+- Full CRUD operations on facts (Create, Read, Update, Delete)
+- Real-time updates via React Query cache invalidation
+- Memory extraction toggle (enable/disable automatic fact extraction)
+- GDPR compliance (export all data, right to erasure)
+- Agent filtering (view facts for specific agents or all agents)
+- Validity filtering (include/exclude expired facts)
+- Importance slider (0.0-1.0) for manual fact creation
+- Form validation with error messages
+- Responsive grid layout (1-3 columns based on screen size)
+
+**Deployment**: Frontend rebuilt and deployed successfully (build passed with 0 TypeScript errors)
+
+### ⏳ Task 4: Add Integration Tests (NOT STARTED)
+
+**Test Coverage**:
+- E2E conversation flow with memory
+- Global vs agent-specific scoping
+- GDPR export/delete validation
+
+### ⏳ Task 5: Performance Validation (NOT STARTED)
+
+**Benchmarks**:
+- Retrieval latency (target: <100ms)
+- Extraction queue processing
+- Mem0 accuracy tracking
+
+### ⏳ Task 6: Documentation (NOT STARTED)
+
+**Updates Needed**:
+- README.md with memory section
+- CLAUDE.md with configuration instructions
+- MEMORY.md architecture guide
+
+---
+
+## Known Issues & Future Optimizations
+
+### ✅ RESOLVED: Mem0 Fact Creation Latency (ThreadPoolExecutor Solution)
+
+**Discovered**: 2025-11-23 during frontend testing
+**Severity**: High (poor UX, event loop blocking)
+**Status**: ✅ **RESOLVED** (2025-11-23) with ThreadPoolExecutor + WebSocket notifications
+
+#### Root Cause Analysis
+
+Manual fact creation via `POST /api/memory/users/{user_id}/facts` took **56 seconds** due to Mem0's architectural limitation:
+
+**The Problem**:
+- Mem0's `memory.add()` uses synchronous `concurrent.futures.wait()` in an async context
+- This blocked the FastAPI event loop while waiting for two I/O-bound operations:
+  1. **LLM fact extraction** (~35 seconds with Ollama gemma3n:latest)
+  2. **HuggingFace embedding generation** (~20 seconds with sentence-transformers/all-mpnet-base-v2)
+  3. **pgvector storage** (~1 second)
+
+**Evidence**:
+```python
+# From error traceback:
+File "/app/src/routes/memory_routes.py", line 251
+    mem0_result = memory_service.memory.add(...)
+File "/usr/local/lib/python3.11/site-packages/mem0/memory/main.py", line 373
+    concurrent.futures.wait([future1, future2])  # BLOCKS EVENT LOOP
+```
+
+**Impact** (before fix):
+- Manual fact creation via frontend took 56 seconds with loading spinner
+- Discord bot heartbeat failed: "heartbeat blocked for more than 20 seconds"
+- All concurrent API requests blocked (entire event loop frozen)
+- WebRTC voice chat interruptions
+- Poor user experience for memory management UI
+
+**Known Upstream Issue**: Mem0 GitHub Issue #2892 - "AsyncMemory blocking event loop"
+
+#### ✅ Solution Implemented: ThreadPoolExecutor + Real-Time Notifications
+
+**Approach**: Run blocking Mem0 calls in thread pool executor with WebSocket real-time status updates
+
+**Implementation Date**: 2025-11-23
+
+**Results**:
+- ✅ Event loop no longer blocked (API remains responsive during extraction)
+- ✅ Discord heartbeat healthy
+- ✅ Concurrent API requests work normally
+- ✅ WebRTC voice chat unaffected
+- ✅ Real-time WebSocket notifications for extraction status
+- ⚠️ Background processing still takes ~56s (but doesn't block event loop)
+
+**Note**: The 56-second processing time still exists but runs in the background. Users can continue using the application while facts are being extracted. WebSocket notifications keep users informed of progress.
+
+**Implementation Details**:
+
+**Phase 1: ThreadPoolExecutor Integration**
+- `src/services/memory_service.py`:
+  - Added ThreadPoolExecutor with 2 workers (line 90-94)
+  - Wrapped `memory.add()` in automatic extraction with `run_in_executor()` (lines 269-278)
+  - Added `__del__()` cleanup method for graceful shutdown (lines 597-602)
+  - Modified `_extract_facts_from_turn()` to return facts count (line 305)
+
+- `src/routes/memory_routes.py`:
+  - Wrapped `memory.add()` in manual fact creation with `run_in_executor()` (lines 250-259)
+  - Fixed event loop blocking for both automatic AND manual fact creation
+
+**Phase 2: WebSocket Real-Time Notifications**
+- `src/services/memory_service.py`:
+  - Added `ws_manager` parameter to `__init__()` (line 66)
+  - Broadcast `memory_extraction_queued` event when task queued (lines 187-197)
+  - Broadcast `memory_extraction_processing` event when processing starts (lines 228-240)
+  - Broadcast `memory_extraction_completed` event with facts count (lines 257-269)
+  - Broadcast `memory_extraction_failed` event on errors (lines 277-290)
+
+- `src/api/server.py`:
+  - Connected `ws_manager` to `memory_service` (lines 1216-1217)
+
+- `frontend/src/hooks/useMemoryExtractionStatus.ts` (NEW FILE - 245 lines):
+  - WebSocket subscription hook for extraction events
+  - Task status tracking (queued → processing → completed/failed)
+  - Auto-reconnect with exponential backoff
+  - Callbacks for `onCompleted` and `onFailed`
+
+- `frontend/src/pages/MemoryPage.tsx`:
+  - Integrated `useMemoryExtractionStatus` hook (lines 59-81)
+  - Toast notifications for extraction completion/failure
+  - React Query cache invalidation on completion
+
+**Phase 3: Queue Metrics & Observability**
+- `src/api/server.py`:
+  - Added `GET /api/metrics/extraction-queue` endpoint (lines 702-758)
+  - Returns: pending, processing, completed, failed counts
+  - Metrics: avg_duration_sec, oldest_pending_age_sec
+
+- `src/services/memory_service.py`:
+  - Added periodic queue metrics logging every 60 seconds (lines 293-299)
+
+**Files Modified** (5 backend + 2 frontend):
+- Backend: `src/services/memory_service.py`, `src/routes/memory_routes.py`, `src/api/server.py`
+- Frontend: `frontend/src/hooks/useMemoryExtractionStatus.ts` (NEW), `frontend/src/pages/MemoryPage.tsx`
+
+**Testing**:
+- ✅ Manual fact creation: No event loop blocking
+- ✅ Automatic extraction: Queue processing works correctly
+- ✅ WebSocket notifications: Toast messages appear in real-time
+- ✅ Queue metrics: Endpoint returns correct counts
+- ✅ Concurrent requests: Multiple users can create facts simultaneously
+
+#### Solution: Queue-Based Background Processing (NOT YET IMPLEMENTED)
+
+**Approach**: Convert fact creation to asynchronous queue-based processing with WebSocket notifications
+
+**Expected Outcome**:
+- API response time: **56s → <100ms** (instant)
+- User sees optimistic UI while fact processes in background
+- WebSocket notification when fact creation completes
+- No event loop blocking (Discord heartbeat healthy)
+- Multiple users can create facts concurrently
+
+#### Implementation Plan (8-10 days)
+
+**Phase 1: Backend Queue System** (Days 1-2)
+1. Create `FactCreationTask` database model (similar to existing `ExtractionTask`)
+   - Fields: id, user_id, agent_id, fact_key, fact_value, status, vector_id, attempts, error_message
+   - Migration: `alembic/versions/20251124_create_fact_creation_tasks.py`
+
+2. Extend `MemoryService.process_extraction_queue()` to handle fact creation tasks
+   - File: `src/services/memory_service.py`
+   - Add `queue_fact_creation()` method (returns task_id immediately)
+   - Wrap Mem0 calls in `asyncio.to_thread()` to prevent event loop blocking
+   - Add retry logic (max 3 attempts on failure)
+
+3. Update API route to return task_id
+   - File: `src/routes/memory_routes.py`
+   - Change `create_user_fact()` response to include task_id + status
+   - Add `GET /api/memory/tasks/{task_id}` for polling
+
+**Phase 2: WebSocket Notifications** (Days 3-4)
+1. Add fact creation events to WebSocket manager
+   - File: `src/api/server.py`
+   - Events: `fact_creation_started`, `fact_creation_completed`, `fact_creation_failed`
+
+2. Broadcast events from MemoryService
+   - File: `src/services/memory_service.py`
+   - Emit WebSocket events at key stages (0%, 50%, 100% progress)
+
+**Phase 3: Frontend Integration** (Days 5-7)
+1. Update MemoryPage for async creation
+   - File: `frontend/src/pages/MemoryPage.tsx`
+   - Show optimistic UI (fact card with "Creating..." status)
+   - Subscribe to WebSocket events for completion
+   - Fallback to polling if WebSocket disconnected
+
+2. Add progress indicator to FactCard
+   - File: `frontend/src/components/FactCard.tsx`
+   - Show spinner + progress bar for pending/processing facts
+   - Disable edit/delete until completed
+
+**Phase 4: Testing & Deployment** (Days 8-10)
+- Integration tests for queue processing, WebSocket delivery, retry logic
+- Verify existing facts unaffected
+- Monitor queue worker performance
+
+**Files to Modify** (8 files, ~600 lines):
+- `src/database/models.py` (+50 lines) - FactCreationTask model
+- `alembic/versions/20251124_*.py` (+40 lines) - Migration
+- `src/services/memory_service.py` (+150 lines) - Queue methods
+- `src/routes/memory_routes.py` (+80 lines) - Task endpoints
+- `src/api/server.py` (+30 lines) - WebSocket events
+- `frontend/src/pages/MemoryPage.tsx` (+150 lines) - Async UI
+- `frontend/src/components/FactCard.tsx` (+50 lines) - Progress indicator
+- `frontend/src/types/memory.ts` (+20 lines) - Type definitions
+
+#### Optional: Performance Optimization via Settings
+
+**Note**: Users can reduce the 56-second background processing time by configuring faster models via **Settings > Embeddings** area:
+
+**Option 1: Use OpenRouter for LLM Extraction**
+- Navigate to Settings > Embeddings
+- Configure OpenRouter API key
+- Select `gpt-4o-mini` model
+- **Result**: LLM extraction 35s → 3s (12x faster)
+
+**Option 2: Use Azure OpenAI for Embeddings**
+- Navigate to Settings > Embeddings
+- Configure Azure OpenAI credentials
+- Select `text-embedding-3-small` model
+- **Result**: Embedding generation 20s → 0.2s (100x faster)
+
+**Combined Optimization**: 56s → ~4s total processing time (14x faster)
+
+**Trade-off**: API costs (~$0.0001 per fact) vs. free local processing
+
+#### Alternative Solutions (NOT RECOMMENDED)
+
+1. **asyncio.to_thread() wrapper** (quick fix)
+   - Prevents event loop blocking but still takes 56s
+   - User still waits with loading spinner
+   - 1 hour implementation, low risk
+
+2. **Switch to AsyncMemory** (Mem0's async client)
+   - Still uses ThreadPoolExecutor internally (same issue)
+   - Waiting for upstream fix (Mem0 issue #2892)
+
+3. **Replace Mem0 entirely** (custom async implementation)
+   - Very high complexity (~1000 lines)
+   - Lose Mem0's features (deduplication, graph memory)
+   - High maintenance burden
+
+**Recommendation**: Implement queue-based solution when ready to prioritize memory UI performance. Until then, the 56-second latency is acceptable for infrequent manual fact creation.
+
+---
 
 ### Deliverables
 
