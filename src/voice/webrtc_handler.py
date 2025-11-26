@@ -73,11 +73,11 @@ class WebRTCVoiceHandler:
         self.session_id = str(session_id)  # Convert UUID to string for service layer
         self.is_active = True
 
-        # Initialize service instances with error callback
-        self.conversation_service = ConversationService()
-        self.stt_service = STTService(error_callback=self._handle_service_error)
-        self.llm_service = LLMService(error_callback=self._handle_service_error)
-        self.tts_service = TTSService(error_callback=self._handle_service_error)
+        # Service instances (initialized async in _initialize_services)
+        self.conversation_service = None
+        self.stt_service = None
+        self.llm_service = None
+        self.tts_service = None
 
         # Get global metrics tracker (shared with Discord plugin)
         self.metrics = get_metrics_tracker()
@@ -172,11 +172,35 @@ class WebRTCVoiceHandler:
         except Exception as e:
             logger.debug(f"⏭️ Could not broadcast service error (connection likely closed): {e}")
 
+    async def _initialize_services(self):
+        """
+        Initialize service instances using async factory pattern.
+
+        This method is called at the start of the handler lifecycle to properly
+        initialize services with async dependencies (like MemoryService) without
+        causing event loop conflicts.
+        """
+        from src.services.factory import create_conversation_service
+
+        logger.info("🏭 Initializing services via factory pattern...")
+
+        # Create ConversationService with MemoryService support
+        self.conversation_service = await create_conversation_service()
+
+        # Create other services (these don't require factory yet, but we use
+        # the pattern for consistency and future-proofing)
+        self.stt_service = STTService(error_callback=self._handle_service_error)
+        self.llm_service = LLMService(error_callback=self._handle_service_error)
+        self.tts_service = TTSService(error_callback=self._handle_service_error)
+
+        logger.info("✅ All services initialized successfully")
+
     async def start(self):
         """
         Start handling audio stream
 
         Main loop:
+        0. Initialize services (async factory pattern)
         1. Accept WebSocket connection
         2. Start ConversationService background tasks
         3. Connect to STTService
@@ -185,6 +209,11 @@ class WebRTCVoiceHandler:
         6. Handle disconnection
         """
         try:
+            logger.info(f"[START] Step 0: Initializing services...")
+            # Initialize services using async factory pattern (CRITICAL for memory access)
+            await self._initialize_services()
+            logger.info(f"[START] ✅ Step 0 complete: Services initialized")
+
             logger.info(f"[START] Step 1: Starting conversation service...")
             # Start conversation service background tasks
             await self.conversation_service.start()

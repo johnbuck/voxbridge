@@ -453,7 +453,8 @@ def get_metrics_tracker() -> MetricsTracker:
 # ============================================================
 
 # Initialize services
-conversation_service = ConversationService()
+# ConversationService initialized in startup event (requires async factory for MemoryService support)
+conversation_service = None
 stt_service = get_stt_service()
 llm_service = get_llm_service()
 tts_service = get_tts_service()
@@ -516,8 +517,12 @@ class SpeakRequest(BaseModel):
 @app.on_event("startup")
 async def startup_services():
     """Start background service tasks"""
-    global memory_service
+    global memory_service, conversation_service
     logger.info("🚀 Starting VoxBridge services...")
+
+    # Initialize ConversationService with MemoryService support (async factory pattern)
+    from src.services.factory import create_conversation_service
+    conversation_service = await create_conversation_service()
 
     # Start existing services
     await conversation_service.start()

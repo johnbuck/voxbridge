@@ -443,8 +443,9 @@ class DiscordPlugin(PluginBase):
         # Phase 1: Initialize service layer dependencies
         # These are singletons shared across plugins but each plugin maintains its own reference
         try:
-            # ConversationService (per-plugin instance for now, may change to singleton later)
-            self.conversation_service = ConversationService()
+            # ConversationService (per-plugin instance with MemoryService support)
+            from src.services.factory import create_conversation_service
+            self.conversation_service = await create_conversation_service()
             await self.conversation_service.start()
 
             # STT/LLM/TTS services
