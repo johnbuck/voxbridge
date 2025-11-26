@@ -329,20 +329,18 @@ export function AgentForm({ open, onOpenChange, agent, onSubmit }: AgentFormProp
           )}
 
           {/* Memory Scope Configuration (Phase 5: Per-Agent Memory Preferences) */}
-          <div className="space-y-2">
-            <Label htmlFor="memoryScope">Default Memory Scope</Label>
-            <Select value={memoryScope} onValueChange={(val) => setMemoryScope(val as 'global' | 'agent')}>
-              <SelectTrigger id="memoryScope">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="global">Global Memory (Shared across users)</SelectItem>
-                <SelectItem value="agent">Agent Memory (Private per user)</SelectItem>
-              </SelectContent>
-            </Select>
-            <p className="text-xs text-muted-foreground">
-              Choose the default memory scope for this agent. Users can override this on a per-agent basis in their preferences.
-            </p>
+          <div className="flex items-center justify-between space-x-2 py-2">
+            <div className="space-y-0.5">
+              <Label htmlFor="memoryScope">Agent-Specific Memory</Label>
+              <p className="text-xs text-muted-foreground">
+                Enable private memories per user (off = shared global memories)
+              </p>
+            </div>
+            <Switch
+              id="memoryScope"
+              checked={memoryScope === 'agent'}
+              onCheckedChange={(checked) => setMemoryScope(checked ? 'agent' : 'global')}
+            />
           </div>
 
           {/* TTS Configuration - Aligned with Chatterbox TTS API */}
