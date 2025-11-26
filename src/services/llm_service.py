@@ -225,6 +225,43 @@ class LLMService:
             for msg in messages
         ]
 
+        # Log prompt structure with memory detection
+        total_chars = sum(len(msg.content) for msg in llm_messages)
+        memory_messages = [msg for msg in llm_messages if "<user_memories>" in msg.content]
+        has_memory = len(memory_messages) > 0
+
+        logger.info(
+            f"🤖 LLM prompt constructed: "
+            f"session={session_id[:8]}, "
+            f"messages={len(llm_messages)}, "
+            f"total_chars={total_chars}, "
+            f"has_memory={has_memory}"
+        )
+
+        # Log memory context if present
+        if has_memory:
+            for mem_msg in memory_messages:
+                # Extract memory count from <user_memories> tag
+                memory_lines = [line for line in mem_msg.content.split('\n') if line.strip().startswith('- ')]
+                logger.info(
+                    f"🧠 Memory context detected in prompt: "
+                    f"session={session_id[:8]}, "
+                    f"memory_count={len(memory_lines)}, "
+                    f"role={mem_msg.role}"
+                )
+                # Log preview of memory content
+                preview = mem_msg.content[:200] + '...' if len(mem_msg.content) > 200 else mem_msg.content
+                logger.debug(f"  Memory preview: \"{preview}\"")
+
+        # Log message breakdown (at debug level)
+        for idx, msg in enumerate(llm_messages):
+            content_preview = msg.content[:80] + '...' if len(msg.content) > 80 else msg.content
+            logger.debug(
+                f"  [{idx}] role={msg.role}, "
+                f"chars={len(msg.content)}, "
+                f"content=\"{content_preview}\""
+            )
+
         # Create LLM request
         request = LLMRequest(
             messages=llm_messages,

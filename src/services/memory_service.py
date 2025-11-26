@@ -740,10 +740,29 @@ class MemoryService:
                 agent = await self._get_agent(agent_id, db)
 
                 # TWO-TIER HIERARCHY: Determine memory scope using resolve_memory_scope()
+                logger.info(
+                    f"🔍 Resolving memory scope: "
+                    f"user_id={user_id}, "
+                    f"agent_id={str(agent_id)[:8]}, "
+                    f"agent_name=\"{agent.name if agent else 'N/A'}\""
+                )
                 scope, _ = await resolve_memory_scope(user_id, agent_id, agent, user)
                 mem_user_id = f"{user_id}:{agent_id}" if scope == 'agent' else user_id
+                logger.info(
+                    f"✅ Memory scope resolved: "
+                    f"scope={scope}, "
+                    f"mem_user_id=\"{mem_user_id}\", "
+                    f"is_scoped={scope == 'agent'}"
+                )
 
             # Search Mem0 for relevant memories
+            query_preview = query[:100] + '...' if len(query) > 100 else query
+            logger.info(
+                f"🔎 Searching memories: "
+                f"query=\"{query_preview}\", "
+                f"mem_user_id=\"{mem_user_id}\", "
+                f"limit={limit}"
+            )
             memories = self.memory.search(
                 query=query,
                 user_id=mem_user_id,
@@ -751,19 +770,36 @@ class MemoryService:
             )
 
             if not memories or len(memories) == 0:
+                logger.info(
+                    f"🧠 No memories found: "
+                    f"user_id={user_id}, "
+                    f"scope={scope}, "
+                    f"query=\"{query_preview}\""
+                )
                 return ""
 
             # Format memories as context
+            logger.info(
+                f"🧠 Found {len(memories)} relevant memories: "
+                f"user_id={user_id}, "
+                f"scope={scope}, "
+                f"avg_score={sum(m.get('score', 0.0) for m in memories) / len(memories):.3f}"
+            )
+
             context_lines = ["<user_memories>"]
-            for mem in memories:
+            for idx, mem in enumerate(memories):
                 # Include relevance score for debugging
                 score = mem.get("score", 0.0)
                 memory_text = mem.get("memory", "")
                 context_lines.append(f"- {memory_text} (relevance: {score:.2f})")
+                logger.debug(
+                    f"  [{idx + 1}] score={score:.3f}, "
+                    f"text=\"{memory_text[:60]}{'...' if len(memory_text) > 60 else ''}\""
+                )
             context_lines.append("</user_memories>")
 
             context = "\n".join(context_lines)
-            logger.debug(f"🧠 Retrieved {len(memories)} memories for user {user_id}: {context}")
+            logger.info(f"✅ Memory context formatted: length={len(context)}, memories={len(memories)}")
             return context
 
         except Exception as e:
