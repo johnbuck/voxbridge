@@ -24,7 +24,7 @@ import { useToastHelpers } from '@/components/ui/toast';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import * as memoryApi from '@/services/memory';
 
-const USER_ID = 'discord:123456789'; // TODO: Replace with actual user ID from auth
+const USER_ID = 'web_user_default'; // Unified user ID for all users until auth is implemented
 
 export function MemorySettingsPage() {
   const [deleteAllDialogOpen, setDeleteAllDialogOpen] = useState(false);

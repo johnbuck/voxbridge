@@ -210,6 +210,7 @@ class AgentService:
         tts_cfg_weight: Optional[float] = None,
         tts_temperature: Optional[float] = None,
         tts_language: Optional[str] = None,
+        memory_scope: Optional[str] = None,
         plugins: Optional[dict] = None,
     ) -> Optional[Agent]:
         """
@@ -229,6 +230,7 @@ class AgentService:
             tts_cfg_weight: New TTS cfg_weight (optional)
             tts_temperature: New TTS temperature (optional)
             tts_language: New TTS language (optional)
+            memory_scope: New memory scope ('global' or 'agent') (optional)
             plugins: New plugin configurations (optional)
 
         Returns:
@@ -305,6 +307,11 @@ class AgentService:
 
             if tts_language is not None:
                 agent.tts_language = tts_language
+
+            if memory_scope is not None:
+                if memory_scope not in ["global", "agent"]:
+                    raise ValueError("Memory scope must be 'global' or 'agent'")
+                agent.memory_scope = memory_scope
 
             # NEW Phase 4 Batch 1: Handle plugin config updates
             plugins_changed = False

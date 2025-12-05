@@ -70,6 +70,7 @@ class AgentUpdateRequest(BaseModel):
     tts_cfg_weight: Optional[float] = Field(None, ge=0.0, le=1.0)
     tts_temperature: Optional[float] = Field(None, ge=0.05, le=5.0)
     tts_language: Optional[str] = None
+    memory_scope: Optional[str] = Field(None, description="Memory scope: 'global' or 'agent'")
     plugins: Optional[dict] = Field(None, description="Plugin configurations (e.g., discord plugin)")
 
 
@@ -335,6 +336,7 @@ async def update_agent(agent_id: UUID, request: AgentUpdateRequest):
             tts_cfg_weight=request.tts_cfg_weight,
             tts_temperature=request.tts_temperature,
             tts_language=request.tts_language,
+            memory_scope=request.memory_scope,
             plugins=request.plugins,
         )
 

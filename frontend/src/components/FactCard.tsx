@@ -7,17 +7,24 @@ import { useState } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { Pencil, Trash2, Calendar, Database } from 'lucide-react';
+import { Pencil, Trash2, Calendar, Database, Bot, Globe } from 'lucide-react';
 import type { UserFact } from '@/services/memory';
+import type { Agent } from '@/services/api';
 
 interface FactCardProps {
   fact: UserFact;
   onEdit: (fact: UserFact) => void;
   onDelete: (factId: string) => void;
+  agents?: Agent[];
 }
 
-export function FactCard({ fact, onEdit, onDelete }: FactCardProps) {
+export function FactCard({ fact, onEdit, onDelete, agents }: FactCardProps) {
   const [isDeleting, setIsDeleting] = useState(false);
+
+  // Look up agent name from agent_id
+  const agentName = fact.agent_id
+    ? agents?.find((a) => a.id === fact.agent_id)?.name
+    : null;
 
   const handleDelete = async () => {
     if (!confirm('Are you sure you want to delete this fact? This action cannot be undone.')) {
@@ -76,11 +83,17 @@ export function FactCard({ fact, onEdit, onDelete }: FactCardProps) {
             Importance: {(fact.importance * 100).toFixed(0)}%
           </Badge>
 
-          {/* Agent Badge */}
+          {/* Scope Badge */}
           {fact.agent_id ? (
-            <Badge variant="outline">Agent-Specific</Badge>
+            <Badge variant="outline" className="gap-1 bg-purple-500/20 text-purple-400 border-purple-500/50">
+              <Bot className="h-3 w-3" />
+              {agentName || 'Agent-Specific'}
+            </Badge>
           ) : (
-            <Badge variant="outline">Global</Badge>
+            <Badge variant="outline" className="gap-1 bg-blue-500/20 text-blue-400 border-blue-500/50">
+              <Globe className="h-3 w-3" />
+              Global
+            </Badge>
           )}
 
           {/* Validity Badge */}

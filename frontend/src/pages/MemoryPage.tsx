@@ -50,7 +50,7 @@ import { api } from '@/services/api';
 import { useToastHelpers } from '@/components/ui/toast';
 import { useMemoryExtractionStatus } from '@/hooks/useMemoryExtractionStatus';
 
-const DEFAULT_USER_ID = 'discord:123456789'; // TODO: Get from auth context
+const DEFAULT_USER_ID = 'web_user_default'; // Unified user ID for all users until auth is implemented
 
 interface EditingFact {
   fact: UserFact;
@@ -482,7 +482,7 @@ export function MemoryPage() {
                   }}
                 />
               ) : (
-                <FactCard key={item.id} fact={item} onEdit={handleEdit} onDelete={handleDelete} />
+                <FactCard key={item.id} fact={item} onEdit={handleEdit} onDelete={handleDelete} agents={agents} />
               )
             )}
           </div>

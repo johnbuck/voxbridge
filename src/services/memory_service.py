@@ -304,6 +304,10 @@ class MemoryService:
         # Note: Ollama native API doesn't use /v1 suffix (only OpenAI-compatible API does)
         ollama_base_url = os.getenv("LOCAL_LLM_BASE_URL", "http://ollama:11434").rstrip("/v1")
 
+        # Memory extraction model - configurable, defaults to gpt-oss:20b for better fact extraction
+        memory_model = os.getenv("MEMORY_EXTRACTION_MODEL", "gpt-oss:20b")
+        logger.info(f"🧠 Memory extraction model: {memory_model}")
+
         config = {
             "vector_store": {
                 "provider": "pgvector",
@@ -319,7 +323,7 @@ class MemoryService:
             "llm": {
                 "provider": "ollama",
                 "config": {
-                    "model": "gemma3n:latest",
+                    "model": memory_model,
                     "ollama_base_url": ollama_base_url
                 }
             },
@@ -709,12 +713,19 @@ class MemoryService:
             # Normalize Mem0 response using compatibility layer
             normalized = self.mem0_normalizer.normalize_add_response(result)
             for memory in normalized:
+                # Mem0's add() doesn't return a meaningful score (always 0.0)
+                # Use a sensible default for auto-extracted facts:
+                # - 0.7 = medium-high importance (Mem0 already filtered for relevance)
+                # - Manual facts use user-specified importance (0.0-1.0)
+                raw_score = memory.get("score", 0.0)
+                importance = raw_score if raw_score > 0.0 else 0.7
+
                 await self._upsert_fact(
                     user=user,
                     agent_id=fact_agent_id,
                     vector_id=memory["id"],
                     fact_text=memory["text"],
-                    importance=memory.get("score", 0.5),
+                    importance=importance,
                     embedding_provider=self.embedding_config["provider"],
                     embedding_model=self.embedding_config["model"],
                     db=db
@@ -965,6 +976,103 @@ Answer with only "yes" or "no".
         )
         return result.scalar_one()
 
+    def _infer_fact_category(self, fact_text: str) -> str:
+        """
+        Infer a semantic category/key from fact text using pattern matching.
+
+        Examples:
+            "Favorite color is blue" -> "favorite_color"
+            "Hometown is Portland" -> "hometown"
+            "Likes hot showers" -> "preference_showers"
+            "Wants to travel the world" -> "goal_travel"
+            "Works at Google" -> "occupation"
+            "Has 2 children" -> "family_children"
+        """
+        import re
+        text_lower = fact_text.lower().strip()
+
+        # Pattern rules: (regex, category_template)
+        # Use {1}, {2} for capture group substitution
+        patterns = [
+            # Favorites: "favorite X is Y" or "X is their favorite"
+            (r"favorite\s+(\w+)", "favorite_{1}"),
+            (r"(\w+)\s+is\s+(?:their|his|her|my)\s+favorite", "favorite_{1}"),
+
+            # Location/Origin
+            (r"(?:hometown|home\s*town)\s+(?:is|was)", "hometown"),
+            (r"(?:lives?|living)\s+in", "location_residence"),
+            (r"(?:from|born\s+in|grew\s+up\s+in)", "location_origin"),
+            (r"(?:moved|relocated)\s+to", "location_moved"),
+
+            # Preferences: "likes/loves/enjoys/prefers X"
+            (r"(?:likes?|loves?|enjoys?|prefers?)\s+(\w+)", "preference_{1}"),
+            (r"(?:doesn't|does\s+not|hates?|dislikes?)\s+(\w+)", "dislike_{1}"),
+
+            # Goals/Aspirations: "wants to X", "dreams of X"
+            (r"(?:wants?\s+to|would\s+like\s+to|dreams?\s+of)\s+(\w+)", "goal_{1}"),
+            (r"(?:aspires?\s+to|hopes?\s+to)\s+(\w+)", "aspiration_{1}"),
+
+            # Work/Career
+            (r"(?:works?\s+(?:at|for)|employed\s+(?:at|by))", "occupation"),
+            (r"(?:job|profession|career|occupation)\s+(?:is|was)", "occupation"),
+            (r"(?:is\s+a|works?\s+as)\s+(\w+)", "occupation_{1}"),
+
+            # Family
+            (r"(?:has|have)\s+(\d+)\s+(?:kids?|children)", "family_children"),
+            (r"(?:married|spouse|wife|husband|partner)", "family_relationship"),
+            (r"(?:siblings?|brothers?|sisters?)", "family_siblings"),
+            (r"(?:pets?|dog|cat|animal)", "family_pets"),
+
+            # Personal attributes
+            (r"(?:age|years?\s+old)\s+(?:is)?", "personal_age"),
+            (r"(?:birthday|born\s+on)", "personal_birthday"),
+            (r"(?:name\s+is|called|named)", "personal_name"),
+            (r"(?:speaks?|fluent\s+in)\s+(\w+)", "language_{1}"),
+
+            # Education
+            (r"(?:studied|graduated|degree|major)", "education"),
+            (r"(?:school|university|college)", "education_institution"),
+
+            # Hobbies/Interests
+            (r"(?:hobby|hobbies)\s+(?:is|are|include)", "hobby"),
+            (r"(?:plays?|playing)\s+(\w+)", "hobby_{1}"),
+            (r"(?:interested\s+in|passion\s+for)\s+(\w+)", "interest_{1}"),
+
+            # Health/Lifestyle
+            (r"(?:allergic|allergy)\s+(?:to)?\s*(\w+)?", "health_allergy"),
+            (r"(?:diet|vegan|vegetarian|eating)", "health_diet"),
+
+            # Beliefs/Values
+            (r"(?:believes?|values?|thinks?)\s+(?:in|that)?", "belief"),
+            (r"(?:religion|religious|faith)", "belief_religion"),
+        ]
+
+        for pattern, template in patterns:
+            match = re.search(pattern, text_lower)
+            if match:
+                # Substitute capture groups into template
+                result = template
+                for i, group in enumerate(match.groups(), 1):
+                    if group:
+                        result = result.replace(f"{{{i}}}", group)
+                # Clean up any unmatched placeholders
+                result = re.sub(r"\{\d+\}", "", result)
+                result = result.strip("_")
+                if result:
+                    logger.debug(f"🏷️ Inferred fact category: '{fact_text[:50]}...' -> '{result}'")
+                    return result
+
+        # Fallback: use first 2-3 meaningful words
+        # Skip common words to get to the semantic content
+        skip_words = {"is", "are", "was", "were", "has", "have", "had", "the", "a", "an", "their", "his", "her", "my", "they", "he", "she", "it"}
+        words = [w for w in text_lower.split() if w not in skip_words][:3]
+        if words:
+            fallback_key = "_".join(words)
+            logger.debug(f"🏷️ Fallback fact category: '{fact_text[:50]}...' -> '{fallback_key}'")
+            return fallback_key
+
+        return "fact"
+
     async def _upsert_fact(
         self,
         user: User,
@@ -979,32 +1087,27 @@ Answer with only "yes" or "no".
         """
         Upsert fact to PostgreSQL (for relational queries and metadata).
 
+        Uses vector_id for matching (unique per fact), not fact_key.
+        This prevents overwrites when Mem0 extracts facts without colon format.
+
         Args:
             agent_id: UUID for agent-specific facts, None for global facts
         """
-        # Extract fact key from text (e.g., "name", "location")
-        fact_key = fact_text.split(":")[0].strip().lower() if ":" in fact_text else "general"
-        fact_value = fact_text.split(":", 1)[1].strip() if ":" in fact_text else fact_text
-
-        # Check if fact exists - handle NULL agent_id for global facts
-        if agent_id is None:
-            # Global fact: agent_id IS NULL
-            result = await db.execute(
-                select(UserFact).where(and_(
-                    UserFact.user_id == user.id,
-                    UserFact.fact_key == fact_key,
-                    UserFact.agent_id.is_(None)
-                ))
-            )
+        # Extract fact key and value from text
+        # If text has "key: value" format, use it; otherwise infer category
+        if ":" in fact_text:
+            fact_key = fact_text.split(":")[0].strip().lower().replace(" ", "_")
+            fact_value = fact_text.split(":", 1)[1].strip()
         else:
-            # Agent-specific fact: agent_id = UUID
-            result = await db.execute(
-                select(UserFact).where(and_(
-                    UserFact.user_id == user.id,
-                    UserFact.fact_key == fact_key,
-                    UserFact.agent_id == agent_id
-                ))
-            )
+            # Infer semantic category from fact text
+            fact_key = self._infer_fact_category(fact_text)
+            fact_value = fact_text
+
+        # Use vector_id for matching - each Mem0 fact has a unique vector_id
+        # This prevents overwrites when multiple facts have similar semantic keys
+        result = await db.execute(
+            select(UserFact).where(UserFact.vector_id == vector_id)
+        )
         existing = result.scalar_one_or_none()
 
         if existing:
