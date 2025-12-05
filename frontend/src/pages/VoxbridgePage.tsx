@@ -31,7 +31,7 @@ import {
   TTS_SYNTHESIS_FAILED,
   TTS_SERVICE_UNAVAILABLE,
 } from '@/types/errors';
-import { Copy, CircleCheckBig, Activity, XCircle, AlertCircle, Volume2, VolumeX, Menu, MessageSquare, Brain, Lock, Unlock, Loader2, LogIn, LogOut, Server, Link } from 'lucide-react';
+import { Copy, CircleCheckBig, Activity, XCircle, AlertCircle, Volume2, VolumeX, Menu, X, MessageSquare, Brain, Lock, Unlock, Loader2, LogIn, LogOut, Server, Link } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import { ChannelSelectorModal } from '@/components/ChannelSelectorModal';
@@ -61,7 +61,13 @@ export function VoxbridgePage() {
   const [showStatistics, setShowStatistics] = useState(false);
 
   // Conversation Management state
-  const [sidebarOpen, setSidebarOpen] = useState(true);
+  // Start with sidebar closed on mobile (< 768px), open on desktop
+  const [sidebarOpen, setSidebarOpen] = useState(() => {
+    if (typeof window !== 'undefined') {
+      return window.innerWidth >= 768;
+    }
+    return true;
+  });
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [newConversationDialogOpen, setNewConversationDialogOpen] = useState(false);
   const [speakerLocked, setSpeakerLocked] = useState(false);
@@ -1409,8 +1415,63 @@ export function VoxbridgePage() {
         {/* Metrics Panel (Conditional) */}
         {showStatistics && <MetricsPanel />}
 
-        {/* Service Status Grid */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        {/* Mobile: Compact service status strip */}
+        <div className="md:hidden flex flex-wrap items-center justify-center gap-2 py-3">
+          <Badge
+            variant="outline"
+            className={cn(
+              "text-xs",
+              status?.whisperx.serverConfigured
+                ? "bg-green-500/20 text-green-400 border-green-500/50"
+                : "bg-red-500/20 text-red-400 border-red-500/50"
+            )}
+          >
+            <span
+              className={cn(
+                "inline-block h-2 w-2 rounded-full mr-1.5",
+                status?.whisperx.serverConfigured ? "bg-green-500" : "bg-red-500"
+              )}
+            />
+            WhisperX
+          </Badge>
+          <Badge
+            variant="outline"
+            className={cn(
+              "text-xs",
+              status?.services.chatterbox
+                ? "bg-green-500/20 text-green-400 border-green-500/50"
+                : "bg-red-500/20 text-red-400 border-red-500/50"
+            )}
+          >
+            <span
+              className={cn(
+                "inline-block h-2 w-2 rounded-full mr-1.5",
+                status?.services.chatterbox ? "bg-green-500" : "bg-red-500"
+              )}
+            />
+            TTS
+          </Badge>
+          <Badge
+            variant="outline"
+            className={cn(
+              "text-xs",
+              status?.services.n8nWebhook
+                ? "bg-green-500/20 text-green-400 border-green-500/50"
+                : "bg-yellow-500/20 text-yellow-400 border-yellow-500/50"
+            )}
+          >
+            <span
+              className={cn(
+                "inline-block h-2 w-2 rounded-full mr-1.5",
+                status?.services.n8nWebhook ? "bg-green-500" : "bg-yellow-500"
+              )}
+            />
+            n8n
+          </Badge>
+        </div>
+
+        {/* Desktop: Full service status cards */}
+        <div className="hidden md:grid grid-cols-3 gap-4">
           <Card>
             <CardHeader className="pb-3">
               <CardTitle className="text-sm font-medium">WhisperX</CardTitle>
@@ -1524,37 +1585,60 @@ export function VoxbridgePage() {
         {/* UNIFIED CONVERSATION INTERFACE (BOTTOM) */}
         {/* ============================================ */}
 
-        <Card className="flex flex-col h-[600px]">
-          <CardContent className="flex flex-1 min-h-0 p-0">
+        <Card className="flex flex-col h-[calc(100vh-420px)] min-h-[400px] md:h-[600px]">
+          <CardContent className="flex flex-1 min-h-0 p-0 relative">
             {/* Sidebar - Conversation List */}
+            {/* Mobile: full-width overlay | Desktop: fixed 320px sidebar */}
             <div
               className={cn(
                 'transition-all duration-300 border-r border-border overflow-hidden',
-                sidebarOpen ? 'w-80' : 'w-0'
+                'absolute md:relative z-10 h-full bg-card',
+                sidebarOpen ? 'w-full md:w-80' : 'w-0'
               )}
             >
               {sidebarOpen && (
-                <ConversationList
-                  sessions={sessions}
-                  activeSessionId={activeSessionId}
-                  onSelectSession={handleSelectSession}
-                  onCreateSession={() => setNewConversationDialogOpen(true)}
-                  onDeleteSession={handleDeleteSession}
-                  isLoading={isLoadingSessions}
-                  connectionState={connectionState}
-                  onLeaveVoice={endSession}
-                />
+                <>
+                  {/* Mobile close button - only shown on mobile */}
+                  <div className="md:hidden flex items-center justify-between p-3 border-b border-border bg-card">
+                    <span className="text-sm font-medium">Conversations</span>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      onClick={() => setSidebarOpen(false)}
+                      title="Close sidebar"
+                    >
+                      <X className="h-5 w-5" />
+                    </Button>
+                  </div>
+                  <ConversationList
+                    sessions={sessions}
+                    activeSessionId={activeSessionId}
+                    onSelectSession={(sessionId) => {
+                      handleSelectSession(sessionId);
+                      // Close sidebar on mobile after selecting a conversation
+                      if (window.innerWidth < 768) {
+                        setSidebarOpen(false);
+                      }
+                    }}
+                    onCreateSession={() => setNewConversationDialogOpen(true)}
+                    onDeleteSession={handleDeleteSession}
+                    isLoading={isLoadingSessions}
+                    connectionState={connectionState}
+                    onLeaveVoice={endSession}
+                  />
+                </>
               )}
             </div>
 
             {/* Main Conversation View */}
             <div className="flex-1 flex flex-col min-w-0">
               {/* Conversation Header */}
-              <div className="h-16 border-b border-border flex items-center justify-between px-6 shrink-0">
-                <div className="flex items-center gap-4">
+              <div className="h-14 md:h-16 border-b border-border flex items-center justify-between px-3 md:px-6 shrink-0">
+                <div className="flex items-center gap-2 md:gap-4 min-w-0 flex-1">
                   <Button
                     variant="ghost"
                     size="icon"
+                    className="shrink-0"
                     onClick={() => setSidebarOpen(!sidebarOpen)}
                     title={sidebarOpen ? 'Hide sidebar' : 'Show sidebar'}
                   >
@@ -1562,32 +1646,32 @@ export function VoxbridgePage() {
                   </Button>
 
                   {activeSession && activeAgent ? (
-                    <div className="flex items-center gap-3">
-                      <Brain className="h-5 w-5 text-primary" />
-                      <div>
-                        <h2 className="text-sm font-semibold">
+                    <div className="flex items-center gap-2 md:gap-3 min-w-0">
+                      <Brain className="h-5 w-5 text-primary shrink-0 hidden sm:block" />
+                      <div className="min-w-0">
+                        <h2 className="text-xs md:text-sm font-semibold truncate">
                           {activeSession.title || `Conversation ${new Date(activeSession.started_at).toLocaleDateString()}`}
                         </h2>
-                        <p className="text-xs text-muted-foreground">
+                        <p className="text-xs text-muted-foreground truncate">
                           {activeAgent.name} • {activeAgent.llm_model}
                         </p>
                       </div>
                     </div>
                   ) : (
-                    <div className="flex items-center gap-3">
-                      <MessageSquare className="h-5 w-5 text-muted-foreground" />
-                      <div>
-                        <h2 className="text-sm font-semibold">No Conversation Selected</h2>
-                        <p className="text-xs text-muted-foreground">Create or select a conversation</p>
+                    <div className="flex items-center gap-2 md:gap-3 min-w-0">
+                      <MessageSquare className="h-5 w-5 text-muted-foreground shrink-0 hidden sm:block" />
+                      <div className="min-w-0">
+                        <h2 className="text-xs md:text-sm font-semibold">New Conversation</h2>
+                        <p className="text-xs text-muted-foreground truncate">Select or create</p>
                       </div>
                     </div>
                   )}
                 </div>
 
                 {/* Audio Controls (WebRTC) */}
-                <div className="flex items-center gap-4">
+                <div className="flex items-center gap-2 md:gap-4 shrink-0">
                   {activeSessionId && (
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-1 md:gap-2">
                       {/* Debug logging for mic button investigation */}
                       {(() => {
                         logger.debug('[AudioControls Debug]', {

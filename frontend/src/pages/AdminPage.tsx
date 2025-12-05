@@ -111,15 +111,15 @@ export function AdminPage() {
 
   return (
     <AdminRouteGuard>
-      <div className="container mx-auto px-4 py-8">
+      <div className="container mx-auto px-4 py-6">
         <div className="flex gap-6">
-          {/* Sidebar Navigation - Always Visible */}
-          <aside className="w-64 flex-shrink-0">
+          {/* Sidebar Navigation - Hidden on mobile, visible on desktop */}
+          <aside className="hidden md:block w-64 flex-shrink-0">
             <AdminSidebar />
           </aside>
 
-          {/* Main Content Area - Conditionally Rendered */}
-          <div className="flex-1">
+          {/* Main Content Area */}
+          <div className="flex-1 min-w-0">
             {content}
           </div>
         </div>
