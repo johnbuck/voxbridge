@@ -131,6 +131,22 @@ services:
 
       # Memory System - Model Cache (VoxBridge 2.0 Phase 2)
       - HF_HOME=/home/appuser/.cache/huggingface               # HuggingFace cache location for embedding models
+
+      # Memory Summarization (VoxBridge 2.0 Phase 3)
+      - ENABLE_SUMMARIZATION=${ENABLE_SUMMARIZATION:-true}
+      - SUMMARIZATION_INTERVAL_HOURS=${SUMMARIZATION_INTERVAL_HOURS:-24}
+      - SUMMARIZATION_MIN_AGE_DAYS=${SUMMARIZATION_MIN_AGE_DAYS:-7}
+      - SUMMARIZATION_MIN_CLUSTER_SIZE=${SUMMARIZATION_MIN_CLUSTER_SIZE:-3}
+      - SUMMARIZATION_MAX_CLUSTER_SIZE=${SUMMARIZATION_MAX_CLUSTER_SIZE:-8}
+      - SUMMARIZATION_SIMILARITY_THRESHOLD=${SUMMARIZATION_SIMILARITY_THRESHOLD:-0.6}
+      - SUMMARIZATION_LLM_PROVIDER=${SUMMARIZATION_LLM_PROVIDER:-local}
+      - SUMMARIZATION_LLM_MODEL=${SUMMARIZATION_LLM_MODEL:-gpt-oss:20b}
+      - LOCAL_LLM_BASE_URL=${LOCAL_LLM_BASE_URL:-http://ollama:11434/v1}
+
+      # Temporal Detection (Memory System Phase 8)
+      - ENABLE_TEMPORAL_DETECTION=${ENABLE_TEMPORAL_DETECTION:-true}
+      - TEMPORAL_LLM_FALLBACK=${TEMPORAL_LLM_FALLBACK:-true}
+      - TEMPORAL_DEFAULT_DAYS=${TEMPORAL_DEFAULT_DAYS:-7}
     depends_on:
       postgres:
         condition: service_healthy

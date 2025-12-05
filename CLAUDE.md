@@ -248,7 +248,7 @@ VoxBridge uses a **dual-table architecture** for memory management, validated th
 
 - **user_facts** (VoxBridge-managed) - Relational metadata for CRUD operations
   - Table: `user_facts` (PostgreSQL with foreign keys)
-  - Fields: fact_key, fact_value, fact_text, importance, validity_start/end, vector_id
+  - Fields: fact_key, fact_value, fact_text, importance, validity_start/end, vector_id, memory_bank, last_accessed_at, is_protected, is_summarized, summarized_from
   - Purpose: Frontend display, filtering, sorting, joins
   - Queries: SQL (WHERE, ORDER BY, GROUP BY)
 
@@ -277,10 +277,18 @@ VoxBridge uses a **dual-table architecture** for memory management, validated th
 3. **Importance Scoring**: 0.0-1.0 scale for fact prioritization (1.0 = critical, 0.0 = trivial)
 4. **Complete Cascade Deletion**: When fact is deleted, vector is also deleted (no orphaned data)
 5. **Real-time WebSocket Updates**: Frontend receives extraction events (queued → processing → completed)
+6. **Memory Banks**: Categorize facts into Personal, Work, General, Relationships, Health, Interests, Events
+7. **Pruning Protection**: `is_protected` flag prevents important facts from being pruned
+8. **LRU Tracking**: `last_accessed_at` for least-recently-used pruning strategy
+9. **Summarization**: Background worker clusters similar old facts and summarizes them via LLM
+10. **LLM Optimization**: Preference shortcuts skip LLM for simple "I love X" statements (regex-based)
+11. **Deduplication**: Embedding similarity (0.9) + text similarity (0.85) prevents duplicate facts
+12. **Error Guards**: Circuit breaker disables extraction after 5 errors in 10min, auto-resets after 5min cooldown
 
 **Documentation:**
 - **Architecture Analysis**: [docs/architecture/open-webui-comparison.md](docs/architecture/open-webui-comparison.md) - Comprehensive validation via Open WebUI comparison
 - **FAQ**: [docs/faq/memory-system-faq.md](docs/faq/memory-system-faq.md) - 16 Q&A covering all aspects
+- **Enhancement Plan**: [docs/planning/memory-system-enhancements.md](docs/planning/memory-system-enhancements.md) - Phase 1-7 implementation plan
 - **Migration**: `alembic/versions/20251123_2030_019_restore_vector_id_unique.py` - UNIQUE constraint restoration
 - **Sync Script**: `src/database/sync_facts.py` - Re-embed orphaned facts (vector_id IS NULL)
 
@@ -299,6 +307,17 @@ docker exec voxbridge-postgres psql -U voxbridge -d voxbridge -c \
 # Check for orphaned facts (should return 0)
 docker exec voxbridge-postgres psql -U voxbridge -d voxbridge -c \
   "SELECT COUNT(*) FROM user_facts WHERE vector_id IS NULL;"
+
+# Trigger manual summarization cycle
+curl -X POST http://localhost:4900/api/summarization/run | python3 -m json.tool
+
+# View summarized facts
+docker exec voxbridge-postgres psql -U voxbridge -d voxbridge -c \
+  "SELECT fact_key, fact_text, summarized_from FROM user_facts WHERE is_summarized = true;"
+
+# View facts by memory bank
+docker exec voxbridge-postgres psql -U voxbridge -d voxbridge -c \
+  "SELECT memory_bank, COUNT(*) FROM user_facts GROUP BY memory_bank;"
 ```
 
 **Key Integration Points:**
@@ -477,6 +496,25 @@ These settings can be configured via:
 - `WHISPERX_DEVICE=auto` - Device selection (auto, cuda, cpu)
 - `WHISPERX_COMPUTE_TYPE=float16` - Computation type (float16 for GPU, int8 for CPU)
 - `WHISPERX_BATCH_SIZE=16` - Batch size for transcription
+
+**Memory Summarization (Phase 3):**
+
+Background worker that clusters semantically similar old facts and summarizes them using an LLM.
+
+- `ENABLE_SUMMARIZATION=true` - Enable/disable summarization
+- `SUMMARIZATION_INTERVAL_HOURS=24` - Background worker interval (hours)
+- `SUMMARIZATION_MIN_AGE_DAYS=7` - Only summarize facts older than this
+- `SUMMARIZATION_MIN_CLUSTER_SIZE=3` - Minimum facts to form a cluster
+- `SUMMARIZATION_MAX_CLUSTER_SIZE=8` - Maximum facts per cluster
+- `SUMMARIZATION_SIMILARITY_THRESHOLD=0.6` - Embedding similarity threshold (0.0-1.0)
+- `SUMMARIZATION_LLM_PROVIDER=local` - LLM provider (local/openrouter)
+- `SUMMARIZATION_LLM_MODEL=gpt-oss:20b` - Model for summarization
+- `LOCAL_LLM_BASE_URL=http://ollama:11434/v1` - Ollama endpoint on pinkleberry_bridge network
+
+**Manual Trigger:**
+```bash
+curl -X POST http://localhost:4900/api/summarization/run | python3 -m json.tool
+```
 
 ## Common Commands
 
