@@ -381,6 +381,7 @@ class UserFact(Base):
     fact_value = Column(Text, nullable=False)       # Raw value
     fact_text = Column(Text, nullable=False)        # Natural language fact
     importance = Column(Float, server_default='0.5')  # 0.0-1.0 importance score
+    memory_bank = Column(String(50), server_default='General', nullable=False)  # Personal, Work, General, etc.
 
     # Vector Store Sync
     vector_id = Column(String(255), unique=True, nullable=False, index=True)  # Vector store memory ID (managed by Mem0)
@@ -394,6 +395,12 @@ class UserFact(Base):
     # Metadata
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    last_accessed_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=True)  # For LRU pruning
+    is_protected = Column(Boolean, server_default='false', nullable=False)  # Protected from pruning (manual facts)
+
+    # Summarization (Phase 3)
+    is_summarized = Column(Boolean, server_default='false', nullable=False)  # True if this is a summary of other facts
+    summarized_from = Column(JSONB, nullable=True)  # Array of original fact IDs that were summarized
 
     # Relationships
     user = relationship("User", back_populates="facts")
