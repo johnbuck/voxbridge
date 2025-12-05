@@ -29,7 +29,7 @@ import {
 } from '@/components/ui/select';
 import { Slider } from '@/components/ui/slider';
 import { Link } from 'wouter';
-import { Plus, Brain, RefreshCw, Filter, Settings } from 'lucide-react';
+import { Plus, Brain, RefreshCw, Filter, Settings, Users, Briefcase, Folder, Heart, Activity, Star, CalendarDays } from 'lucide-react';
 import { FactCard } from '@/components/FactCard';
 import { PendingFactCard } from '@/components/PendingFactCard';
 import {
@@ -45,6 +45,7 @@ import type {
   UpdateFactRequest,
   PendingFact,
   FactOrPlaceholder,
+  MemoryBank,
 } from '@/services/memory';
 import { api } from '@/services/api';
 import { useToastHelpers } from '@/components/ui/toast';
@@ -67,6 +68,7 @@ export function MemoryPage() {
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
   const [editingFact, setEditingFact] = useState<EditingFact | null>(null);
   const [filterAgentId, setFilterAgentId] = useState<string>('all');
+  const [filterMemoryBank, setFilterMemoryBank] = useState<string>('all');
   const [includeInvalid, setIncludeInvalid] = useState(false);
   const [pendingFacts, setPendingFacts] = useState<Map<string, PendingFact>>(new Map());
 
@@ -137,6 +139,7 @@ export function MemoryPage() {
     fact_value: '',
     fact_text: '',
     importance: 0.8,
+    memory_bank: 'General',
   });
 
   // Queries
@@ -150,7 +153,7 @@ export function MemoryPage() {
     isLoading: isLoadingFacts,
     error: factsError,
   } = useQuery({
-    queryKey: ['facts', userId, filterAgentId, includeInvalid],
+    queryKey: ['facts', userId, filterAgentId, filterMemoryBank, includeInvalid],
     queryFn: () => {
       // Determine scope and agent_id parameters
       let scope: string | undefined;
@@ -173,6 +176,7 @@ export function MemoryPage() {
       return listUserFacts(userId, {
         scope,
         agent_id,
+        memory_bank: filterMemoryBank === 'all' ? undefined : filterMemoryBank,
         include_invalid: includeInvalid,
       });
     },
@@ -262,6 +266,7 @@ export function MemoryPage() {
       fact_value: '',
       fact_text: '',
       importance: 0.8,
+      memory_bank: 'General',
     });
   };
 
@@ -296,6 +301,7 @@ export function MemoryPage() {
         fact_value: fact.fact_value,
         fact_text: fact.fact_text || '',
         importance: fact.importance,
+        memory_bank: fact.memory_bank,
       },
     });
     setIsEditModalOpen(true);
@@ -383,32 +389,112 @@ export function MemoryPage() {
             Filters
           </CardTitle>
         </CardHeader>
-        <CardContent className="flex flex-wrap gap-4">
-          <div className="flex-1 min-w-[200px]">
-            <Label htmlFor="agent-filter">Memory Scope</Label>
-            <Select value={filterAgentId} onValueChange={setFilterAgentId}>
-              <SelectTrigger id="agent-filter">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All Memories</SelectItem>
-                <SelectItem value="global">Global</SelectItem>
-                {agents?.map((agent) => (
-                  <SelectItem key={agent.id} value={agent.id}>
-                    {agent.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+        <CardContent className="space-y-4">
+          {/* Memory Bank Filter Tabs */}
+          <div>
+            <Label className="mb-2 block">Memory Bank</Label>
+            <div className="flex flex-wrap gap-2">
+              <Button
+                variant={filterMemoryBank === 'all' ? 'default' : 'outline'}
+                size="sm"
+                onClick={() => setFilterMemoryBank('all')}
+              >
+                All Banks
+              </Button>
+              <Button
+                variant={filterMemoryBank === 'Personal' ? 'default' : 'outline'}
+                size="sm"
+                onClick={() => setFilterMemoryBank('Personal')}
+                className="gap-1"
+              >
+                <Users className="h-4 w-4" />
+                Personal
+              </Button>
+              <Button
+                variant={filterMemoryBank === 'Work' ? 'default' : 'outline'}
+                size="sm"
+                onClick={() => setFilterMemoryBank('Work')}
+                className="gap-1"
+              >
+                <Briefcase className="h-4 w-4" />
+                Work
+              </Button>
+              <Button
+                variant={filterMemoryBank === 'General' ? 'default' : 'outline'}
+                size="sm"
+                onClick={() => setFilterMemoryBank('General')}
+                className="gap-1"
+              >
+                <Folder className="h-4 w-4" />
+                General
+              </Button>
+              <Button
+                variant={filterMemoryBank === 'Relationships' ? 'default' : 'outline'}
+                size="sm"
+                onClick={() => setFilterMemoryBank('Relationships')}
+                className="gap-1"
+              >
+                <Heart className="h-4 w-4" />
+                Relationships
+              </Button>
+              <Button
+                variant={filterMemoryBank === 'Health' ? 'default' : 'outline'}
+                size="sm"
+                onClick={() => setFilterMemoryBank('Health')}
+                className="gap-1"
+              >
+                <Activity className="h-4 w-4" />
+                Health
+              </Button>
+              <Button
+                variant={filterMemoryBank === 'Interests' ? 'default' : 'outline'}
+                size="sm"
+                onClick={() => setFilterMemoryBank('Interests')}
+                className="gap-1"
+              >
+                <Star className="h-4 w-4" />
+                Interests
+              </Button>
+              <Button
+                variant={filterMemoryBank === 'Events' ? 'default' : 'outline'}
+                size="sm"
+                onClick={() => setFilterMemoryBank('Events')}
+                className="gap-1"
+              >
+                <CalendarDays className="h-4 w-4" />
+                Events
+              </Button>
+            </div>
           </div>
-          <div className="flex items-end">
-            <div className="flex items-center gap-2">
-              <Switch
-                id="include-invalid"
-                checked={includeInvalid}
-                onCheckedChange={setIncludeInvalid}
-              />
-              <Label htmlFor="include-invalid">Include Expired</Label>
+
+          {/* Scope and Include Expired Filters */}
+          <div className="flex flex-wrap gap-4">
+            <div className="flex-1 min-w-[200px]">
+              <Label htmlFor="agent-filter">Memory Scope</Label>
+              <Select value={filterAgentId} onValueChange={setFilterAgentId}>
+                <SelectTrigger id="agent-filter">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All Memories</SelectItem>
+                  <SelectItem value="global">Global</SelectItem>
+                  {agents?.map((agent) => (
+                    <SelectItem key={agent.id} value={agent.id}>
+                      {agent.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="flex items-end gap-4">
+              <div className="flex items-center gap-2">
+                <Switch
+                  id="include-invalid"
+                  checked={includeInvalid}
+                  onCheckedChange={setIncludeInvalid}
+                />
+                <Label htmlFor="include-invalid">Include Expired</Label>
+              </div>
             </div>
           </div>
         </CardContent>
@@ -546,6 +632,62 @@ export function MemoryPage() {
             </div>
 
             <div>
+              <Label htmlFor="memory-bank">Memory Bank</Label>
+              <Select
+                value={newFact.memory_bank || 'General'}
+                onValueChange={(value: MemoryBank) => setNewFact({ ...newFact, memory_bank: value })}
+              >
+                <SelectTrigger id="memory-bank">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="Personal">
+                    <span className="flex items-center gap-2">
+                      <Users className="h-4 w-4" />
+                      Personal
+                    </span>
+                  </SelectItem>
+                  <SelectItem value="Work">
+                    <span className="flex items-center gap-2">
+                      <Briefcase className="h-4 w-4" />
+                      Work
+                    </span>
+                  </SelectItem>
+                  <SelectItem value="General">
+                    <span className="flex items-center gap-2">
+                      <Folder className="h-4 w-4" />
+                      General
+                    </span>
+                  </SelectItem>
+                  <SelectItem value="Relationships">
+                    <span className="flex items-center gap-2">
+                      <Heart className="h-4 w-4" />
+                      Relationships
+                    </span>
+                  </SelectItem>
+                  <SelectItem value="Health">
+                    <span className="flex items-center gap-2">
+                      <Activity className="h-4 w-4" />
+                      Health
+                    </span>
+                  </SelectItem>
+                  <SelectItem value="Interests">
+                    <span className="flex items-center gap-2">
+                      <Star className="h-4 w-4" />
+                      Interests
+                    </span>
+                  </SelectItem>
+                  <SelectItem value="Events">
+                    <span className="flex items-center gap-2">
+                      <CalendarDays className="h-4 w-4" />
+                      Events
+                    </span>
+                  </SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div>
               <Label htmlFor="importance">
                 Importance: {((newFact.importance || 0.8) * 100).toFixed(0)}%
               </Label>
@@ -613,6 +755,67 @@ export function MemoryPage() {
                     })
                   }
                 />
+              </div>
+
+              <div>
+                <Label htmlFor="edit-memory-bank">Memory Bank</Label>
+                <Select
+                  value={editingFact.updates.memory_bank || 'General'}
+                  onValueChange={(value: MemoryBank) =>
+                    setEditingFact({
+                      ...editingFact,
+                      updates: { ...editingFact.updates, memory_bank: value },
+                    })
+                  }
+                >
+                  <SelectTrigger id="edit-memory-bank">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="Personal">
+                      <span className="flex items-center gap-2">
+                        <Users className="h-4 w-4" />
+                        Personal
+                      </span>
+                    </SelectItem>
+                    <SelectItem value="Work">
+                      <span className="flex items-center gap-2">
+                        <Briefcase className="h-4 w-4" />
+                        Work
+                      </span>
+                    </SelectItem>
+                    <SelectItem value="General">
+                      <span className="flex items-center gap-2">
+                        <Folder className="h-4 w-4" />
+                        General
+                      </span>
+                    </SelectItem>
+                    <SelectItem value="Relationships">
+                      <span className="flex items-center gap-2">
+                        <Heart className="h-4 w-4" />
+                        Relationships
+                      </span>
+                    </SelectItem>
+                    <SelectItem value="Health">
+                      <span className="flex items-center gap-2">
+                        <Activity className="h-4 w-4" />
+                        Health
+                      </span>
+                    </SelectItem>
+                    <SelectItem value="Interests">
+                      <span className="flex items-center gap-2">
+                        <Star className="h-4 w-4" />
+                        Interests
+                      </span>
+                    </SelectItem>
+                    <SelectItem value="Events">
+                      <span className="flex items-center gap-2">
+                        <CalendarDays className="h-4 w-4" />
+                        Events
+                      </span>
+                    </SelectItem>
+                  </SelectContent>
+                </Select>
               </div>
 
               <div>

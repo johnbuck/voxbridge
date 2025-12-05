@@ -5,6 +5,8 @@
 
 const API_BASE = 'http://localhost:4900/api/memory';
 
+export type MemoryBank = 'Personal' | 'Work' | 'General' | 'Relationships' | 'Health' | 'Interests' | 'Events';
+
 export interface UserFact {
   id: string;
   user_id: string;
@@ -13,6 +15,7 @@ export interface UserFact {
   fact_value: string;
   fact_text: string | null;
   importance: number;
+  memory_bank: MemoryBank;
   vector_id: string | null;
   embedding_provider: string | null;
   embedding_model: string | null;
@@ -21,6 +24,12 @@ export interface UserFact {
   created_at: string;
   updated_at: string;
   is_valid: boolean;
+  // Phase 2: Pruning
+  last_accessed_at: string | null;
+  is_protected: boolean;
+  // Phase 3: Summarization
+  is_summarized: boolean;
+  summarized_from: string[] | null;  // Array of original fact IDs
 }
 
 export interface MemorySettings {
@@ -44,12 +53,14 @@ export interface CreateFactRequest {
   fact_value: string;
   fact_text?: string;
   importance?: number;
+  memory_bank?: MemoryBank;  // Personal, Work, General
 }
 
 export interface UpdateFactRequest {
   fact_value?: string;
   fact_text?: string;
   importance?: number;
+  memory_bank?: MemoryBank;  // Personal, Work, General
   validity_end?: string;
 }
 
@@ -94,11 +105,12 @@ export interface GDPRExport {
  */
 export async function listUserFacts(
   userId: string,
-  params?: { scope?: string; agent_id?: string; include_invalid?: boolean }
+  params?: { scope?: string; agent_id?: string; memory_bank?: string; include_invalid?: boolean }
 ): Promise<UserFact[]> {
   const queryParams = new URLSearchParams();
   if (params?.scope) queryParams.append('scope', params.scope);
   if (params?.agent_id) queryParams.append('agent_id', params.agent_id);
+  if (params?.memory_bank) queryParams.append('memory_bank', params.memory_bank);
   if (params?.include_invalid) queryParams.append('include_invalid', 'true');
 
   const url = `${API_BASE}/users/${userId}/facts${queryParams.toString() ? `?${queryParams}` : ''}`;

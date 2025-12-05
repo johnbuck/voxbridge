@@ -7,9 +7,40 @@ import { useState } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { Pencil, Trash2, Calendar, Database, Bot, Globe } from 'lucide-react';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
+import { Pencil, Trash2, Clock, Database, Bot, Globe, Folder, Briefcase, Users, Heart, Activity, Star, CalendarDays, Layers, Shield, RefreshCw } from 'lucide-react';
 import type { UserFact } from '@/services/memory';
 import type { Agent } from '@/services/api';
+
+/**
+ * Format a date as relative time (e.g., "2 days ago", "3 hours ago")
+ */
+function formatRelativeTime(dateString: string): string {
+  const date = new Date(dateString);
+  const now = new Date();
+  const diffMs = now.getTime() - date.getTime();
+  const diffSecs = Math.floor(diffMs / 1000);
+  const diffMins = Math.floor(diffSecs / 60);
+  const diffHours = Math.floor(diffMins / 60);
+  const diffDays = Math.floor(diffHours / 24);
+  const diffWeeks = Math.floor(diffDays / 7);
+  const diffMonths = Math.floor(diffDays / 30);
+
+  if (diffSecs < 60) return 'just now';
+  if (diffMins < 60) return `${diffMins}m ago`;
+  if (diffHours < 24) return `${diffHours}h ago`;
+  if (diffDays < 7) return `${diffDays}d ago`;
+  if (diffWeeks < 4) return `${diffWeeks}w ago`;
+  if (diffMonths < 12) return `${diffMonths}mo ago`;
+  return `${Math.floor(diffMonths / 12)}y ago`;
+}
+
+/**
+ * Format a full date for tooltip display
+ */
+function formatFullDate(dateString: string): string {
+  return new Date(dateString).toLocaleString();
+}
 
 interface FactCardProps {
   fact: UserFact;
@@ -96,14 +127,103 @@ export function FactCard({ fact, onEdit, onDelete, agents }: FactCardProps) {
             </Badge>
           )}
 
+          {/* Memory Bank Badge */}
+          {fact.memory_bank === 'Personal' && (
+            <Badge variant="outline" className="gap-1 bg-pink-500/20 text-pink-400 border-pink-500/50">
+              <Users className="h-3 w-3" />
+              Personal
+            </Badge>
+          )}
+          {fact.memory_bank === 'Work' && (
+            <Badge variant="outline" className="gap-1 bg-amber-500/20 text-amber-400 border-amber-500/50">
+              <Briefcase className="h-3 w-3" />
+              Work
+            </Badge>
+          )}
+          {fact.memory_bank === 'General' && (
+            <Badge variant="outline" className="gap-1 bg-slate-500/20 text-slate-400 border-slate-500/50">
+              <Folder className="h-3 w-3" />
+              General
+            </Badge>
+          )}
+          {fact.memory_bank === 'Relationships' && (
+            <Badge variant="outline" className="gap-1 bg-rose-500/20 text-rose-400 border-rose-500/50">
+              <Heart className="h-3 w-3" />
+              Relationships
+            </Badge>
+          )}
+          {fact.memory_bank === 'Health' && (
+            <Badge variant="outline" className="gap-1 bg-emerald-500/20 text-emerald-400 border-emerald-500/50">
+              <Activity className="h-3 w-3" />
+              Health
+            </Badge>
+          )}
+          {fact.memory_bank === 'Interests' && (
+            <Badge variant="outline" className="gap-1 bg-violet-500/20 text-violet-400 border-violet-500/50">
+              <Star className="h-3 w-3" />
+              Interests
+            </Badge>
+          )}
+          {fact.memory_bank === 'Events' && (
+            <Badge variant="outline" className="gap-1 bg-cyan-500/20 text-cyan-400 border-cyan-500/50">
+              <CalendarDays className="h-3 w-3" />
+              Events
+            </Badge>
+          )}
+
+          {/* Summarized Badge (Phase 3) */}
+          {fact.is_summarized && (
+            <Badge variant="outline" className="gap-1 bg-indigo-500/20 text-indigo-400 border-indigo-500/50">
+              <Layers className="h-3 w-3" />
+              Summarized{fact.summarized_from ? ` (${fact.summarized_from.length})` : ''}
+            </Badge>
+          )}
+
+          {/* Protected Badge (Phase 2) */}
+          {fact.is_protected && (
+            <Badge variant="outline" className="gap-1 bg-amber-500/20 text-amber-400 border-amber-500/50">
+              <Shield className="h-3 w-3" />
+              Protected
+            </Badge>
+          )}
+
           {/* Validity Badge */}
           {!fact.is_valid && <Badge variant="destructive">Expired</Badge>}
 
-          {/* Created Date */}
-          <Badge variant="secondary" className="gap-1">
-            <Calendar className="h-3 w-3" />
-            {new Date(fact.created_at).toLocaleDateString()}
-          </Badge>
+          {/* Created Date - with relative time and tooltip */}
+          <TooltipProvider>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Badge variant="secondary" className="gap-1 cursor-help">
+                  <Clock className="h-3 w-3" />
+                  {formatRelativeTime(fact.created_at)}
+                </Badge>
+              </TooltipTrigger>
+              <TooltipContent>
+                <p>Created: {formatFullDate(fact.created_at)}</p>
+                {fact.updated_at && fact.updated_at !== fact.created_at && (
+                  <p>Updated: {formatFullDate(fact.updated_at)}</p>
+                )}
+              </TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
+
+          {/* Updated indicator - show if fact was modified */}
+          {fact.updated_at && fact.updated_at !== fact.created_at && (
+            <TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Badge variant="outline" className="gap-1 cursor-help bg-blue-500/10 text-blue-400 border-blue-500/30">
+                    <RefreshCw className="h-3 w-3" />
+                    edited
+                  </Badge>
+                </TooltipTrigger>
+                <TooltipContent>
+                  <p>Last updated: {formatFullDate(fact.updated_at)}</p>
+                </TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
+          )}
 
           {/* Embedding Provider */}
           {fact.embedding_provider && (
