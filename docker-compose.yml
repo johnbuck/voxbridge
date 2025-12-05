@@ -71,6 +71,9 @@ services:
       - ./assets:/app/assets                                      # Thinking indicator sound effects
       - voxbridge-models:/home/appuser/.cache/huggingface         # Cache for ML models (embeddings, etc.)
     environment:
+      # Logging
+      - LOG_LEVEL=DEBUG
+
       # Discord
       - DISCORD_TOKEN=${DISCORD_TOKEN}
       - USE_LEGACY_DISCORD_BOT=${USE_LEGACY_DISCORD_BOT:-false}
@@ -144,8 +147,8 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
       args:
-        - VITE_API_URL=http://localhost:4900
-        - VITE_WS_URL=ws://localhost:4900
+        - VITE_API_URL=
+        # VITE_WS_URL removed - frontend detects dynamically from window.location
     container_name: voxbridge-frontend
     ports:
       - "${FRONTEND_PORT:-4903}:80"

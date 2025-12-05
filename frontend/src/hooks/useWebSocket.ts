@@ -48,6 +48,10 @@ export function useWebSocket(
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectAttemptsRef = useRef(0);
   const reconnectTimeoutRef = useRef<number | null>(null);
+  const pingIntervalRef = useRef<number | null>(null);
+
+  // Ping interval to keep connection alive (mobile browsers close idle WebSockets)
+  const PING_INTERVAL_MS = 25000; // 25 seconds
 
   // FIX: Store callback in ref to prevent stale closures
   // When activeSessionId changes in parent, this ref gets the latest callback
@@ -68,6 +72,16 @@ export function useWebSocket(
         setIsConnected(true);
         setError(null);
         reconnectAttemptsRef.current = 0;
+
+        // Start ping interval to keep connection alive (critical for mobile browsers)
+        if (pingIntervalRef.current) {
+          clearInterval(pingIntervalRef.current);
+        }
+        pingIntervalRef.current = window.setInterval(() => {
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send('ping');
+          }
+        }, PING_INTERVAL_MS);
       };
 
       ws.onmessage = (event) => {
@@ -93,6 +107,12 @@ export function useWebSocket(
         console.log('[WebSocket] Disconnected');
         setIsConnected(false);
 
+        // Clear ping interval
+        if (pingIntervalRef.current) {
+          clearInterval(pingIntervalRef.current);
+          pingIntervalRef.current = null;
+        }
+
         // Attempt reconnection
         if (
           reconnect &&
@@ -117,6 +137,12 @@ export function useWebSocket(
   }, [endpoint, reconnect, reconnectInterval, maxReconnectAttempts]);
 
   const disconnect = useCallback(() => {
+    // Clear ping interval
+    if (pingIntervalRef.current) {
+      clearInterval(pingIntervalRef.current);
+      pingIntervalRef.current = null;
+    }
+
     if (reconnectTimeoutRef.current) {
       window.clearTimeout(reconnectTimeoutRef.current);
     }

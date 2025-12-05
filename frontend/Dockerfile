@@ -16,12 +16,11 @@ RUN npm ci
 COPY . .
 
 # Build arguments for environment variables (injected at build time)
-ARG VITE_API_URL=http://localhost:4900
-ARG VITE_WS_URL=ws://localhost:4900
+# VITE_WS_URL intentionally omitted - detected dynamically from window.location
+ARG VITE_API_URL=
 
 # Export as environment variables for Vite build
 ENV VITE_API_URL=${VITE_API_URL}
-ENV VITE_WS_URL=${VITE_WS_URL}
 
 # Build production bundle (now with env vars injected)
 RUN npm run build

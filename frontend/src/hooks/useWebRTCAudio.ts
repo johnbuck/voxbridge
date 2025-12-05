@@ -15,35 +15,29 @@ import { createLogger } from '@/utils/logger';
 // Initialize logger for WebRTC module
 const logger = createLogger('useWebRTCAudio');
 
-// WebSocket URL configuration
-// IMPORTANT: Always connect directly to backend port 4900, not nginx port 4903
-// Nginx cannot reliably proxy WebSocket connections, so we bypass it for WebRTC audio
+// WebSocket URL configuration - uses nginx proxy for LAN/mobile compatibility
 const getWebSocketUrl = () => {
   logger.debug('🔧 Environment check:');
   logger.debug('  - VITE_WS_URL:', import.meta.env.VITE_WS_URL || 'undefined');
-  logger.debug('  - VITE_API_URL:', import.meta.env.VITE_API_URL || 'undefined');
   logger.debug('  - import.meta.env.PROD:', import.meta.env.PROD);
-  logger.debug('  - window.location.hostname:', window.location.hostname);
-  logger.debug('  - window.location.protocol:', window.location.protocol);
+  logger.debug('  - window.location.host:', window.location.host);
 
-  // Always use VITE_WS_URL if defined (for both dev and prod)
+  // Allow explicit override via env var (for special deployments)
   if (import.meta.env.VITE_WS_URL) {
     logger.debug('✅ Using VITE_WS_URL from env:', import.meta.env.VITE_WS_URL);
     return import.meta.env.VITE_WS_URL;
   }
 
-  // For local development (Docker setup), always use backend port 4900
-  // Nginx on 4903 does not proxy WebSocket connections properly
+  // Production: use same host/port as page (nginx proxy handles routing)
+  // This enables mobile/LAN access without requiring port 4900 to be exposed
   if (import.meta.env.PROD) {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    // Extract hostname but force port 4900 (backend)
-    const hostname = window.location.hostname;
-    const url = `${protocol}//${hostname}:4900`;
-    logger.debug('🏭 Production mode - constructed URL:', url);
+    const url = `${protocol}//${window.location.host}`;
+    logger.debug('🏭 Production mode - using nginx proxy:', url);
     return url;
   }
 
-  // Development fallback
+  // Development fallback (local machine, localhost works)
   logger.debug('💻 Development mode - using fallback URL: ws://localhost:4900');
   return 'ws://localhost:4900';
 };
@@ -132,7 +126,9 @@ export function useWebRTCAudio(options: UseWebRTCAudioOptions): UseWebRTCAudioRe
   const sourceNodeRef = useRef<MediaStreamAudioSourceNode | null>(null);
   const destinationStreamRef = useRef<MediaStream | null>(null);
 
-  const MAX_RECONNECT_ATTEMPTS = 5;
+  // Increased from 5 to 999 to allow backend auto-reconnect time to succeed
+  // Backend STT service now handles reconnection, so frontend should be resilient
+  const MAX_RECONNECT_ATTEMPTS = 999;
   const RECONNECT_INTERVAL = 3000;
 
   // Connect to WebSocket

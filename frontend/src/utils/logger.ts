@@ -161,8 +161,15 @@ export class Logger {
    * Add log to backend buffer
    */
   private bufferLog(level: string, message: string, args: any[]): void {
-    // Extract structured data from args
-    const data = args.length > 0 ? args : undefined;
+    // Convert args array to object for backend (expects Optional[Dict], not array)
+    // Format: { arg0: value, arg1: value, ... } or undefined if no args
+    let data: Record<string, any> | undefined = undefined;
+    if (args.length > 0) {
+      data = {};
+      args.forEach((arg, i) => {
+        data![`arg${i}`] = arg;
+      });
+    }
 
     logBuffer.push({
       level,
