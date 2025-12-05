@@ -1004,9 +1004,9 @@ Answer with only "yes" or "no".
             (r"(?:from|born\s+in|grew\s+up\s+in)", "location_origin"),
             (r"(?:moved|relocated)\s+to", "location_moved"),
 
-            # Preferences: "likes/loves/enjoys/prefers X"
-            (r"(?:likes?|loves?|enjoys?|prefers?)\s+(\w+)", "preference_{1}"),
-            (r"(?:doesn't|does\s+not|hates?|dislikes?)\s+(\w+)", "dislike_{1}"),
+            # Preferences: "likes/loves/enjoys/prefers X" (skip filler words: to, the, a, an)
+            (r"(?:likes?|loves?|enjoys?|prefers?)\s+(?:to\s+)?(?:the\s+|a\s+|an\s+)?(\w+)", "preference_{1}"),
+            (r"(?:doesn't|does\s+not|hates?|dislikes?)\s+(?:to\s+)?(?:the\s+|a\s+|an\s+)?(\w+)", "dislike_{1}"),
 
             # Goals/Aspirations: "wants to X", "dreams of X"
             (r"(?:wants?\s+to|would\s+like\s+to|dreams?\s+of)\s+(\w+)", "goal_{1}"),
