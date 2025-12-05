@@ -671,15 +671,16 @@ export function VoxbridgePage() {
           break;
 
         case 'tts_complete':
-          logger.debug(`✅ TTS complete (${message.data.duration_s?.toFixed(2)}s)`);
+          logger.debug(`✅ TTS complete (${message.data.duration_s?.toFixed(2)}s, ${message.data.total_bytes ?? 'unknown'} bytes)`);
           logger.debug(`🔍 DEBUG: isSpeakerMuted=${isSpeakerMuted}, audioPlayback=${!!audioPlayback}`);
           logger.debug(`🔍 DEBUG: audioPlayback.completeAudio=${!!audioPlayback?.completeAudio}`);
 
           // Play buffered TTS audio if not muted
           if (!isSpeakerMuted) {
-            logger.debug('🔍 DEBUG: Calling audioPlayback.completeAudio()...');
+            logger.debug(`🔍 DEBUG: Calling audioPlayback.completeAudio(${message.data.total_bytes ?? 'undefined'})...`);
             try {
-              await audioPlayback.completeAudio();
+              // Pass expected bytes so frontend can wait for all audio data
+              await audioPlayback.completeAudio(message.data.total_bytes);
               logger.debug('🔍 DEBUG: completeAudio() returned successfully');
             } catch (error) {
               logger.error('🔍 DEBUG: completeAudio() threw error:', error);

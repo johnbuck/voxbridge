@@ -1611,7 +1611,8 @@ class WebRTCVoiceHandler:
                     "event": "tts_complete",
                     "data": {
                         "session_id": self.session_id,
-                        "duration_s": total_latency_s
+                        "duration_s": total_latency_s,
+                        "total_bytes": total_bytes  # For frontend validation
                     }
                 })
 

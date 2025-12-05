@@ -23,7 +23,7 @@ export interface UseAudioPlaybackReturn {
   playAudioChunks: (chunks: Uint8Array[]) => Promise<void>;
   stop: () => void;
   addAudioChunk: (chunk: Uint8Array) => void;
-  completeAudio: () => Promise<void>;
+  completeAudio: (expectedBytes?: number) => Promise<void>;
 }
 
 export function useAudioPlayback(options: UseAudioPlaybackOptions = {}): UseAudioPlaybackReturn {
@@ -122,27 +122,54 @@ export function useAudioPlayback(options: UseAudioPlaybackOptions = {}): UseAudi
     audioChunksRef.current.push(chunk);
   }, []);
 
-  const completeAudio = useCallback(async () => {
-    console.log(`🔍 DEBUG: completeAudio() called, ${audioChunksRef.current.length} chunks buffered`);
+  const completeAudio = useCallback(async (expectedBytes?: number) => {
+    const currentBytes = () => audioChunksRef.current.reduce((sum, c) => sum + c.length, 0);
+    console.log(`🔍 DEBUG: completeAudio() called, ${audioChunksRef.current.length} chunks buffered, ${currentBytes()} bytes, expected=${expectedBytes ?? 'unknown'}`);
 
-    // Fix #1: Wait for audio chunks to arrive (race condition fix)
+    // Fix #2: Wait for ALL audio chunks to arrive (race condition fix)
     // tts_complete event may arrive before binary audio chunks due to different TCP buffers
-    const MAX_WAIT_MS = 500;
+    // Now we wait until received bytes match expected bytes (or timeout)
+    const MAX_WAIT_MS = 2000; // Increased from 500ms to 2000ms
     const startTime = Date.now();
 
-    while (audioChunksRef.current.length === 0 && (Date.now() - startTime) < MAX_WAIT_MS) {
-      console.log(`⏳ Waiting for audio chunks... (elapsed: ${Date.now() - startTime}ms)`);
+    while ((Date.now() - startTime) < MAX_WAIT_MS) {
+      const receivedBytes = currentBytes();
+
+      // If we know expected size, wait until we have all bytes
+      if (expectedBytes && receivedBytes >= expectedBytes) {
+        console.log(`✅ All ${receivedBytes} bytes received (expected ${expectedBytes})`);
+        break;
+      }
+
+      // Fallback if expectedBytes not provided: wait for any data + 200ms buffer
+      if (!expectedBytes && audioChunksRef.current.length > 0) {
+        console.log(`⏳ No expected bytes provided, waiting 200ms after first chunk...`);
+        await new Promise(resolve => setTimeout(resolve, 200));
+        break;
+      }
+
+      // Still waiting for data
+      if ((Date.now() - startTime) % 500 < 50) {
+        console.log(`⏳ Waiting for audio chunks... (${receivedBytes}/${expectedBytes ?? '?'} bytes, elapsed: ${Date.now() - startTime}ms)`);
+      }
       await new Promise(resolve => setTimeout(resolve, 50)); // Check every 50ms
     }
 
     if (audioChunksRef.current.length === 0) {
-      const errorMsg = 'No audio data received after waiting 500ms';
+      const errorMsg = 'No audio data received after waiting 2000ms';
       console.error('❌', errorMsg);
       options.onError?.(errorMsg);
       return;
     }
 
-    console.log(`✅ Audio chunks arrived after ${Date.now() - startTime}ms`);
+    const finalBytes = currentBytes();
+    const elapsed = Date.now() - startTime;
+    if (expectedBytes && finalBytes < expectedBytes) {
+      console.warn(`⚠️ Only received ${finalBytes}/${expectedBytes} bytes after ${elapsed}ms - playing partial audio`);
+    } else {
+      console.log(`✅ Audio chunks arrived after ${elapsed}ms (${finalBytes} bytes)`);
+    }
+
     await playAudioChunks(audioChunksRef.current);
     console.log('🔍 DEBUG: playAudioChunks() completed, clearing buffer');
     audioChunksRef.current = [];

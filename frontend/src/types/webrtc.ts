@@ -35,6 +35,7 @@ export interface WebRTCAudioMessage {
     user_id?: string;
     session_id?: string;
     duration_s?: number;  // For tts_complete event
+    total_bytes?: number; // For tts_complete event - expected audio bytes
     message?: string;     // For error event
     // Bot speaking state (multi-turn conversations)
     is_speaking?: boolean;  // For bot_speaking_state_changed event
