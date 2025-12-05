@@ -59,7 +59,13 @@ class WebRTCVoiceHandler:
     Note: Uses PCM path (not Opus) to avoid frame size mismatch with WhisperX
     """
 
-    def __init__(self, websocket: WebSocket, user_id: str, session_id: UUID):
+    def __init__(
+        self,
+        websocket: WebSocket,
+        user_id: str,
+        session_id: UUID,
+        conversation_service: ConversationService
+    ):
         """
         Initialize WebRTC voice handler
 
@@ -67,14 +73,18 @@ class WebRTCVoiceHandler:
             websocket: FastAPI WebSocket connection
             user_id: User identifier (browser session ID)
             session_id: Active session ID for this conversation
+            conversation_service: INJECTED ConversationService singleton (shared across all handlers)
         """
         self.websocket = websocket
         self.user_id = user_id
         self.session_id = str(session_id)  # Convert UUID to string for service layer
         self.is_active = True
 
+        # CRITICAL: Use injected singleton instead of creating new instance
+        self.conversation_service = conversation_service
+
         # Service instances (initialized async in _initialize_services)
-        self.conversation_service = None
+        # ConversationService is now set above, others created in _initialize_services
         self.stt_service = None
         self.llm_service = None
         self.tts_service = None
@@ -174,50 +184,51 @@ class WebRTCVoiceHandler:
 
     async def _initialize_services(self):
         """
-        Initialize service instances using async factory pattern.
+        Initialize service instances (NON-singleton services only).
 
-        This method is called at the start of the handler lifecycle to properly
-        initialize services with async dependencies (like MemoryService) without
-        causing event loop conflicts.
+        CRITICAL CHANGE: ConversationService is NO LONGER created here.
+        It's injected via constructor to ensure singleton pattern.
+
+        Only per-handler services (STT, LLM, TTS) are created here.
+        These services don't maintain state across requests, so per-instance is fine.
         """
-        from src.services.factory import create_conversation_service
+        logger.info("🏭 Initializing per-handler services...")
 
-        logger.info("🏭 Initializing services via factory pattern...")
+        # ConversationService already injected in constructor - DO NOT create new instance
+        # OLD CODE (REMOVED):
+        # from src.services.factory import create_conversation_service
+        # self.conversation_service = await create_conversation_service()
 
-        # Create ConversationService with MemoryService support
-        self.conversation_service = await create_conversation_service()
-
-        # Create other services (these don't require factory yet, but we use
-        # the pattern for consistency and future-proofing)
+        # Create per-handler services (these are stateless or per-connection)
         self.stt_service = STTService(error_callback=self._handle_service_error)
         self.llm_service = LLMService(error_callback=self._handle_service_error)
         self.tts_service = TTSService(error_callback=self._handle_service_error)
 
-        logger.info("✅ All services initialized successfully")
+        logger.info("✅ Per-handler services initialized successfully")
 
     async def start(self):
         """
         Start handling audio stream
 
         Main loop:
-        0. Initialize services (async factory pattern)
+        0. Initialize per-handler services (STT, LLM, TTS)
+           NOTE: ConversationService already injected via constructor
         1. Accept WebSocket connection
-        2. Start ConversationService background tasks
+        2. ConversationService already started at app startup (shared singleton)
         3. Connect to STTService
         4. Receive audio chunks
         5. Process transcripts
         6. Handle disconnection
         """
         try:
-            logger.info(f"[START] Step 0: Initializing services...")
-            # Initialize services using async factory pattern (CRITICAL for memory access)
+            logger.info(f"[START] Step 0: Initializing per-handler services...")
+            # Initialize only per-handler services (ConversationService already injected)
             await self._initialize_services()
-            logger.info(f"[START] ✅ Step 0 complete: Services initialized")
+            logger.info(f"[START] ✅ Step 0 complete: Per-handler services initialized")
 
-            logger.info(f"[START] Step 1: Starting conversation service...")
-            # Start conversation service background tasks
-            await self.conversation_service.start()
-            logger.info(f"[START] ✅ Step 1 complete: ConversationService started")
+            # NOTE: ConversationService.start() already called at app startup
+            # We're using the shared singleton, so no need to start it again
+            logger.info(f"[START] ✅ Using global ConversationService singleton (already started)")
 
             logger.info(f"[START] Step 2: Validating session...")
             # Validate session exists and user owns it

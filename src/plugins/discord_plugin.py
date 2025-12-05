@@ -987,10 +987,13 @@ class DiscordPlugin(PluginBase):
             audio_stream: Async generator yielding audio chunks
             voice_client: Voice client connection
         """
-        user_id = str(user.id)
+        discord_user_id = str(user.id)  # Discord snowflake ID (for session tracking only)
         username = user.name
 
-        logger.info(f"🎤 {username} ({user_id}) started speaking")
+        # Use unified user ID for cross-platform memory sharing
+        unified_user_id = 'web_user_default'
+
+        logger.info(f"🎤 {username} (discord_id={discord_user_id}, unified_user_id={unified_user_id}) started speaking")
 
         try:
             # Record pipeline start time
@@ -1003,7 +1006,7 @@ class DiscordPlugin(PluginBase):
 
             # Phase 7: Handle user interruption if AI is currently speaking
             if self.tts_service.streaming_config.enabled and guild_id:
-                await self._handle_interruption(guild_id, user_id, username)
+                await self._handle_interruption(guild_id, unified_user_id, username)
 
             if mapped_session_id:
                 # Use the mapped session (unified conversation threading)
@@ -1017,14 +1020,15 @@ class DiscordPlugin(PluginBase):
                 session_id = str(uuid.uuid4())
                 logger.info(f"📝 Created new session {session_id[:8]}... for Discord user {username}")
 
-            self.active_sessions[user_id] = session_id
+            self.active_sessions[discord_user_id] = session_id
 
             # Track session in AudioReceiver for logging (Phase 2 Tests)
+            # Uses discord_user_id for tracking Discord-specific session mappings
             for guild_id, vc in self.voice_clients.items():
                 if hasattr(vc, 'recv') and vc.recv:
                     receiver = vc.recv
                     if hasattr(receiver, 'active_sessions'):
-                        receiver.active_sessions[user_id] = session_id
+                        receiver.active_sessions[discord_user_id] = session_id
 
             # Initialize session timing tracker (Phase 1 integration)
             self.session_timings[session_id] = {
@@ -1041,9 +1045,10 @@ class DiscordPlugin(PluginBase):
             # Phase 1 integration: Create session in database via ConversationService
             # If using mapped session, this will load existing session from DB
             # If new session, this will create it with the specified session_id
+            # Uses unified_user_id for cross-platform memory sharing
             session = await self.conversation_service.get_or_create_session(
                 session_id=session_id,
-                user_id=user_id,
+                user_id=unified_user_id,
                 agent_id=str(self.agent_id),
                 channel_type="discord",
                 user_name=username,

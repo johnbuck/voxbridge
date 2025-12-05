@@ -48,18 +48,32 @@ CACHE_CLEANUP_INTERVAL_SECONDS = int(os.getenv('CACHE_CLEANUP_INTERVAL_SECONDS',
 @dataclass
 class Message:
     """
-    Simplified message format for conversation context.
+    Plain dataclass for cached conversation messages (detached from SQLAlchemy).
+
+    This replaces direct storage of Conversation ORM objects in the cache to prevent
+    SQLAlchemy DetachedInstanceError when database sessions close. All fields are
+    copied from the ORM model at cache time, creating a fully independent object.
 
     Attributes:
+        id: Database primary key
+        session_id: UUID of the conversation session
         role: Message role ('user', 'assistant', or 'system')
         content: Message text content
         timestamp: When message was created
-        metadata: Optional extra data (latency metrics, etc.)
+        audio_duration_ms: Duration of user audio input (nullable)
+        tts_duration_ms: Duration of TTS synthesis (nullable)
+        llm_latency_ms: LLM generation latency (nullable)
+        total_latency_ms: Total end-to-end latency (nullable)
     """
+    id: int
+    session_id: str
     role: str
     content: str
     timestamp: datetime
-    metadata: Optional[Dict] = None
+    audio_duration_ms: Optional[int] = None
+    tts_duration_ms: Optional[int] = None
+    llm_latency_ms: Optional[int] = None
+    total_latency_ms: Optional[int] = None
 
 
 @dataclass
@@ -70,14 +84,14 @@ class CachedContext:
     Attributes:
         session: SQLAlchemy Session model
         agent: SQLAlchemy Agent model (eagerly loaded)
-        messages: Recent conversation history (limited by max_context_messages)
+        messages: Recent conversation history as Message dataclasses (detached from SQLAlchemy)
         last_activity: Last cache access time (updated on each access)
         expires_at: When to evict from cache (last_activity + TTL)
         lock: Async lock for concurrent access control
     """
     session: Session
     agent: Agent
-    messages: List[Conversation]
+    messages: List[Message]  # Changed from List[Conversation] to prevent detachment errors
     last_activity: datetime
     expires_at: datetime
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
@@ -317,6 +331,8 @@ class ConversationService:
                 # Add system prompt if requested
                 if include_system_prompt and cached.agent.system_prompt:
                     messages.append(Message(
+                        id=0,  # System message placeholder (not from database)
+                        session_id=session_id,
                         role="system",
                         content=cached.agent.system_prompt,
                         timestamp=cached.session.started_at
@@ -356,6 +372,8 @@ class ConversationService:
                                 )
 
                                 messages.append(Message(
+                                    id=0,  # System message placeholder (not from database)
+                                    session_id=session_id,
                                     role="system",
                                     content=memory_context,
                                     timestamp=datetime.utcnow()
@@ -377,21 +395,11 @@ class ConversationService:
                                 f"error={str(e)}"
                             )
 
-                # Add conversation messages (convert from Conversation to Message)
+                # Add conversation messages (already Message dataclasses, no conversion needed)
                 # ✅ FIX: cached.messages are now in ASC order (oldest first)
                 # No need to reverse - just take last N messages directly
-                for conv in cached.messages[-limit:]:
-                    messages.append(Message(
-                        role=conv.role,
-                        content=conv.content,
-                        timestamp=conv.timestamp,
-                        metadata={
-                            "audio_duration_ms": conv.audio_duration_ms,
-                            "tts_duration_ms": conv.tts_duration_ms,
-                            "llm_latency_ms": conv.llm_latency_ms,
-                            "total_latency_ms": conv.total_latency_ms
-                        }
-                    ))
+                # ✅ cached.messages are already Message dataclasses, so no reconstruction needed
+                messages.extend(cached.messages[-limit:])
 
                 # DIAGNOSTIC: Log all messages being returned
                 logger.info(f"📋 [CONVERSATION_CONTEXT] Returning {len(messages)} messages for session {session_id[:8]}:")
@@ -482,10 +490,15 @@ class ConversationService:
 
                         # Return existing message instead of creating duplicate
                         return Message(
+                            id=existing.id,
+                            session_id=str(existing.session_id),
                             role=existing.role,
                             content=existing.content,
                             timestamp=existing.timestamp,
-                            metadata=metadata
+                            audio_duration_ms=existing.audio_duration_ms,
+                            tts_duration_ms=existing.tts_duration_ms,
+                            llm_latency_ms=existing.llm_latency_ms,
+                            total_latency_ms=existing.total_latency_ms
                         )
 
                     # Create and insert new conversation (only if not duplicate)
@@ -516,17 +529,24 @@ class ConversationService:
                         f"timestamp={conversation.timestamp}"
                     )
 
-                # Add to cache (maintain max_context limit)
-                cached.messages.append(conversation)
-                if len(cached.messages) > self._max_context:
-                    cached.messages = cached.messages[-self._max_context:]
-
+                # Convert ORM object to Message dataclass before adding to cache
+                # This prevents SQLAlchemy DetachedInstanceError when the database session closes
                 message = Message(
+                    id=conversation.id,
+                    session_id=str(conversation.session_id),
                     role=conversation.role,
                     content=conversation.content,
                     timestamp=conversation.timestamp,
-                    metadata=metadata
+                    audio_duration_ms=conversation.audio_duration_ms,
+                    tts_duration_ms=conversation.tts_duration_ms,
+                    llm_latency_ms=conversation.llm_latency_ms,
+                    total_latency_ms=conversation.total_latency_ms
                 )
+
+                # Add to cache (maintain max_context limit)
+                cached.messages.append(message)  # Now appends Message dataclass, not ORM object
+                if len(cached.messages) > self._max_context:
+                    cached.messages = cached.messages[-self._max_context:]
 
                 # Calculate total duration
                 t_end = time.time()
@@ -709,14 +729,31 @@ class ConversationService:
                     .order_by(Conversation.timestamp.asc())
                     .limit(self._max_context)
                 )
-                messages = list(result.scalars().all())
+                orm_messages = list(result.scalars().all())
+
+                # Convert ORM objects to Message dataclasses immediately
+                # This prevents SQLAlchemy DetachedInstanceError when the database session closes
+                messages = [
+                    Message(
+                        id=msg.id,
+                        session_id=str(msg.session_id),
+                        role=msg.role,
+                        content=msg.content,
+                        timestamp=msg.timestamp,
+                        audio_duration_ms=msg.audio_duration_ms,
+                        tts_duration_ms=msg.tts_duration_ms,
+                        llm_latency_ms=msg.llm_latency_ms,
+                        total_latency_ms=msg.total_latency_ms
+                    )
+                    for msg in orm_messages
+                ]
 
                 # Create cache entry
                 now = datetime.utcnow()
                 cached = CachedContext(
                     session=session,
                     agent=session.agent,
-                    messages=messages,
+                    messages=messages,  # Now stores Message dataclasses, not ORM objects
                     last_activity=now,
                     expires_at=now + self._cache_ttl
                 )

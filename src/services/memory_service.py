@@ -13,6 +13,7 @@ from sqlalchemy import select, and_, func
 from src.database.models import User, UserFact, ExtractionTask, Agent, SystemSettings, UserAgentMemorySetting
 from src.database.session import get_db_session
 from src.services.llm_service import LLMService, LLMConfig, ProviderType
+from src.services.mem0_compat import Mem0ResponseNormalizer
 from src.config.logging_config import get_logger
 
 # Configure logging
@@ -269,6 +270,9 @@ class MemoryService:
         # Initialize ThreadPoolExecutor for blocking Mem0 calls
         from concurrent.futures import ThreadPoolExecutor
         self.executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="mem0_extraction")
+
+        # Initialize Mem0 response normalizer for API compatibility
+        self.mem0_normalizer = Mem0ResponseNormalizer()
 
         # Build embedder config with 3-tier prioritization
         if db_embedding_config:
@@ -586,11 +590,12 @@ class MemoryService:
                 )
                 logger.info(f"📝 [Step 5c] Mem0 result received: {mem0_result}")
 
-                # Manual facts (infer=False) return {'results': [...]} instead of {'memories': [...]}
-                if not mem0_result or "results" not in mem0_result or len(mem0_result["results"]) == 0:
+                # Normalize Mem0 response using compatibility layer
+                normalized = self.mem0_normalizer.normalize_add_response(mem0_result)
+                if not normalized:
                     raise ValueError("Mem0 failed to create vector embedding")
 
-                vector_id = mem0_result["results"][0]["id"]
+                vector_id = normalized[0]["id"]
                 logger.info(f"✅ [Step 5] Created vector embedding: {vector_id}")
 
                 # Create fact in database
@@ -687,30 +692,35 @@ class MemoryService:
 
             logger.info(f"📝 Final memory scope: scope={scope}, mem_user_id={mem_user_id}, fact_agent_id={fact_agent_id}")
 
-            # Call Mem0 to extract facts
-            result = self.memory.add(
-                messages=[
-                    {"role": "user", "content": user_message},
-                    {"role": "assistant", "content": ai_response}
-                ],
-                user_id=mem_user_id
+            # Call Mem0 to extract facts (wrapped in executor to prevent event loop blocking)
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(
+                self.executor,
+                lambda: self.memory.add(
+                    messages=[
+                        {"role": "user", "content": user_message},
+                        {"role": "assistant", "content": ai_response}
+                    ],
+                    user_id=mem_user_id
+                )
             )
 
             # Store extracted facts in PostgreSQL for relational queries
-            if result and "memories" in result:
-                for memory in result["memories"]:
-                    await self._upsert_fact(
-                        user=user,
-                        agent_id=fact_agent_id,
-                        vector_id=memory["id"],
-                        fact_text=memory["memory"],
-                        importance=memory.get("score", 0.5),
-                        embedding_provider=os.getenv("EMBEDDING_PROVIDER", "azure"),
-                        embedding_model=memory.get("metadata", {}).get("model", "unknown"),
-                        db=db
-                    )
+            # Normalize Mem0 response using compatibility layer
+            normalized = self.mem0_normalizer.normalize_add_response(result)
+            for memory in normalized:
+                await self._upsert_fact(
+                    user=user,
+                    agent_id=fact_agent_id,
+                    vector_id=memory["id"],
+                    fact_text=memory["text"],
+                    importance=memory.get("score", 0.5),
+                    embedding_provider=self.embedding_config["provider"],
+                    embedding_model=self.embedding_config["model"],
+                    db=db
+                )
 
-            logger.info(f"📝 Extracted {len(result.get('memories', []))} facts for user {user_id}")
+            logger.info(f"📝 Extracted {len(normalized)} facts for user {user_id}")
 
     async def get_user_memory_context(
         self,
@@ -763,11 +773,19 @@ class MemoryService:
                 f"mem_user_id=\"{mem_user_id}\", "
                 f"limit={limit}"
             )
-            memories = self.memory.search(
-                query=query,
-                user_id=mem_user_id,
-                limit=limit
+            # Wrap Mem0 search in executor to prevent event loop blocking
+            loop = asyncio.get_event_loop()
+            raw_memories = await loop.run_in_executor(
+                self.executor,
+                lambda: self.memory.search(
+                    query=query,
+                    user_id=mem_user_id,
+                    limit=limit
+                )
             )
+
+            # Normalize Mem0 search response using compatibility layer
+            memories = self.mem0_normalizer.normalize_search_response(raw_memories)
 
             if not memories or len(memories) == 0:
                 logger.info(
@@ -778,24 +796,26 @@ class MemoryService:
                 )
                 return ""
 
-            # Format memories as context
+            # Calculate average score from normalized results
+            avg_score = sum(m["score"] for m in memories) / len(memories)
+
             logger.info(
                 f"🧠 Found {len(memories)} relevant memories: "
                 f"user_id={user_id}, "
                 f"scope={scope}, "
-                f"avg_score={sum(m.get('score', 0.0) for m in memories) / len(memories):.3f}"
+                f"avg_score={avg_score:.3f}"
             )
 
+            # Format memories as context (all normalized to same format)
             context_lines = ["<user_memories>"]
             for idx, mem in enumerate(memories):
-                # Include relevance score for debugging
-                score = mem.get("score", 0.0)
-                memory_text = mem.get("memory", "")
-                context_lines.append(f"- {memory_text} (relevance: {score:.2f})")
+                memory_text = mem["text"]
+                score = mem["score"]
                 logger.debug(
                     f"  [{idx + 1}] score={score:.3f}, "
                     f"text=\"{memory_text[:60]}{'...' if len(memory_text) > 60 else ''}\""
                 )
+                context_lines.append(f"- {memory_text} (relevance: {score:.2f})")
             context_lines.append("</user_memories>")
 
             context = "\n".join(context_lines)

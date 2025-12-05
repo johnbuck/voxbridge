@@ -30,53 +30,58 @@ logger = logging.getLogger(__name__)
 
 async def create_conversation_service(
     cache_ttl_minutes: int = 15,
-    max_context_messages: int = 20
+    max_context_messages: int = 20,
+    memory_service: Optional[MemoryService] = None
 ) -> ConversationService:
     """
-    Create ConversationService with properly initialized MemoryService.
+    Create ConversationService with optional MemoryService injection.
 
-    This factory function properly initializes MemoryService using async/await
-    instead of asyncio.run(), which prevents event loop conflicts when creating
-    service instances during WebSocket connections or Discord plugin initialization.
+    This factory function accepts an optional global MemoryService instance
+    to prevent creating multiple MemoryService instances (singleton pattern).
+    If no memory_service is provided, it creates one (for backward compatibility).
 
     Args:
         cache_ttl_minutes: How long to keep inactive sessions in cache (default: 15)
         max_context_messages: Maximum messages to cache per session (default: 20)
+        memory_service: Optional global MemoryService singleton to inject (default: None)
 
     Returns:
-        ConversationService instance with memory access enabled (if initialization succeeds)
+        ConversationService instance with memory access enabled (if memory_service provided)
 
     Raises:
         Exception: If critical initialization fails (ConversationService creation itself)
 
     Example:
+        >>> # Inject global singleton (recommended for production)
+        >>> global_memory_service = MemoryService(...)
+        >>> service = await create_conversation_service(memory_service=global_memory_service)
+        >>>
+        >>> # Create standalone (testing/development)
         >>> service = await create_conversation_service()
-        >>> context = await service.get_conversation_context(
-        ...     session_id="abc-123",
-        ...     user_id="user-456",
-        ...     agent_id="agent-789"
-        ... )
     """
     logger.info("🏭 Creating ConversationService via factory...")
 
-    # Initialize MemoryService with async database config
-    memory_service: Optional[MemoryService] = None
-    try:
-        logger.debug("🧠 Fetching embedding configuration from database...")
-        db_embedding_config = await get_global_embedding_config()
+    # If no MemoryService provided, create one (backward compatibility)
+    if memory_service is None:
+        logger.debug("🧠 No MemoryService provided, creating standalone instance...")
+        try:
+            logger.debug("🧠 Fetching embedding configuration from database...")
+            db_embedding_config = await get_global_embedding_config()
 
-        model_name = db_embedding_config.get('model_name', 'unknown')
-        logger.info(f"🧠 Initializing MemoryService with model: {model_name}")
+            model_name = db_embedding_config.get('model_name', 'unknown')
+            logger.info(f"🧠 Initializing MemoryService with model: {model_name}")
 
-        memory_service = MemoryService(db_embedding_config=db_embedding_config)
-        logger.info("✅ MemoryService initialized successfully (ready for retrieval)")
+            memory_service = MemoryService(db_embedding_config=db_embedding_config)
+            logger.info("✅ MemoryService initialized successfully (ready for retrieval)")
 
-    except Exception as e:
-        logger.warning(f"⚠️ MemoryService initialization failed: {e}")
-        logger.warning("🧠 Continuing without memory features (conversations will work, but no fact retrieval)")
-        memory_service = None
+        except Exception as e:
+            logger.warning(f"⚠️ MemoryService initialization failed: {e}")
+            logger.warning("🧠 Continuing without memory features (conversations will work, but no fact retrieval)")
+            memory_service = None
+    else:
+        logger.info("✅ Using injected global MemoryService singleton")
 
-    # Create ConversationService with initialized MemoryService
+    # Create ConversationService with MemoryService
     try:
         service = ConversationService(
             cache_ttl_minutes=cache_ttl_minutes,

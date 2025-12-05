@@ -16,7 +16,7 @@ from datetime import datetime
 from typing import Optional, Dict
 
 import httpx
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -511,6 +511,40 @@ class SpeakRequest(BaseModel):
     options: dict = {}
 
 # ============================================================
+# DEPENDENCY INJECTION PROVIDERS
+# ============================================================
+
+def get_conversation_service() -> ConversationService:
+    """
+    Dependency injection provider for ConversationService singleton.
+
+    Returns the global ConversationService instance initialized at startup.
+    Ensures all WebSocket connections share the same conversation cache,
+    enabling multi-turn conversations.
+
+    Returns:
+        ConversationService: The global singleton instance
+
+    Raises:
+        RuntimeError: If accessed before startup_services() completes
+
+    Usage:
+        @app.websocket("/ws/voice")
+        async def endpoint(
+            websocket: WebSocket,
+            service: ConversationService = Depends(get_conversation_service)
+        ):
+            # service is the global singleton
+    """
+    if conversation_service is None:
+        raise RuntimeError(
+            "ConversationService not initialized. "
+            "This indicates startup_services() was not called or failed. "
+            "Check startup logs for initialization errors."
+        )
+    return conversation_service
+
+# ============================================================
 # SERVICE STARTUP/SHUTDOWN
 # ============================================================
 
@@ -520,15 +554,7 @@ async def startup_services():
     global memory_service, conversation_service
     logger.info("🚀 Starting VoxBridge services...")
 
-    # Initialize ConversationService with MemoryService support (async factory pattern)
-    from src.services.factory import create_conversation_service
-    conversation_service = await create_conversation_service()
-
-    # Start existing services
-    await conversation_service.start()
-    await plugin_manager.start_resource_monitoring()
-
-    # VoxBridge 2.0 Phase 2: Initialize memory service with database embedding config
+    # VoxBridge 2.0 Phase 2: Initialize MemoryService FIRST (singleton pattern)
     # Dispose any old database connections to prevent event loop conflicts
     from src.database.session import engine
     await engine.dispose()
@@ -536,11 +562,20 @@ async def startup_services():
 
     db_embedding_config = await get_global_embedding_config()
     memory_service = MemoryService(db_embedding_config=db_embedding_config, ws_manager=ws_manager)
-    logger.info("🧠 MemoryService initialized")
+    logger.info("🧠 Global MemoryService singleton initialized")
 
     # Start memory extraction queue processor
     asyncio.create_task(memory_service.process_extraction_queue())
     logger.info("🧠 Memory extraction queue processor started")
+
+    # Initialize ConversationService with global MemoryService singleton (dependency injection)
+    from src.services.factory import create_conversation_service
+    conversation_service = await create_conversation_service(memory_service=memory_service)
+    logger.info("✅ ConversationService created with injected MemoryService singleton")
+
+    # Start existing services
+    await conversation_service.start()
+    await plugin_manager.start_resource_monitoring()
 
     # NEW Phase 4 Batch 1: Initialize plugins for all agents
     try:
@@ -1335,9 +1370,16 @@ async def websocket_endpoint(websocket: WebSocket):
         ws_manager.disconnect(websocket)
 
 @app.websocket("/ws/voice")
-async def websocket_voice_endpoint(websocket: WebSocket):
+async def websocket_voice_endpoint(
+    websocket: WebSocket,
+    conv_service: ConversationService = Depends(get_conversation_service)
+):
     """
     WebSocket endpoint for browser voice streaming (VoxBridge 2.0 Phase 4)
+
+    CRITICAL: Uses dependency injection to receive the global ConversationService
+    singleton. This ensures all WebSocket connections share the same conversation
+    cache, enabling multi-turn conversations.
 
     Protocol:
     - Client Query Params: ?session_id={uuid}&user_id={string}
@@ -1385,8 +1427,8 @@ async def websocket_voice_endpoint(websocket: WebSocket):
 
         logger.info(f"✅ WebSocket voice connection established: user={user_id}, session={session_id}")
 
-        # Create handler and start processing
-        handler = WebRTCVoiceHandler(websocket, user_id, session_id)
+        # Create handler with injected ConversationService singleton
+        handler = WebRTCVoiceHandler(websocket, user_id, session_id, conv_service)
         await handler.start()
 
     except WebSocketDisconnect:

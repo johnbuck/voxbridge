@@ -61,6 +61,7 @@ from src.config.logging_config import configure_logging, get_logger
 
 # VoxBridge 2.0 Service Layer
 from src.services.conversation_service import ConversationService
+from src.services.factory import create_conversation_service  # Factory for memory-enabled initialization
 from src.services.stt_service import get_stt_service
 from src.services.llm_service import get_llm_service, LLMConfig, ProviderType
 from src.services.tts_service import get_tts_service
@@ -137,7 +138,8 @@ voice_client: Optional[discord.VoiceClient] = None
 # ============================================================
 
 # Initialize services (shared with API module)
-conversation_service = ConversationService()
+# NOTE: conversation_service is initialized in on_ready() via factory to enable memory retrieval
+conversation_service = None  # Will be initialized in on_ready() with MemoryService
 stt_service = get_stt_service()
 llm_service = get_llm_service()
 tts_service = get_tts_service()
@@ -155,10 +157,18 @@ session_timings: Dict[str, Dict[str, float]] = {}
 @bot.event
 async def on_ready():
     """Bot ready event"""
+    global conversation_service  # Declare global to modify module-level variable
+
     logger.info("=" * 60)
     logger.info(f"✅ Discord bot logged in as {bot.user.name}")
     logger.info(f"🎙️ Voice service ready with VoxBridge 2.0 service layer")
     logger.info("=" * 60)
+
+    # Initialize ConversationService with MemoryService for fact retrieval
+    logger.info("🏭 Initializing ConversationService with memory retrieval enabled...")
+    conversation_service = await create_conversation_service()
+    await conversation_service.start()  # Start background cache cleanup
+    logger.info("✅ ConversationService initialized and started")
 
     # Register bridge functions for API module (Phase 6.4.1)
     set_bot_bridge({
@@ -322,7 +332,7 @@ async def on_user_speaking_start(user_id: str, username: str, audio_stream):
     This replaces SpeakerManager.on_speaking_start with service-based routing.
 
     Args:
-        user_id: Discord user ID
+        user_id: Discord user ID (Discord snowflake, used for session tracking only)
         username: Discord username
         audio_stream: Async generator of audio chunks
     """
@@ -339,6 +349,9 @@ async def on_user_speaking_start(user_id: str, username: str, audio_stream):
         session_id = str(uuid.uuid4())
         active_discord_sessions[user_id] = session_id
 
+        # Use unified user ID for memory retrieval (all users share same facts)
+        unified_user_id = 'web_user_default'
+
         # Initialize session timing tracker
         session_timings[session_id] = {
             't_start': t_start,
@@ -349,7 +362,7 @@ async def on_user_speaking_start(user_id: str, username: str, audio_stream):
 
         logger.info(f"📝 Created session {session_id[:8]}... for Discord user {username}")
 
-        # Broadcast speaker started event
+        # Broadcast speaker started event (still uses Discord user_id for tracking)
         await broadcast_speaker_started(user_id, username)
 
         # Get default agent for this user
@@ -371,12 +384,13 @@ async def on_user_speaking_start(user_id: str, username: str, audio_stream):
             logger.error(f"❌ No agent available for user {username}")
             return
 
-        logger.info(f"🤖 Using agent: {agent.name} for Discord user {username}")
+        logger.info(f"🤖 Using agent: {agent.name} for Discord user {username} (unified_user_id={unified_user_id})")
 
         # Create session in database via ConversationService
+        # Uses unified_user_id for cross-platform memory sharing
         session = await conversation_service.get_or_create_session(
             session_id=session_id,
-            user_id=user_id,
+            user_id=unified_user_id,
             agent_id=str(agent.id),
             channel_type="discord",
             user_name=username,

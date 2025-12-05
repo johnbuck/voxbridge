@@ -24,6 +24,7 @@ from sqlalchemy import select
 from src.database.models import UserFact, Agent, User
 from src.database.session import get_db_session
 from src.services.memory_service import MemoryService, get_global_embedding_config
+from src.services.mem0_compat import Mem0ResponseNormalizer
 from src.config.logging_config import get_logger
 
 logger = get_logger(__name__)
@@ -39,6 +40,9 @@ async def sync_orphaned_facts(dry_run: bool = False):
     # Initialize memory service with database embedding config
     db_embedding_config = await get_global_embedding_config()
     memory_service = MemoryService(db_embedding_config=db_embedding_config)
+
+    # Initialize Mem0 response normalizer
+    normalizer = Mem0ResponseNormalizer()
 
     async with get_db_session() as db:
         # Find facts with missing vectors (vector_id IS NULL)
@@ -92,9 +96,11 @@ async def sync_orphaned_facts(dry_run: bool = False):
                     user_id=mem_user_id
                 )
 
-                if memory_result and "memories" in memory_result and len(memory_result["memories"]) > 0:
+                # Normalize Mem0 response using compatibility layer
+                normalized = normalizer.normalize_add_response(memory_result)
+                if normalized:
                     # Update fact with new vector_id
-                    new_vector_id = memory_result["memories"][0]["id"]
+                    new_vector_id = normalized[0]["id"]
                     fact.vector_id = new_vector_id
                     await db.commit()
 
@@ -104,7 +110,7 @@ async def sync_orphaned_facts(dry_run: bool = False):
                     )
                     synced_count += 1
                 else:
-                    logger.warning(f"⚠️ Failed to create vector for fact {fact.id}: Mem0 returned no memories")
+                    logger.warning(f"⚠️ Failed to create vector for fact {fact.id}: Mem0 returned no results")
                     failed_count += 1
 
             except Exception as e:

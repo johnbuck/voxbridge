@@ -163,9 +163,17 @@ class STTService:
         # Check if already connected
         if session_id in self.connections:
             conn = self.connections[session_id]
-            if conn.status == ConnectionStatus.CONNECTED:
+
+            # If connection is healthy, skip reconnection
+            if conn.status == ConnectionStatus.CONNECTED and conn.websocket:
                 logger.warning(f"⚠️ STT already connected for session {session_id}")
                 return True
+
+            # Stale connection detected - cleanup and reconnect
+            elif conn.status != ConnectionStatus.CONNECTED or not conn.websocket:
+                logger.info(f"🔄 STT stale connection detected for session {session_id} (status={conn.status}, ws_exists={conn.websocket is not None}) - cleaning up and reconnecting...")
+                await self.disconnect(session_id)
+                # Continue to create new connection below
 
         # Create new connection object
         connection = WhisperXConnection(
@@ -261,8 +269,28 @@ class STTService:
 
         connection = self.connections[session_id]
 
+        # Log connection health for diagnostics
+        gap_since_activity = time.time() - connection.last_activity
+        logger.debug(
+            f"🔍 [STT_HEALTH] Session {session_id[:8]}...: status={connection.status}, "
+            f"ws_open={connection.websocket is not None}, "
+            f"last_activity={gap_since_activity:.1f}s ago"
+        )
+
         if connection.status != ConnectionStatus.CONNECTED or not connection.websocket:
-            logger.warning(f"⚠️ STT not connected for session {session_id} (status={connection.status})")
+            # Log timeout warning if gap is significant
+            if gap_since_activity > 5.0:
+                logger.warning(
+                    f"⚠️ [STT_TIMEOUT] Long gap detected: {gap_since_activity:.1f}s since last activity "
+                    f"(session={session_id[:8]}..., status={connection.status})"
+                )
+
+            logger.warning(f"⚠️ STT not connected for session {session_id[:8]}... (status={connection.status}) - attempting auto-reconnect...")
+
+            # Trigger auto-reconnect in background (non-blocking)
+            asyncio.create_task(self._attempt_reconnect(session_id))
+
+            # Return False for this audio frame (will succeed on next frame after reconnection)
             return False
 
         try:
@@ -451,9 +479,10 @@ class STTService:
         while attempt <= self.max_retries:
             try:
                 logger.info(
-                    f"🔌 Connecting to WhisperX at {url} "
-                    f"(session={session_id}, attempt={attempt + 1}/{self.max_retries + 1})"
+                    f"🔌 [STT_CONNECT] Connecting to WhisperX at {url} "
+                    f"(session={session_id[:8]}..., attempt={attempt + 1}/{self.max_retries + 1})"
                 )
+                logger.debug(f"   Connection params: ping_interval=20s, ping_timeout=10s, timeout={self.timeout_s}s")
 
                 connection.status = ConnectionStatus.CONNECTING if attempt == 0 else ConnectionStatus.RECONNECTING
 
@@ -468,9 +497,14 @@ class STTService:
                 )
 
                 connection.websocket = ws
+                prev_status = connection.status
                 connection.status = ConnectionStatus.CONNECTED
                 connection.reconnect_attempts = attempt
                 connection.last_activity = time.time()
+
+                # Log successful connection and state transition
+                logger.info(f"✅ [STT_CONNECT] WebSocket established for {session_id[:8]}...")
+                logger.debug(f"   Status transition: {prev_status} → CONNECTED (attempt #{attempt + 1})")
 
                 # Send initial metadata
                 start_message = json.dumps({
@@ -636,16 +670,29 @@ class STTService:
             return False
 
         connection = self.connections[session_id]
-        logger.warning(f"🔄 Attempting to reconnect STT for session {session_id}")
+
+        # Detailed reconnection logging
+        prev_status = connection.status
+        gap_since_activity = time.time() - connection.last_activity
+        logger.info(
+            f"🔄 [STT_RECONNECT] Attempting reconnect for {session_id[:8]}... "
+            f"(attempt #{connection.reconnect_attempts + 1})"
+        )
+        logger.debug(
+            f"   Previous status: {prev_status}, "
+            f"Last activity: {gap_since_activity:.1f}s ago, "
+            f"WS exists: {connection.websocket is not None}"
+        )
 
         self.total_reconnections += 1
 
         # Close existing WebSocket if any
         if connection.websocket:
             try:
+                logger.debug(f"   Closing existing WebSocket for {session_id[:8]}...")
                 await connection.websocket.close()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"   WebSocket close error (non-critical): {e}")
             connection.websocket = None
 
         # Attempt reconnection
