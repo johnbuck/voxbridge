@@ -434,6 +434,9 @@ class MetricsTracker:
 # Global metrics tracker
 metrics_tracker = MetricsTracker()
 
+# Global memory service singleton (initialized in startup)
+_global_memory_service = None
+
 
 def get_metrics_tracker() -> MetricsTracker:
     """
@@ -545,6 +548,41 @@ def get_conversation_service() -> ConversationService:
     return conversation_service
 
 # ============================================================
+# BACKGROUND WORKERS
+# ============================================================
+
+async def _run_summarization_worker(memory_service):
+    """
+    Background worker that runs memory summarization periodically.
+
+    Phase 3: Memory Summarization
+    - Runs every summarization_interval_hours (default: 24)
+    - Finds clusters of related old memories
+    - Summarizes clusters into single facts
+    """
+    from src.services.memory_service import MemoryService
+
+    interval_hours = memory_service.summarization_interval_hours
+    interval_seconds = interval_hours * 3600
+
+    # Wait a bit on startup to let things settle
+    await asyncio.sleep(60)
+
+    logger.info(f"📦 Summarization worker running every {interval_hours}h")
+
+    while True:
+        try:
+            stats = await memory_service.run_summarization_cycle()
+            if not stats.get("skipped"):
+                logger.info(f"📦 Summarization cycle stats: {stats}")
+        except Exception as e:
+            logger.error(f"❌ Summarization worker error: {e}")
+
+        # Wait for next cycle
+        await asyncio.sleep(interval_seconds)
+
+
+# ============================================================
 # SERVICE STARTUP/SHUTDOWN
 # ============================================================
 
@@ -560,13 +598,19 @@ async def startup_services():
     await engine.dispose()
     logger.info("🔄 Database engine disposed (preparing for fresh connections)")
 
+    global _global_memory_service
     db_embedding_config = await get_global_embedding_config()
     memory_service = MemoryService(db_embedding_config=db_embedding_config, ws_manager=ws_manager)
+    _global_memory_service = memory_service  # Store for metrics endpoint access
     logger.info("🧠 Global MemoryService singleton initialized")
 
     # Start memory extraction queue processor
     asyncio.create_task(memory_service.process_extraction_queue())
     logger.info("🧠 Memory extraction queue processor started")
+
+    # Start memory summarization worker (Phase 3)
+    asyncio.create_task(_run_summarization_worker(memory_service))
+    logger.info("📦 Memory summarization worker started")
 
     # Initialize ConversationService with global MemoryService singleton (dependency injection)
     from src.services.factory import create_conversation_service
@@ -810,6 +854,152 @@ async def get_extraction_queue_metrics():
             "avg_duration_sec": round(avg_duration_result, 2) if avg_duration_result else None,
             "oldest_pending_age_sec": round(oldest_pending_age_sec, 2) if oldest_pending_age_sec else None
         }
+
+
+@app.get("/api/metrics/llm-optimization")
+async def get_llm_optimization_metrics():
+    """
+    Get LLM optimization metrics (Phase 5 + Phase 7)
+
+    Returns:
+        Optimization statistics including retrieval filtering, extraction shortcuts, and deduplication
+    """
+    global _global_memory_service
+
+    try:
+        if _global_memory_service is None:
+            return {
+                "error": "MemoryService not initialized yet",
+                "retrieval": {"total": 0, "filtered_low_confidence": 0, "filter_percentage": 0},
+                "extraction": {"total": 0, "shortcuts_used": 0, "full_llm_used": 0, "shortcut_percentage": 0},
+                "deduplication": {"total_detected": 0, "by_embedding": 0, "by_text": 0},
+                "config": {}
+            }
+
+        metrics = _global_memory_service.metrics
+
+        # Calculate percentages
+        retrieval_total = metrics["retrieval_total"]
+        extraction_total = metrics["extraction_total"]
+
+        retrieval_filter_pct = (
+            (metrics["retrieval_filtered"] / retrieval_total * 100)
+            if retrieval_total > 0 else 0
+        )
+
+        shortcut_pct = (
+            (metrics["extraction_shortcuts"] / extraction_total * 100)
+            if extraction_total > 0 else 0
+        )
+
+        return {
+            "retrieval": {
+                "total": retrieval_total,
+                "filtered_low_confidence": metrics["retrieval_filtered"],
+                "filter_percentage": round(retrieval_filter_pct, 1),
+            },
+            "extraction": {
+                "total": extraction_total,
+                "shortcuts_used": metrics["extraction_shortcuts"],
+                "full_llm_used": metrics["extraction_full"],
+                "shortcut_percentage": round(shortcut_pct, 1),
+            },
+            "deduplication": {
+                "total_detected": metrics.get("duplicates_detected", 0),
+                "by_embedding": metrics.get("duplicates_embedding", 0),
+                "by_text": metrics.get("duplicates_text", 0),
+            },
+            "config": {
+                "vector_similarity_threshold": _global_memory_service.vector_similarity_threshold,
+                "high_confidence_threshold": _global_memory_service.high_confidence_threshold,
+                "extraction_shortcuts_enabled": _global_memory_service.enable_extraction_shortcuts,
+                "shortcut_max_length": _global_memory_service.shortcut_max_length,
+                "deduplication_enabled": _global_memory_service.enable_deduplication,
+                "dedup_embedding_threshold": _global_memory_service.embedding_similarity_threshold,
+                "dedup_text_threshold": _global_memory_service.text_similarity_threshold,
+            }
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to get LLM optimization metrics: {e}")
+        return {
+            "error": str(e),
+            "retrieval": {"total": 0, "filtered_low_confidence": 0, "filter_percentage": 0},
+            "extraction": {"total": 0, "shortcuts_used": 0, "full_llm_used": 0, "shortcut_percentage": 0},
+            "deduplication": {"total_detected": 0, "by_embedding": 0, "by_text": 0},
+            "config": {}
+        }
+
+
+@app.get("/api/metrics/summarization")
+async def get_summarization_metrics():
+    """
+    Get memory summarization metrics (Phase 3)
+
+    Returns:
+        Summarization statistics including clusters found, summaries created, and config
+    """
+    global _global_memory_service
+
+    try:
+        if _global_memory_service is None:
+            return {
+                "error": "MemoryService not initialized yet",
+                "stats": {"summaries_created": 0, "facts_summarized": 0, "clusters_found": 0},
+                "config": {}
+            }
+
+        metrics = _global_memory_service.metrics
+
+        return {
+            "stats": {
+                "summaries_created": metrics.get("summaries_created", 0),
+                "facts_summarized": metrics.get("facts_summarized", 0),
+                "clusters_found": metrics.get("clusters_found", 0),
+            },
+            "config": {
+                "enabled": _global_memory_service.enable_summarization,
+                "interval_hours": _global_memory_service.summarization_interval_hours,
+                "min_age_days": _global_memory_service.summarization_min_age_days,
+                "min_cluster_size": _global_memory_service.summarization_min_cluster_size,
+                "max_cluster_size": _global_memory_service.summarization_max_cluster_size,
+                "similarity_threshold": _global_memory_service.summarization_similarity_threshold,
+                "llm_provider": _global_memory_service.summarization_llm_provider,
+                "llm_model": _global_memory_service.summarization_llm_model,
+            }
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to get summarization metrics: {e}")
+        return {
+            "error": str(e),
+            "stats": {"summaries_created": 0, "facts_summarized": 0, "clusters_found": 0},
+            "config": {}
+        }
+
+
+@app.post("/api/summarization/run")
+async def run_summarization_now():
+    """
+    Manually trigger a summarization cycle (Phase 3)
+
+    Useful for testing or forcing immediate summarization.
+
+    Returns:
+        Summarization cycle statistics
+    """
+    global _global_memory_service
+
+    if _global_memory_service is None:
+        return {"error": "MemoryService not initialized yet"}
+
+    try:
+        stats = await _global_memory_service.run_summarization_cycle()
+        return {"success": True, "stats": stats}
+    except Exception as e:
+        logger.error(f"Manual summarization failed: {e}")
+        return {"error": str(e)}
+
 
 class FrontendLogEntry(BaseModel):
     """Frontend log entry for remote logging"""

@@ -53,6 +53,7 @@ class FactCreateRequest(BaseModel):
     fact_value: str = Field(..., description="Fact value (e.g., 'Alice', 'San Francisco')")
     fact_text: Optional[str] = Field(None, description="Natural language representation")
     importance: float = Field(0.8, ge=0.0, le=1.0, description="Importance score (0.0-1.0)")
+    memory_bank: Literal['Personal', 'Work', 'General', 'Relationships', 'Health', 'Interests', 'Events'] = Field('General', description="Memory bank category")
 
 
 class FactUpdateRequest(BaseModel):
@@ -60,7 +61,10 @@ class FactUpdateRequest(BaseModel):
     fact_value: Optional[str] = Field(None, description="Updated fact value")
     fact_text: Optional[str] = Field(None, description="Updated natural language representation")
     importance: Optional[float] = Field(None, ge=0.0, le=1.0, description="Updated importance score")
+    memory_bank: Optional[Literal['Personal', 'Work', 'General', 'Relationships', 'Health', 'Interests', 'Events']] = Field(None, description="Updated memory bank")
     validity_end: Optional[datetime] = Field(None, description="Mark fact as invalid after this time")
+    # Phase 2: Pruning - allow protecting/unprotecting facts
+    is_protected: Optional[bool] = Field(None, description="Protect fact from automatic pruning")
 
 
 class FactResponse(BaseModel):
@@ -72,6 +76,7 @@ class FactResponse(BaseModel):
     fact_value: str
     fact_text: Optional[str]
     importance: float
+    memory_bank: str  # Personal, Work, General
     vector_id: Optional[str]
     embedding_provider: Optional[str]
     embedding_model: Optional[str]
@@ -80,6 +85,12 @@ class FactResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
     is_valid: bool  # Computed: validity_end is None or in future
+    # Phase 2: Pruning
+    last_accessed_at: Optional[datetime]
+    is_protected: bool
+    # Phase 3: Summarization
+    is_summarized: bool
+    summarized_from: Optional[List[str]]  # Array of original fact UUIDs as strings
 
     class Config:
         from_attributes = True
@@ -123,10 +134,11 @@ async def list_user_facts(
     user_id: str,
     scope: Optional[str] = Query(None, description="Filter by scope: 'global' (agent_id=NULL), 'agent' (agent_id!=NULL), or 'all'"),
     agent_id: Optional[UUID] = Query(None, description="Filter by specific agent ID (overrides scope parameter)"),
+    memory_bank: Optional[str] = Query(None, description="Filter by memory bank: 'Personal', 'Work', 'General', or None for all"),
     include_invalid: bool = Query(False, description="Include facts with validity_end in the past")
 ):
     """
-    List all facts for a user with optional filtering by scope or agent.
+    List all facts for a user with optional filtering by scope, agent, or memory bank.
 
     Args:
         user_id: User identifier (e.g., "discord:123456789")
@@ -135,6 +147,7 @@ async def list_user_facts(
             - 'agent': Only agent-specific facts (agent_id!=NULL, scoped to specific agents)
             - 'all' or None: All facts (default)
         agent_id: Filter by specific agent UUID (overrides scope parameter)
+        memory_bank: Filter by memory bank category (Personal, Work, General)
         include_invalid: Include facts marked as invalid (validity_end in past)
 
     Returns:
@@ -145,6 +158,7 @@ async def list_user_facts(
         - GET /users/discord:123/facts?scope=global - Only global facts
         - GET /users/discord:123/facts?scope=agent - Only agent-specific facts
         - GET /users/discord:123/facts?agent_id=uuid - Facts for specific agent only
+        - GET /users/discord:123/facts?memory_bank=Personal - Only personal facts
     """
     try:
         async with get_db_session() as db:
@@ -171,6 +185,10 @@ async def list_user_facts(
                 # Agent-specific facts only (agent_id != NULL)
                 query = query.where(UserFact.agent_id.isnot(None))
 
+            # Filter by memory bank
+            if memory_bank is not None:
+                query = query.where(UserFact.memory_bank == memory_bank)
+
             # Filter out invalid facts if requested
             if not include_invalid:
                 query = query.where(
@@ -196,6 +214,7 @@ async def list_user_facts(
                         fact_value=fact.fact_value,
                         fact_text=fact.fact_text,
                         importance=fact.importance,
+                        memory_bank=fact.memory_bank,
                         vector_id=fact.vector_id,
                         embedding_provider=fact.embedding_provider,
                         embedding_model=fact.embedding_model,
@@ -203,7 +222,13 @@ async def list_user_facts(
                         validity_end=fact.validity_end,
                         created_at=fact.created_at,
                         updated_at=fact.updated_at,
-                        is_valid=is_valid
+                        is_valid=is_valid,
+                        # Phase 2: Pruning
+                        last_accessed_at=fact.last_accessed_at,
+                        is_protected=fact.is_protected,
+                        # Phase 3: Summarization
+                        is_summarized=fact.is_summarized,
+                        summarized_from=fact.summarized_from
                     )
                 )
 
@@ -274,7 +299,8 @@ async def create_user_fact(user_id: str, request: FactCreateRequest):
                 "fact_value": request.fact_value,
                 "importance": request.importance,
                 "agent_id": str(request.agent_id),
-                "scope": request.scope  # 'global' or 'agent'
+                "scope": request.scope,  # 'global' or 'agent'
+                "memory_bank": request.memory_bank  # 'Personal', 'Work', 'General'
             })
 
             task = ExtractionTask(
@@ -369,8 +395,13 @@ async def update_user_fact(user_id: str, fact_id: UUID, request: FactUpdateReque
                 fact.fact_text = request.fact_text
             if request.importance is not None:
                 fact.importance = request.importance
+            if request.memory_bank is not None:
+                fact.memory_bank = request.memory_bank
             if request.validity_end is not None:
                 fact.validity_end = request.validity_end
+            # Phase 2: Pruning - allow protecting/unprotecting facts
+            if request.is_protected is not None:
+                fact.is_protected = request.is_protected
 
             fact.updated_at = datetime.utcnow()
 
@@ -388,6 +419,7 @@ async def update_user_fact(user_id: str, fact_id: UUID, request: FactUpdateReque
                 fact_value=fact.fact_value,
                 fact_text=fact.fact_text,
                 importance=fact.importance,
+                memory_bank=fact.memory_bank,
                 vector_id=fact.vector_id,
                 embedding_provider=fact.embedding_provider,
                 embedding_model=fact.embedding_model,
@@ -395,7 +427,13 @@ async def update_user_fact(user_id: str, fact_id: UUID, request: FactUpdateReque
                 validity_end=fact.validity_end,
                 created_at=fact.created_at,
                 updated_at=fact.updated_at,
-                is_valid=is_valid
+                is_valid=is_valid,
+                # Phase 2: Pruning fields
+                last_accessed_at=fact.last_accessed_at,
+                is_protected=fact.is_protected,
+                # Phase 3: Summarization fields
+                is_summarized=fact.is_summarized,
+                summarized_from=[str(fid) for fid in fact.summarized_from] if fact.summarized_from else None
             )
 
     except HTTPException:
@@ -730,6 +768,7 @@ async def export_user_data(user_id: str):
                         fact_value=fact.fact_value,
                         fact_text=fact.fact_text,
                         importance=fact.importance,
+                        memory_bank=fact.memory_bank,
                         vector_id=fact.vector_id,
                         embedding_provider=fact.embedding_provider,
                         embedding_model=fact.embedding_model,
