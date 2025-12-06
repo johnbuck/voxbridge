@@ -117,7 +117,14 @@ export async function listUserFacts(
   const response = await fetch(url);
 
   if (!response.ok) {
-    throw new Error(`Failed to list facts: ${response.statusText}`);
+    let errorMsg = `Failed to list facts: ${response.statusText}`;
+    try {
+      const error = await response.json();
+      errorMsg = error.detail || errorMsg;
+    } catch {
+      // Ignore JSON parse errors, use statusText
+    }
+    throw new Error(errorMsg);
   }
 
   return response.json();
@@ -159,7 +166,14 @@ export async function updateUserFact(
   });
 
   if (!response.ok) {
-    throw new Error(`Failed to update fact: ${response.statusText}`);
+    let errorMsg = `Failed to update fact: ${response.statusText}`;
+    try {
+      const error = await response.json();
+      errorMsg = error.detail || errorMsg;
+    } catch {
+      // Ignore JSON parse errors, use statusText
+    }
+    throw new Error(errorMsg);
   }
 
   return response.json();
@@ -177,7 +191,14 @@ export async function deleteUserFact(
   });
 
   if (!response.ok) {
-    throw new Error(`Failed to delete fact: ${response.statusText}`);
+    let errorMsg = `Failed to delete fact: ${response.statusText}`;
+    try {
+      const error = await response.json();
+      errorMsg = error.detail || errorMsg;
+    } catch {
+      // Ignore JSON parse errors, use statusText
+    }
+    throw new Error(errorMsg);
   }
 
   return response.json();
@@ -190,7 +211,14 @@ export async function getMemorySettings(userId: string): Promise<MemorySettings>
   const response = await fetch(`${API_BASE}/users/${userId}/settings`);
 
   if (!response.ok) {
-    throw new Error(`Failed to get settings: ${response.statusText}`);
+    let errorMsg = `Failed to get settings: ${response.statusText}`;
+    try {
+      const error = await response.json();
+      errorMsg = error.detail || errorMsg;
+    } catch {
+      // Ignore JSON parse errors, use statusText
+    }
+    throw new Error(errorMsg);
   }
 
   return response.json();
@@ -210,7 +238,14 @@ export async function updateMemorySettings(
   });
 
   if (!response.ok) {
-    throw new Error(`Failed to update settings: ${response.statusText}`);
+    let errorMsg = `Failed to update settings: ${response.statusText}`;
+    try {
+      const error = await response.json();
+      errorMsg = error.detail || errorMsg;
+    } catch {
+      // Ignore JSON parse errors, use statusText
+    }
+    throw new Error(errorMsg);
   }
 
   return response.json();
@@ -223,7 +258,14 @@ export async function exportUserData(userId: string): Promise<GDPRExport> {
   const response = await fetch(`${API_BASE}/users/${userId}/export`);
 
   if (!response.ok) {
-    throw new Error(`Failed to export data: ${response.statusText}`);
+    let errorMsg = `Failed to export data: ${response.statusText}`;
+    try {
+      const error = await response.json();
+      errorMsg = error.detail || errorMsg;
+    } catch {
+      // Ignore JSON parse errors, use statusText
+    }
+    throw new Error(errorMsg);
   }
 
   return response.json();
@@ -234,13 +276,20 @@ export async function exportUserData(userId: string): Promise<GDPRExport> {
  */
 export async function deleteAllUserData(
   userId: string
-): Promise<{ status: string; user_id: string; facts_deleted: number; note: string }> {
+): Promise<{ status: string; user_id: string; facts_deleted: number; vectors_deleted?: number; vectors_failed?: number; note?: string }> {
   const response = await fetch(`${API_BASE}/users/${userId}`, {
     method: 'DELETE',
   });
 
   if (!response.ok) {
-    throw new Error(`Failed to delete user data: ${response.statusText}`);
+    let errorMsg = `Failed to delete user data: ${response.statusText}`;
+    try {
+      const error = await response.json();
+      errorMsg = error.detail || errorMsg;
+    } catch {
+      // Ignore JSON parse errors, use statusText
+    }
+    throw new Error(errorMsg);
   }
 
   return response.json();

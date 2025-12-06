@@ -697,7 +697,7 @@ export function MemoryPage() {
                 max={100}
                 step={5}
                 value={[(newFact.importance || 0.8) * 100]}
-                onValueChange={([value]) => setNewFact({ ...newFact, importance: value / 100 })}
+                onValueChange={([value]) => setNewFact({ ...newFact, importance: Math.round(value) / 100 })}
                 className="mt-2"
               />
             </div>
@@ -831,7 +831,7 @@ export function MemoryPage() {
                   onValueChange={([value]) =>
                     setEditingFact({
                       ...editingFact,
-                      updates: { ...editingFact.updates, importance: value / 100 },
+                      updates: { ...editingFact.updates, importance: Math.round(value) / 100 },
                     })
                   }
                   className="mt-2"
