@@ -23,6 +23,7 @@ export interface User {
   role: 'admin' | 'user';
   is_active: boolean;
   memory_extraction_enabled: boolean;
+  timezone: string;
   created_at: string;
 }
 
@@ -38,6 +39,7 @@ export interface RegisterRequest {
   username: string;
   password: string;
   display_name?: string;
+  timezone?: string;
 }
 
 export interface LoginRequest {
@@ -174,4 +176,21 @@ export async function changePassword(currentPassword: string, newPassword: strin
     } as ChangePasswordRequest),
   });
   await handleResponse<{ message: string }>(response);
+}
+
+export interface UpdatePreferencesRequest {
+  timezone?: string;
+  display_name?: string;
+}
+
+export async function updatePreferences(request: UpdatePreferencesRequest): Promise<User> {
+  const response = await fetch(`${API_BASE}/me/preferences`, {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json',
+      ...getAuthHeaders(),
+    },
+    body: JSON.stringify(request),
+  });
+  return handleResponse<User>(response);
 }
