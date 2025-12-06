@@ -395,7 +395,7 @@ class UserFact(Base):
     # Metadata
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
-    last_accessed_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=True)  # For LRU pruning
+    last_accessed_at = Column(DateTime(timezone=True), nullable=True)  # For LRU pruning (NULL = never accessed)
     is_protected = Column(Boolean, server_default='false', nullable=False)  # Protected from pruning (manual facts)
 
     # Summarization (Phase 3)
