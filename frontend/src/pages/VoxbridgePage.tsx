@@ -402,11 +402,17 @@ export function VoxbridgePage() {
   // in the message_saved event handler (line ~608), not via timing-dependent useEffect.
   // This ensures chunks are cleared only after database confirmation, eliminating race conditions.
 
-  // Get active session details
-  const activeSession = sessions.find((s) => s.id === activeSessionId);
+  // Get active session details (memoized to avoid re-computation on every render)
+  const activeSession = useMemo(
+    () => sessions.find((s) => s.id === activeSessionId),
+    [sessions, activeSessionId]
+  );
 
-  // Get agent for active session
-  const activeAgent = agents.find((a) => a.id === activeSession?.agent_id);
+  // Get agent for active session (memoized)
+  const activeAgent = useMemo(
+    () => agents.find((a) => a.id === activeSession?.agent_id),
+    [agents, activeSession?.agent_id]
+  );
 
   // Audio playback hook for TTS (web voice chat)
   const audioPlayback = useAudioPlayback({
