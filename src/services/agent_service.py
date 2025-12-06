@@ -36,6 +36,7 @@ class AgentService:
         tts_cfg_weight: float = 0.7,
         tts_temperature: float = 0.3,
         tts_language: str = "en",
+        filter_actions_for_tts: bool = False,
         plugins: Optional[dict] = None,
     ) -> Agent:
         """
@@ -117,6 +118,7 @@ class AgentService:
                 tts_cfg_weight=tts_cfg_weight,
                 tts_temperature=tts_temperature,
                 tts_language=tts_language,
+                filter_actions_for_tts=filter_actions_for_tts,
                 plugins=encrypted_plugins,
             )
 
@@ -210,6 +212,7 @@ class AgentService:
         tts_cfg_weight: Optional[float] = None,
         tts_temperature: Optional[float] = None,
         tts_language: Optional[str] = None,
+        filter_actions_for_tts: Optional[bool] = None,
         memory_scope: Optional[str] = None,
         plugins: Optional[dict] = None,
     ) -> Optional[Agent]:
@@ -307,6 +310,9 @@ class AgentService:
 
             if tts_language is not None:
                 agent.tts_language = tts_language
+
+            if filter_actions_for_tts is not None:
+                agent.filter_actions_for_tts = filter_actions_for_tts
 
             if memory_scope is not None:
                 if memory_scope not in ["global", "agent"]:

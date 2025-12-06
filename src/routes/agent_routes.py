@@ -51,6 +51,7 @@ class AgentCreateRequest(BaseModel):
     tts_cfg_weight: float = Field(0.7, ge=0.0, le=1.0, description="TTS speech pace (0.0-1.0)")
     tts_temperature: float = Field(0.3, ge=0.05, le=5.0, description="TTS voice sampling (0.05-5.0)")
     tts_language: str = Field("en", description="TTS language code (e.g., 'en', 'es', 'fr')")
+    filter_actions_for_tts: bool = Field(False, description="Remove roleplay actions (*text*) before TTS synthesis")
     plugins: Optional[dict] = Field(None, description="Plugin configurations (e.g., discord plugin)")
 
 
@@ -70,6 +71,7 @@ class AgentUpdateRequest(BaseModel):
     tts_cfg_weight: Optional[float] = Field(None, ge=0.0, le=1.0)
     tts_temperature: Optional[float] = Field(None, ge=0.05, le=5.0)
     tts_language: Optional[str] = None
+    filter_actions_for_tts: Optional[bool] = Field(None, description="Remove roleplay actions (*text*) before TTS synthesis")
     memory_scope: Optional[str] = Field(None, description="Memory scope: 'global' or 'agent'")
     plugins: Optional[dict] = Field(None, description="Plugin configurations (e.g., discord plugin)")
 
@@ -92,6 +94,7 @@ class AgentResponse(BaseModel):
     tts_cfg_weight: float
     tts_temperature: float
     tts_language: str
+    filter_actions_for_tts: bool
     plugins: Optional[dict] = None
     created_at: str
     updated_at: str
@@ -160,6 +163,7 @@ async def create_agent(request: AgentCreateRequest):
             tts_cfg_weight=request.tts_cfg_weight,
             tts_temperature=request.tts_temperature,
             tts_language=request.tts_language,
+            filter_actions_for_tts=request.filter_actions_for_tts,
             plugins=request.plugins,
         )
 
@@ -179,6 +183,7 @@ async def create_agent(request: AgentCreateRequest):
             tts_cfg_weight=agent.tts_cfg_weight,
             tts_temperature=agent.tts_temperature,
             tts_language=agent.tts_language,
+            filter_actions_for_tts=agent.filter_actions_for_tts,
             plugins=agent.plugins,
             created_at=agent.created_at.isoformat(),
             updated_at=agent.updated_at.isoformat(),
@@ -229,6 +234,7 @@ async def list_agents():
                 tts_cfg_weight=agent.tts_cfg_weight,
                 tts_temperature=agent.tts_temperature,
                 tts_language=agent.tts_language,
+                filter_actions_for_tts=agent.filter_actions_for_tts,
                 plugins=agent.plugins,
                 created_at=agent.created_at.isoformat(),
                 updated_at=agent.updated_at.isoformat(),
@@ -286,6 +292,7 @@ async def get_agent(agent_id: UUID):
             tts_cfg_weight=agent.tts_cfg_weight,
             tts_temperature=agent.tts_temperature,
             tts_language=agent.tts_language,
+            filter_actions_for_tts=agent.filter_actions_for_tts,
             plugins=agent.plugins,
             created_at=agent.created_at.isoformat(),
             updated_at=agent.updated_at.isoformat(),
@@ -336,6 +343,7 @@ async def update_agent(agent_id: UUID, request: AgentUpdateRequest):
             tts_cfg_weight=request.tts_cfg_weight,
             tts_temperature=request.tts_temperature,
             tts_language=request.tts_language,
+            filter_actions_for_tts=request.filter_actions_for_tts,
             memory_scope=request.memory_scope,
             plugins=request.plugins,
         )
@@ -362,6 +370,7 @@ async def update_agent(agent_id: UUID, request: AgentUpdateRequest):
             tts_cfg_weight=agent.tts_cfg_weight,
             tts_temperature=agent.tts_temperature,
             tts_language=agent.tts_language,
+            filter_actions_for_tts=agent.filter_actions_for_tts,
             plugins=agent.plugins,
             created_at=agent.created_at.isoformat(),
             updated_at=agent.updated_at.isoformat(),
@@ -466,6 +475,7 @@ async def set_default_agent(agent_id: UUID):
             tts_cfg_weight=agent.tts_cfg_weight,
             tts_temperature=agent.tts_temperature,
             tts_language=agent.tts_language,
+            filter_actions_for_tts=agent.filter_actions_for_tts,
             plugins=agent.plugins,
             created_at=agent.created_at.isoformat(),
             updated_at=agent.updated_at.isoformat(),
