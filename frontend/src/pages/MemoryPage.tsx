@@ -50,8 +50,7 @@ import type {
 import { api } from '@/services/api';
 import { useToastHelpers } from '@/components/ui/toast';
 import { useMemoryExtractionStatus } from '@/hooks/useMemoryExtractionStatus';
-
-const DEFAULT_USER_ID = 'web_user_default'; // Unified user ID for all users until auth is implemented
+import { useAuth } from '@/contexts/AuthContext';
 
 interface EditingFact {
   fact: UserFact;
@@ -62,9 +61,10 @@ interface EditingFact {
 export function MemoryPage() {
   const queryClient = useQueryClient();
   const toast = useToastHelpers();
+  const { user } = useAuth();
 
-  // State
-  const [userId] = useState(DEFAULT_USER_ID);
+  // Use authenticated user's ID
+  const userId = user?.id || '';
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
   const [editingFact, setEditingFact] = useState<EditingFact | null>(null);
@@ -349,7 +349,7 @@ export function MemoryPage() {
   };
 
   return (
-    <div className="container mx-auto px-4 py-8 space-y-6">
+    <div className="max-w-7xl mx-auto px-6 py-8 space-y-6">
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
