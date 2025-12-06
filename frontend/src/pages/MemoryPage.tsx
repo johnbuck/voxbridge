@@ -56,6 +56,7 @@ const DEFAULT_USER_ID = 'web_user_default'; // Unified user ID for all users unt
 interface EditingFact {
   fact: UserFact;
   updates: UpdateFactRequest;
+  originalUpdatedAt: string; // For optimistic locking - detect stale state
 }
 
 export function MemoryPage() {
@@ -85,20 +86,21 @@ export function MemoryPage() {
         return updated;
       });
     },
-    onCompleted: (task) => {
-      // Remove pending fact
+    onCompleted: async (task) => {
+      toast.success(
+        'Memory Extraction Complete',
+        `Extracted ${task.facts_count || 0} facts from conversation`
+      );
+
+      // Refresh facts list FIRST, then remove pending fact to avoid UI gap
+      await queryClient.invalidateQueries({ queryKey: ['facts', userId] });
+
+      // Now remove pending fact after query has settled
       setPendingFacts((prev) => {
         const updated = new Map(prev);
         updated.delete(task.task_id);
         return updated;
       });
-
-      toast.success(
-        'Memory Extraction Complete',
-        `Extracted ${task.facts_count || 0} facts from conversation`
-      );
-      // Refresh facts list
-      queryClient.invalidateQueries({ queryKey: ['facts', userId] });
     },
     onFailed: (task) => {
       if (task.status === 'retrying') {
@@ -303,12 +305,38 @@ export function MemoryPage() {
         importance: fact.importance,
         memory_bank: fact.memory_bank,
       },
+      originalUpdatedAt: fact.updated_at, // Store for optimistic locking
     });
     setIsEditModalOpen(true);
   };
 
-  const handleUpdate = () => {
+  const handleUpdate = async () => {
     if (!editingFact) return;
+
+    // Optimistic locking: Check if fact was modified externally
+    const currentFacts = queryClient.getQueryData<UserFact[]>(['facts', userId, filterAgentId, filterMemoryBank, includeInvalid]);
+    const currentFact = currentFacts?.find(f => f.id === editingFact.fact.id);
+
+    if (currentFact && currentFact.updated_at !== editingFact.originalUpdatedAt) {
+      const confirmOverwrite = confirm(
+        'This fact was modified by another session. Do you want to overwrite those changes?'
+      );
+      if (!confirmOverwrite) {
+        // Refresh the edit form with current data
+        setEditingFact({
+          fact: currentFact,
+          updates: {
+            fact_value: currentFact.fact_value,
+            fact_text: currentFact.fact_text || '',
+            importance: currentFact.importance,
+            memory_bank: currentFact.memory_bank,
+          },
+          originalUpdatedAt: currentFact.updated_at,
+        });
+        toast.warning('Edit Refreshed', 'The form has been updated with the latest changes.');
+        return;
+      }
+    }
 
     updateMutation.mutate({
       factId: editingFact.fact.id,
@@ -568,7 +596,14 @@ export function MemoryPage() {
                   }}
                 />
               ) : (
-                <FactCard key={item.id} fact={item} onEdit={handleEdit} onDelete={handleDelete} agents={agents} />
+                <FactCard
+                  key={item.id}
+                  fact={item}
+                  onEdit={handleEdit}
+                  onDelete={handleDelete}
+                  agents={agents}
+                  isDeletePending={deleteMutation.isPending && deleteMutation.variables === item.id}
+                />
               )
             )}
           </div>

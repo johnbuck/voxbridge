@@ -47,10 +47,14 @@ interface FactCardProps {
   onEdit: (fact: UserFact) => void;
   onDelete: (factId: string) => void;
   agents?: Agent[];
+  isDeletePending?: boolean; // External mutation pending state
 }
 
-export function FactCard({ fact, onEdit, onDelete, agents }: FactCardProps) {
+export function FactCard({ fact, onEdit, onDelete, agents, isDeletePending }: FactCardProps) {
   const [isDeleting, setIsDeleting] = useState(false);
+
+  // Use external pending state if provided, otherwise fall back to local state
+  const deleteDisabled = isDeletePending || isDeleting;
 
   // Look up agent name from agent_id
   const agentName = fact.agent_id
@@ -98,7 +102,7 @@ export function FactCard({ fact, onEdit, onDelete, agents }: FactCardProps) {
               variant="ghost"
               size="icon"
               onClick={handleDelete}
-              disabled={isDeleting}
+              disabled={deleteDisabled}
               title="Delete fact"
               className="text-destructive hover:text-destructive/80"
             >
