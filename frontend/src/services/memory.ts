@@ -3,7 +3,13 @@
  * Handles all memory-related API calls
  */
 
-const API_BASE = 'http://localhost:4900/api/memory';
+// In production (served by nginx), use relative URLs
+// In development, use VITE_API_URL or fallback to localhost
+const API_BASE_URL = import.meta.env.PROD
+  ? '' // Relative URLs in production (proxied by nginx)
+  : (import.meta.env.VITE_API_URL || 'http://localhost:4900');
+
+const API_BASE = `${API_BASE_URL}/api/memory`;
 
 export type MemoryBank = 'Personal' | 'Work' | 'General' | 'Relationships' | 'Health' | 'Interests' | 'Events';
 
@@ -296,7 +302,7 @@ export async function deleteAllUserData(
 }
 
 // Admin Memory Policy API (System Settings)
-const SYSTEM_SETTINGS_API_BASE = 'http://localhost:4900/api/system-settings';
+const SYSTEM_SETTINGS_API_BASE = `${API_BASE_URL}/api/system-settings`;
 
 export interface AdminMemoryPolicy {
   allow_agent_specific_memory_globally: boolean;
@@ -359,7 +365,7 @@ export async function resetAdminMemoryPolicy(): Promise<{ status: string; policy
 }
 
 // Per-Agent Memory Configuration (Phase 6: Interactive Memory Controls)
-const AGENTS_API_BASE = 'http://localhost:4900/api/agents';
+const AGENTS_API_BASE = `${API_BASE_URL}/api/agents`;
 
 export interface AgentMemoryConfig {
   effective_scope: 'global' | 'agent';

@@ -48,7 +48,17 @@ export interface UseMemoryExtractionStatusReturn {
   connectionError: string | null;
 }
 
-const DEFAULT_WS_URL = 'ws://localhost:4900/ws/events';
+// In production, use relative WebSocket URL (wss:// or ws:// based on current protocol)
+// In development, use VITE_WS_URL or fallback to localhost
+const getDefaultWsUrl = () => {
+  if (import.meta.env.PROD) {
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    return `${protocol}//${window.location.host}/ws/events`;
+  }
+  return (import.meta.env.VITE_WS_URL || 'ws://localhost:4900') + '/ws/events';
+};
+
+const DEFAULT_WS_URL = getDefaultWsUrl();
 
 export function useMemoryExtractionStatus(
   options: UseMemoryExtractionStatusOptions = {}
