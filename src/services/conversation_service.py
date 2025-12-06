@@ -31,8 +31,10 @@ from uuid import UUID
 from sqlalchemy import select, update, and_
 from sqlalchemy.orm import selectinload
 
+from zoneinfo import ZoneInfo
+
 from src.config.logging_config import get_logger
-from src.database.models import Agent, Session, Conversation
+from src.database.models import Agent, Session, Conversation, User
 from src.database.session import get_db_session
 from src.services.memory_service import MemoryService
 
@@ -330,11 +332,28 @@ class ConversationService:
 
                 # Add system prompt if requested
                 if include_system_prompt and cached.agent.system_prompt:
+                    # Build system prompt with date/time awareness (user's timezone)
+                    user_timezone = await self._get_user_timezone(cached.session.user_id)
+                    try:
+                        user_tz = ZoneInfo(user_timezone)
+                    except Exception:
+                        user_tz = ZoneInfo("America/Los_Angeles")
+
+                    now = datetime.now(user_tz)
+                    tz_abbrev = now.strftime('%Z')  # e.g., "PST", "EST"
+
+                    date_context = (
+                        f"\n\n[Current Date/Time Context]\n"
+                        f"Today is {now.strftime('%A, %B %d, %Y')}. "
+                        f"The current time is {now.strftime('%I:%M %p')} {tz_abbrev}."
+                    )
+                    enhanced_prompt = cached.agent.system_prompt + date_context
+
                     messages.append(Message(
                         id=0,  # System message placeholder (not from database)
                         session_id=session_id,
                         role="system",
-                        content=cached.agent.system_prompt,
+                        content=enhanced_prompt,
                         timestamp=cached.session.started_at
                     ))
 
@@ -696,6 +715,52 @@ class ConversationService:
             sessions in the database.
         """
         return list(self._cache.keys())
+
+    async def _get_user_timezone(self, user_id: str) -> str:
+        """
+        Get the user's timezone preference from the database.
+
+        Attempts to look up user by:
+        1. UUID (internal user ID)
+        2. String user_id (legacy Discord/external ID)
+
+        Args:
+            user_id: User identifier (UUID string or legacy ID)
+
+        Returns:
+            str: IANA timezone string (e.g., "America/Los_Angeles")
+        """
+        default_tz = "America/Los_Angeles"
+
+        if not user_id:
+            return default_tz
+
+        try:
+            async with get_db_session() as db:
+                # Try to find user by UUID first
+                try:
+                    user_uuid = UUID(user_id)
+                    result = await db.execute(
+                        select(User.timezone).where(User.id == user_uuid)
+                    )
+                    timezone = result.scalar_one_or_none()
+                    if timezone:
+                        return timezone
+                except ValueError:
+                    pass  # Not a valid UUID, try legacy lookup
+
+                # Fallback: try legacy user_id field
+                result = await db.execute(
+                    select(User.timezone).where(User.user_id == user_id)
+                )
+                timezone = result.scalar_one_or_none()
+                if timezone:
+                    return timezone
+
+                return default_tz
+        except Exception as e:
+            logger.debug(f"⚠️ Could not fetch user timezone: {e}")
+            return default_tz
 
     async def _load_session_from_db(self, session_id: str) -> Optional[CachedContext]:
         """

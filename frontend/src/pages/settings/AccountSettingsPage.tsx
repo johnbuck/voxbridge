@@ -3,23 +3,75 @@
  * Change password and manage account settings
  */
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { KeyRound, Eye, EyeOff, Shield, AlertTriangle } from 'lucide-react';
+import { KeyRound, Eye, EyeOff, Shield, AlertTriangle, Globe, Check } from 'lucide-react';
 import { useToastHelpers } from '@/components/ui/toast';
-import { changePassword } from '@/services/auth';
+import { changePassword, updatePreferences } from '@/services/auth';
 import { useAuth } from '@/contexts/AuthContext';
 
+// Common IANA timezones with display names
+const TIMEZONES = [
+  { value: 'America/Los_Angeles', label: 'Pacific Time (Los Angeles)' },
+  { value: 'America/Denver', label: 'Mountain Time (Denver)' },
+  { value: 'America/Chicago', label: 'Central Time (Chicago)' },
+  { value: 'America/New_York', label: 'Eastern Time (New York)' },
+  { value: 'America/Anchorage', label: 'Alaska Time (Anchorage)' },
+  { value: 'Pacific/Honolulu', label: 'Hawaii Time (Honolulu)' },
+  { value: 'Europe/London', label: 'GMT (London)' },
+  { value: 'Europe/Paris', label: 'Central European (Paris)' },
+  { value: 'Europe/Berlin', label: 'Central European (Berlin)' },
+  { value: 'Asia/Tokyo', label: 'Japan Standard (Tokyo)' },
+  { value: 'Asia/Shanghai', label: 'China Standard (Shanghai)' },
+  { value: 'Asia/Kolkata', label: 'India Standard (Kolkata)' },
+  { value: 'Australia/Sydney', label: 'Australian Eastern (Sydney)' },
+  { value: 'UTC', label: 'Coordinated Universal Time (UTC)' },
+];
+
 export function AccountSettingsPage() {
-  const { user } = useAuth();
+  const { user, refreshUser } = useAuth();
   const toast = useToastHelpers();
   const [isLoading, setIsLoading] = useState(false);
+  const [isTimezoneLoading, setIsTimezoneLoading] = useState(false);
   const [showCurrentPassword, setShowCurrentPassword] = useState(false);
   const [showNewPassword, setShowNewPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
+
+  // Timezone state
+  const [selectedTimezone, setSelectedTimezone] = useState(user?.timezone || 'America/Los_Angeles');
+  const [timezoneChanged, setTimezoneChanged] = useState(false);
+
+  // Update selected timezone when user data loads
+  useEffect(() => {
+    if (user?.timezone) {
+      setSelectedTimezone(user.timezone);
+    }
+  }, [user?.timezone]);
+
+  const handleTimezoneChange = (newTimezone: string) => {
+    setSelectedTimezone(newTimezone);
+    setTimezoneChanged(newTimezone !== user?.timezone);
+  };
+
+  const handleSaveTimezone = async () => {
+    if (!timezoneChanged) return;
+
+    setIsTimezoneLoading(true);
+    try {
+      await updatePreferences({ timezone: selectedTimezone });
+      await refreshUser();
+      setTimezoneChanged(false);
+      toast.success('Timezone updated', `Your timezone has been set to ${selectedTimezone}`);
+    } catch (error: any) {
+      console.error('[AccountSettings] Failed to update timezone:', error);
+      toast.error('Failed to update timezone', error?.message || 'Unknown error');
+    } finally {
+      setIsTimezoneLoading(false);
+    }
+  };
 
   const [formData, setFormData] = useState({
     currentPassword: '',
@@ -127,6 +179,59 @@ export function AccountSettingsPage() {
             <span className={`text-sm font-medium ${user?.role === 'admin' ? 'text-amber-500' : 'text-muted-foreground'}`}>
               {user?.role === 'admin' ? 'Administrator' : 'User'}
             </span>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Preferences Card */}
+      <Card>
+        <CardHeader>
+          <div className="flex items-center gap-2">
+            <Globe className="h-5 w-5" />
+            <CardTitle>Preferences</CardTitle>
+          </div>
+          <CardDescription>
+            Customize your experience with timezone and display settings
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="space-y-2">
+            <Label htmlFor="timezone">Timezone</Label>
+            <p className="text-xs text-muted-foreground mb-2">
+              This affects how dates and times are displayed in conversations and agent responses.
+            </p>
+            <div className="flex gap-2">
+              <select
+                id="timezone"
+                value={selectedTimezone}
+                onChange={(e) => handleTimezoneChange(e.target.value)}
+                disabled={isTimezoneLoading}
+                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {TIMEZONES.map((tz) => (
+                  <option key={tz.value} value={tz.value}>
+                    {tz.label}
+                  </option>
+                ))}
+              </select>
+              <Button
+                onClick={handleSaveTimezone}
+                disabled={!timezoneChanged || isTimezoneLoading}
+                size="default"
+                className="shrink-0"
+              >
+                {isTimezoneLoading ? (
+                  'Saving...'
+                ) : timezoneChanged ? (
+                  'Save'
+                ) : (
+                  <>
+                    <Check className="h-4 w-4 mr-1" />
+                    Saved
+                  </>
+                )}
+              </Button>
+            </div>
           </div>
         </CardContent>
       </Card>

@@ -53,6 +53,11 @@ class RegisterRequest(BaseModel):
         max_length=100,
         description="Optional display name"
     )
+    timezone: str = Field(
+        "America/Los_Angeles",
+        max_length=50,
+        description="IANA timezone (e.g., America/New_York)"
+    )
 
     @field_validator("username")
     @classmethod
@@ -89,10 +94,18 @@ class UserResponse(BaseModel):
     role: str
     is_active: bool
     memory_extraction_enabled: bool
+    timezone: str = "America/Los_Angeles"
     created_at: datetime
 
     class Config:
         from_attributes = True
+
+
+class UpdatePreferencesRequest(BaseModel):
+    """Request body for updating user preferences."""
+
+    timezone: str | None = Field(None, max_length=50, description="IANA timezone")
+    display_name: str | None = Field(None, max_length=100, description="Display name")
 
 
 class MessageResponse(BaseModel):
@@ -164,6 +177,7 @@ async def register(request: RegisterRequest):
             role=UserRole.ADMIN if is_first_auth_user else UserRole.USER,
             is_active=True,
             memory_extraction_enabled=False,  # Opt-in by default
+            timezone=request.timezone,
         )
         db.add(user)
         await db.commit()
@@ -356,6 +370,7 @@ async def get_current_user_info(
         role=user.role.value,
         is_active=user.is_active,
         memory_extraction_enabled=user.memory_extraction_enabled,
+        timezone=user.timezone,
         created_at=user.created_at,
     )
 
@@ -379,6 +394,58 @@ async def logout(
     """
     logger.info(f"👋 User logged out: {user.username}")
     return MessageResponse(message="Successfully logged out")
+
+
+@router.put("/me/preferences", response_model=UserResponse)
+async def update_preferences(
+    request: UpdatePreferencesRequest,
+    user: Annotated[User, Depends(get_current_user)],
+):
+    """
+    Update current user's preferences.
+
+    Allows users to update their timezone and display name.
+
+    Args:
+        request: Preferences to update (timezone, display_name)
+        user: Current user (from JWT)
+
+    Returns:
+        Updated UserResponse
+    """
+    async with get_db_session() as db:
+        # Fetch fresh user from database
+        result = await db.execute(select(User).where(User.id == user.id))
+        db_user = result.scalar_one_or_none()
+
+        if not db_user:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="User not found"
+            )
+
+        # Update fields if provided
+        if request.timezone is not None:
+            db_user.timezone = request.timezone
+            logger.info(f"🕐 User {user.username} updated timezone to {request.timezone}")
+
+        if request.display_name is not None:
+            db_user.display_name = request.display_name
+
+        await db.commit()
+        await db.refresh(db_user)
+
+        return UserResponse(
+            id=str(db_user.id),
+            email=db_user.email,
+            username=db_user.username,
+            display_name=db_user.display_name,
+            role=db_user.role.value,
+            is_active=db_user.is_active,
+            memory_extraction_enabled=db_user.memory_extraction_enabled,
+            timezone=db_user.timezone,
+            created_at=db_user.created_at,
+        )
 
 
 class ChangePasswordRequest(BaseModel):
