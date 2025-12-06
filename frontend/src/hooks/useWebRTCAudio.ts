@@ -45,11 +45,12 @@ const getWebSocketUrl = () => {
 const WS_URL = getWebSocketUrl();
 logger.debug('🌐 Final WebSocket URL configured:', WS_URL);
 
-// Default user ID for web clients
-const WEB_USER_ID = 'web_user_default';
+// Default user ID for web clients (fallback for unauthenticated users)
+const DEFAULT_WEB_USER_ID = 'web_user_default';
 
 export interface UseWebRTCAudioOptions {
   sessionId: string | null;
+  userId?: string | null;  // Authenticated user ID (uses default if not provided)
   onMessage?: (message: WebRTCAudioMessage) => void;
   onBinaryMessage?: (data: Uint8Array) => void;  // NEW: Binary audio chunks
   onError?: (error: string) => void;
@@ -83,6 +84,7 @@ export interface UseWebRTCAudioReturn {
 export function useWebRTCAudio(options: UseWebRTCAudioOptions): UseWebRTCAudioReturn {
   const {
     sessionId,
+    userId,
     onMessage,
     onBinaryMessage,
     onError,
@@ -91,6 +93,9 @@ export function useWebRTCAudio(options: UseWebRTCAudioOptions): UseWebRTCAudioRe
     autoStart = false,
     timeslice = 250, // 250ms chunks for complete WebM Clusters (web best practice)
   } = options;
+
+  // Use authenticated user ID or fall back to default
+  const effectiveUserId = userId || DEFAULT_WEB_USER_ID;
 
   // ✅ DISABLED: Too verbose - only enable when debugging hook initialization
   // logger.debug('🎤 Hook initialized with options:', {
@@ -156,7 +161,7 @@ export function useWebRTCAudio(options: UseWebRTCAudioOptions): UseWebRTCAudioRe
 
     try {
       // Build WebSocket URL with required query parameters
-      const wsUrl = `${WS_URL}/ws/voice?session_id=${encodeURIComponent(sessionId)}&user_id=${encodeURIComponent(WEB_USER_ID)}`;
+      const wsUrl = `${WS_URL}/ws/voice?session_id=${encodeURIComponent(sessionId)}&user_id=${encodeURIComponent(effectiveUserId)}`;
       logger.debug('🔗 Full WebSocket URL:', wsUrl);
 
       const ws = new WebSocket(wsUrl);

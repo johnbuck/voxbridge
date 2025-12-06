@@ -754,6 +754,7 @@ export function VoxbridgePage() {
     endSession,    // Discord-style: Explicit "Leave Voice" button to end session
   } = useWebRTCAudio({
     sessionId: activeSessionId, // Use active session ID from conversation management
+    userId: user?.id,           // Pass authenticated user ID (falls back to default if null)
     onMessage: handleWebRTCAudioMessage,
     onBinaryMessage: handleBinaryMessage,
     onError: handleAudioError,
