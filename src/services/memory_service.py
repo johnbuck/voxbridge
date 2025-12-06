@@ -1506,7 +1506,7 @@ Answer with only "yes" or "no".
                     vector_id = memory["id"]
 
                     # Phase 7: Check for duplicates before saving
-                    is_dupe = await self._is_duplicate(mem_fact_text, user.id, db)
+                    is_dupe = await self._is_duplicate(mem_fact_text, user.id, mem_user_id, db)
                     if is_dupe:
                         # Duplicate detected - delete the vector that was just created
                         logger.info(f"🔍 Skipping duplicate (shortcut): \"{mem_fact_text[:50]}...\"")
