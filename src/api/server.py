@@ -9,6 +9,7 @@ Provides HTTP/WebSocket API endpoints for voice control, monitoring, and agent m
 import asyncio
 import logging
 import os
+import re
 import tempfile
 import time
 import uuid
@@ -1608,6 +1609,24 @@ async def websocket_voice_endpoint(
             await websocket.send_json({
                 "event": "error",
                 "data": {"message": "Missing session_id or user_id query parameters"}
+            })
+            await websocket.close()
+            return
+
+        # Validate user_id format (max length and safe characters)
+        if len(user_id) > 255:
+            await websocket.send_json({
+                "event": "error",
+                "data": {"message": "user_id too long (max 255 characters)"}
+            })
+            await websocket.close()
+            return
+
+        # Allow alphanumeric, underscores, hyphens, and common ID formats (Discord snowflakes, UUIDs)
+        if not re.match(r'^[a-zA-Z0-9_\-]+$', user_id):
+            await websocket.send_json({
+                "event": "error",
+                "data": {"message": "user_id contains invalid characters"}
             })
             await websocket.close()
             return
