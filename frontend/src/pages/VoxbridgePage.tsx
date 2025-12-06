@@ -11,7 +11,6 @@ import { useWebSocket } from '@/hooks/useWebSocket';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { MetricsPanel } from '@/components/MetricsPanel';
 import { StatusSummary } from '@/components/StatusSummary';
-import { RuntimeSettings } from '@/components/RuntimeSettings';
 import { ConversationList } from '@/components/ConversationList';
 import { NewConversationDialog } from '@/components/NewConversationDialog';
 import { AudioControls } from '@/components/AudioControls';
@@ -36,14 +35,12 @@ import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import { ChannelSelectorModal } from '@/components/ChannelSelectorModal';
 import { createLogger } from '@/utils/logger';
+import { useAuth } from '@/contexts/AuthContext';
 
 // Initialize logger for VoxbridgePage
 const logger = createLogger('VoxbridgePage');
 // BUG FIX #5: Debug logs removed for performance. To re-enable for troubleshooting:
 // Set VITE_LOG_LEVEL_UI=DEBUG in frontend/.env and rebuild frontend container
-
-// Use for creating new web sessions (can be changed when auth is added)
-const WEB_USER_ID = 'web_user_default';
 
 // DisplayMessage extends Message with additional UI-specific properties
 interface DisplayMessage extends Omit<Message, 'id'> {
@@ -55,6 +52,9 @@ interface DisplayMessage extends Omit<Message, 'id'> {
 }
 
 export function VoxbridgePage() {
+  // Get authenticated user
+  const { user } = useAuth();
+
   // Analytics state (Discord conversation monitoring) - kept for future Discord transcript integration
   const [activeSpeaker, setActiveSpeaker] = useState<string | null>(null);
   const [partialTranscript, setPartialTranscript] = useState<string>('');
@@ -1104,7 +1104,7 @@ export function VoxbridgePage() {
 
         // Step 2: Create new session (will be active=true by default)
         const newSession = await api.createSession({
-          user_id: WEB_USER_ID,
+          user_id: user?.id || '',
           agent_id: agentId,
           title: title || null,
           session_type: 'web',
@@ -1390,10 +1390,6 @@ export function VoxbridgePage() {
             Real-time voice bridge monitoring and control
           </p>
 
-          {/* Absolutely positioned settings button */}
-          <div className="absolute right-0 sm:right-4 top-12">
-            <RuntimeSettings />
-          </div>
         </div>
 
         {/* Summary Statistics */}

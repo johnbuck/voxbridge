@@ -177,11 +177,9 @@ export function LLMProvidersPage() {
   // Loading state
   if (isLoading) {
     return (
-      <div className="container mx-auto px-4 py-8">
-        <div className="flex items-center justify-center min-h-[400px]">
-          <Loader2 className="h-8 w-8 animate-spin text-primary" />
-          <span className="ml-2 text-muted-foreground">Loading LLM providers...</span>
-        </div>
+      <div className="flex items-center justify-center min-h-[400px]">
+        <Loader2 className="h-8 w-8 animate-spin text-primary" />
+        <span className="ml-2 text-muted-foreground">Loading LLM providers...</span>
       </div>
     );
   }
@@ -189,7 +187,7 @@ export function LLMProvidersPage() {
   // Error state
   if (error) {
     return (
-      <div className="container mx-auto px-4 py-8">
+      <div>
         <Card className="border-destructive">
           <CardHeader>
             <CardTitle className="flex items-center gap-2 text-destructive">
