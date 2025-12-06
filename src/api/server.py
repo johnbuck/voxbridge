@@ -39,6 +39,7 @@ from src.routes.llm_provider_routes import router as llm_provider_router
 from src.routes.system_settings_routes import router as system_settings_router
 from src.routes.memory_routes import router as memory_router
 from src.routes.auth_routes import router as auth_router
+from src.routes.admin_routes import router as admin_router
 
 # LLM exceptions for error handling
 from src.llm import LLMError, LLMConnectionError, LLMTimeoutError
@@ -507,6 +508,9 @@ app.include_router(memory_router)
 
 # Include authentication routes (User Auth & RBAC)
 app.include_router(auth_router)
+
+# Include admin management routes (User Auth & RBAC)
+app.include_router(admin_router)
 
 # Pydantic models for API
 class JoinVoiceRequest(BaseModel):

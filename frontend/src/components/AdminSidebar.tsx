@@ -5,13 +5,13 @@
 
 import { Link, useLocation } from 'wouter';
 import { cn } from '@/lib/utils';
-import { Shield } from 'lucide-react';
+import { Shield, Users } from 'lucide-react';
 
 const adminItems = [
   { href: '/admin/memory-policy', label: 'Memory Policy', icon: Shield },
+  { href: '/admin/users', label: 'User Management', icon: Users },
   // Future admin features (will require additional imports):
-  // Users, Settings as SettingsIcon, Lock from lucide-react
-  // { href: '/admin/users', label: 'User Management', icon: Users, disabled: true },
+  // Settings as SettingsIcon, Lock from lucide-react
   // { href: '/admin/system', label: 'System Settings', icon: SettingsIcon, disabled: true },
   // { href: '/admin/security', label: 'Security', icon: Lock, disabled: true },
 ];

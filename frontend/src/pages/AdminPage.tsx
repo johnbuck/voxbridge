@@ -9,6 +9,7 @@ import { AdminRouteGuard } from '@/components/AdminRouteGuard';
 import { Link, useLocation } from 'wouter';
 import { Shield, Users, Settings as SettingsIcon, Lock } from 'lucide-react';
 import { AdminMemorySettingsPage } from './settings/AdminMemorySettingsPage';
+import { AdminUsersPage } from './settings/AdminUsersPage';
 
 /**
  * Overview Dashboard Component
@@ -46,21 +47,22 @@ function AdminOverview() {
           </Card>
         </Link>
 
-        {/* User Management Card - Placeholder */}
-        <Card className="opacity-50 cursor-not-allowed">
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <Users className="h-5 w-5" />
-              User Management
-              <span className="ml-auto text-xs font-normal text-muted-foreground">Coming Soon</span>
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <p className="text-sm text-muted-foreground">
-              Manage users, roles, and permissions
-            </p>
-          </CardContent>
-        </Card>
+        {/* User Management Card - Active */}
+        <Link href="/admin/users">
+          <Card className="hover:border-primary/50 cursor-pointer transition-colors">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Users className="h-5 w-5" />
+                User Management
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <p className="text-sm text-muted-foreground">
+                Manage users, roles, and permissions
+              </p>
+            </CardContent>
+          </Card>
+        </Link>
 
         {/* System Settings Card - Placeholder */}
         <Card className="opacity-50 cursor-not-allowed">
@@ -107,11 +109,13 @@ export function AdminPage() {
     content = <AdminOverview />;
   } else if (location === '/admin/memory-policy') {
     content = <AdminMemorySettingsPage />;
+  } else if (location === '/admin/users') {
+    content = <AdminUsersPage />;
   }
 
   return (
     <AdminRouteGuard>
-      <div className="container mx-auto px-4 py-6">
+      <div className="max-w-7xl mx-auto px-6 py-6">
         <div className="flex gap-6">
           {/* Sidebar Navigation - Hidden on mobile, visible on desktop */}
           <aside className="hidden md:block w-64 flex-shrink-0">

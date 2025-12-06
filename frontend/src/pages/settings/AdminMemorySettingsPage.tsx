@@ -18,7 +18,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
-import { Shield, AlertTriangle, RotateCcw, Info, Database, Settings } from 'lucide-react';
+import { Shield, RotateCcw, Info, Database, Settings } from 'lucide-react';
 import { useToastHelpers } from '@/components/ui/toast';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import * as memoryApi from '@/services/memory';
@@ -115,26 +115,6 @@ export function AdminMemorySettingsPage() {
           System-wide control over agent-specific memory capabilities
         </p>
       </div>
-
-      {/* Warning Banner - No RBAC Yet */}
-      <Card className="border-yellow-500/50 bg-yellow-500/10">
-        <CardContent className="pt-6">
-          <div className="flex items-start gap-3">
-            <AlertTriangle className="h-5 w-5 text-yellow-600 flex-shrink-0 mt-0.5" />
-            <div className="space-y-2">
-              <p className="text-sm font-medium text-yellow-600">
-                Warning: UI-Only Access Control
-              </p>
-              <p className="text-xs text-yellow-600/90">
-                This page is currently accessible to all users. RBAC (Role-Based Access Control) has
-                not been implemented yet. The admin policy is enforced by the backend, but any user
-                can currently access this settings page and attempt to change the policy. In
-                production, this page should be restricted to admin users only.
-              </p>
-            </div>
-          </div>
-        </CardContent>
-      </Card>
 
       {/* Admin Policy Toggle Card */}
       <Card>
