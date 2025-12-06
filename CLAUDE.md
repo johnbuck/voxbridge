@@ -459,6 +459,12 @@ docker exec voxbridge-postgres psql -U voxbridge -d voxbridge -c \
 - `OPENROUTER_API_KEY` - Optional: OpenRouter API key for LLM provider
 - `LOCAL_LLM_BASE_URL` - Optional: Local LLM endpoint (e.g., http://localhost:11434/v1)
 
+**Security (API Key Encryption):**
+- `ENCRYPTION_KEY` - Passphrase for encrypting sensitive API keys (Azure, etc.)
+  - If not set, API keys are stored in plaintext (not recommended for production)
+  - Falls back to `PLUGIN_ENCRYPTION_KEY` for backward compatibility
+  - Used by: `src/utils/encryption.py`
+
 **Discord Bot Mode (Phase 6.4.1 Batch 2a):**
 - `USE_LEGACY_DISCORD_BOT` - Toggle between new plugin-based bot (false) and legacy handlers (true)
   - **Default**: `false` (recommended - uses new plugin system)
@@ -604,10 +610,10 @@ curl http://localhost:4900/api/metrics/extraction-queue | python3 -m json.tool
 ### Testing Shortcuts
 ```bash
 # Run specific test file
-./test.sh tests/unit/test_speaker_manager.py -v
+./test.sh tests/unit/test_llm_types.py -v
 
 # Run specific test function
-./test.sh tests/unit/test_speaker_manager.py::test_silence_detection -v
+./test.sh tests/unit/services/test_conversation_service.py::test_session_creation -v
 
 # Run with print statements visible
 ./test.sh tests/unit -s
@@ -627,11 +633,12 @@ docker compose up -d
 5. Broadcast via WebSocket to frontend if real-time display needed
 
 ### Adding New Streaming Feature
-1. Modify `streaming_handler.py` to handle new streaming pattern
-2. Update `speaker_manager.py` to pass through streaming options
-3. Add tests in `tests/unit/test_streaming_handler.py`
-4. Update frontend `StreamingResponseChart.tsx` if visualization needed
-5. Document in README.md
+1. Update streaming config in `src/config/streaming.py`
+2. Modify `src/services/llm_service.py` for LLM streaming changes
+3. Update `src/services/tts_service.py` for TTS streaming changes
+4. Add tests in `tests/unit/services/`
+5. Update frontend if visualization needed
+6. Document in README.md
 
 ### Adding New Environment Variable
 1. Add to `docker-compose.yml` with default value

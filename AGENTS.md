@@ -20,14 +20,18 @@ Chatterbox TTS (Python)
 Discord Voice Channel
 ```
 
-### Dual-Language Architecture
+### Service Layer Architecture (VoxBridge 2.0)
 
-**Python-based implementation:**
-- `src/discord_bot.py` - Main Discord bot with voice handling
-- `src/speaker_manager.py` - Single-speaker lock system
-- `src/whisper_client.py` - WhisperX WebSocket client
-- `src/streaming_handler.py` - n8n streaming response processor
-- `src/whisper_server.py` - WhisperX WebSocket server
+**Core Services:**
+- `src/discord_bot.py` - Main entry point + Discord bot
+- `src/api/server.py` - FastAPI application (decoupled from bot)
+- `src/services/conversation_service.py` - Session management + caching
+- `src/services/stt_service.py` - WhisperX abstraction
+- `src/services/llm_service.py` - LLM provider routing
+- `src/services/tts_service.py` - Chatterbox abstraction
+- `src/services/memory_service.py` - Mem0 fact extraction
+- `src/plugins/discord_plugin.py` - Plugin-based Discord voice
+- `src/whisper_server.py` - WhisperX WebSocket server (GPU)
 
 ### Docker Services
 
@@ -366,28 +370,36 @@ CREATE TABLE conversations (
 
 ## File Organization
 
-### Python Core (Primary)
+### Python Core (VoxBridge 2.0 Service Architecture)
 ```
 /
 ├── src/                        # Python source code
-│   ├── __init__.py
-│   ├── discord_bot.py          # Main Discord bot entry point
-│   ├── speaker_manager.py      # Speaker lock + n8n integration
-│   ├── whisper_client.py       # WhisperX WebSocket client
-│   ├── streaming_handler.py    # n8n streaming response handler
+│   ├── discord_bot.py          # Main entry point + Discord bot
 │   ├── whisper_server.py       # WhisperX server (runs in whisperx container)
-│   └── database/               # Database layer (VoxBridge 2.0)
-│       ├── __init__.py         # Module exports
-│       ├── models.py           # SQLAlchemy ORM models (Agent, Session, Conversation)
-│       ├── session.py          # Async connection management
-│       └── seed.py             # Example agent seeding
-├── alembic/                    # Database migrations (VoxBridge 2.0)
-│   ├── env.py                  # Alembic environment (async support)
-│   ├── script.py.mako          # Migration template
-│   └── versions/               # Migration scripts
-│       └── 001_initial_schema.py
-├── alembic.ini                 # Alembic configuration
-├── requirements-bot.txt        # Discord bot dependencies (includes SQLAlchemy, asyncpg)
+│   ├── api/                    # FastAPI application (Phase 6.4.1)
+│   │   ├── server.py           # Decoupled FastAPI routes
+│   │   └── __init__.py
+│   ├── services/               # Service layer (Phase 5)
+│   │   ├── conversation_service.py  # Session + context management
+│   │   ├── stt_service.py      # WhisperX abstraction
+│   │   ├── llm_service.py      # LLM provider routing
+│   │   ├── tts_service.py      # Chatterbox abstraction
+│   │   ├── memory_service.py   # Mem0 fact extraction
+│   │   └── agent_service.py    # Agent CRUD
+│   ├── plugins/                # Plugin system (Phase 6)
+│   │   ├── discord_plugin.py   # Plugin-based Discord voice
+│   │   └── base.py             # Plugin base class
+│   ├── database/               # Database layer
+│   │   ├── models.py           # SQLAlchemy ORM models
+│   │   ├── session.py          # Async connection management
+│   │   └── seed.py             # Example agent seeding
+│   └── utils/                  # Utility modules
+│       ├── encryption.py       # API key encryption (Fernet)
+│       └── text_filters.py     # Text processing
+├── alembic/                    # Database migrations
+│   ├── env.py                  # Alembic environment (async)
+│   └── versions/               # Migration scripts (001-028+)
+├── requirements-bot.txt        # Discord bot dependencies
 └── requirements.txt            # WhisperX server dependencies
 ```
 

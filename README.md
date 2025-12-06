@@ -319,6 +319,14 @@ N8N_WEBHOOK_URL=https://your-n8n-instance.com/webhook/voice-transcript
 # Streaming Configuration
 USE_STREAMING=true                    # Enable n8n response streaming (default: true)
 
+# Database (VoxBridge 2.0)
+POSTGRES_USER=voxbridge
+POSTGRES_PASSWORD=your_secure_password
+POSTGRES_DB=voxbridge
+
+# Security (API Key Encryption)
+ENCRYPTION_KEY=your_encryption_passphrase  # For encrypting stored API keys
+
 # Server Port
 PORT=4900
 ```
