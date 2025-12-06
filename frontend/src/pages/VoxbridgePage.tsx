@@ -125,7 +125,7 @@ export function VoxbridgePage() {
         queryKey: keyString,
         timestamp: Date.now(),
       });
-      queryClient.invalidateQueries({ queryKey: queryKey as string[] });
+      queryClient.invalidateQueries({ queryKey });
       invalidationTimersRef.current.delete(keyString);
     }, 100);
 
