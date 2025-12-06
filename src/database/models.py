@@ -12,6 +12,7 @@ Design Decisions (Phase 1):
 import uuid
 from datetime import datetime
 from typing import Optional
+from enum import Enum as PyEnum
 
 from sqlalchemy import (
     Column,
@@ -24,12 +25,19 @@ from sqlalchemy import (
     Integer,
     UniqueConstraint,
     Index,
+    Enum as SQLEnum,
 )
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import declarative_base, relationship
 from sqlalchemy.sql import func, text
 
 Base = declarative_base()
+
+
+class UserRole(str, PyEnum):
+    """User role for RBAC (Role-Based Access Control)"""
+    ADMIN = "admin"
+    USER = "user"
 
 
 class Agent(Base):
@@ -260,15 +268,20 @@ class LLMProvider(Base):
 
 class User(Base):
     """
-    User Model for Memory Personalization
+    User Model for Authentication and Memory Personalization
 
-    Stores user identity and memory preferences.
-    Supports both Discord users (permanent IDs) and WebRTC users (token-based auth).
+    Stores user identity, authentication credentials, and memory preferences.
+    Supports both Discord users (permanent IDs) and web users (email/password auth).
 
-    Phase 1: Memory System
-    - user_id: "discord_{snowflake}" or "webrtc_{random}"
+    Authentication (Phase: User Auth & RBAC):
+    - email/username: For web login
+    - password_hash: bcrypt-hashed password
+    - role: admin or user (RBAC)
+    - is_active: Account status
+
+    Memory System (Phase 1):
+    - user_id: Legacy identifier for backward compatibility
     - memory_extraction_enabled: Opt-in (GDPR-compliant)
-    - auth_token: For WebRTC users only (Discord uses snowflake IDs)
     """
 
     __tablename__ = "users"
@@ -276,17 +289,28 @@ class User(Base):
     # Primary key - UUID for global uniqueness
     id = Column(UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()"))
 
-    # User Identity
-    user_id = Column(String(255), unique=True, nullable=False, index=True)  # Discord ID or WebRTC session
+    # Authentication Fields (User Auth & RBAC)
+    email = Column(String(255), unique=True, nullable=True, index=True)  # For web login
+    username = Column(String(100), unique=True, nullable=True, index=True)  # For web login
+    password_hash = Column(String(255), nullable=True)  # bcrypt hash
+    role = Column(
+        SQLEnum(UserRole, values_callable=lambda x: [e.value for e in x]),
+        server_default='user',
+        nullable=False
+    )  # admin or user
+    is_active = Column(Boolean, server_default=text('true'), nullable=False)  # Account status
+
+    # Legacy User Identity (backward compatibility)
+    user_id = Column(String(255), unique=True, nullable=True, index=True)  # Discord ID or legacy WebRTC session
     display_name = Column(String(255), nullable=True)
 
     # Memory Configuration
     embedding_provider = Column(String(50), server_default='azure')  # 'azure' or 'local'
     memory_extraction_enabled = Column(Boolean, server_default=text('false'))  # Opt-in (GDPR)
-    allow_agent_specific_memory = Column(Boolean, server_default=text('true'))  # When False: forces all facts to global, deletes existing agent-specific facts
+    allow_agent_specific_memory = Column(Boolean, server_default=text('true'))  # When False: forces all facts to global
 
-    # Authentication (WebRTC users only)
-    auth_token = Column(String(255), unique=True, nullable=True, index=True)  # JWT or random token
+    # Authentication Tokens (legacy WebRTC, kept for backward compatibility)
+    auth_token = Column(String(255), unique=True, nullable=True, index=True)  # Legacy JWT or random token
     token_created_at = Column(DateTime(timezone=True), nullable=True)
     last_login_at = Column(DateTime(timezone=True), nullable=True)
 
@@ -299,7 +323,7 @@ class User(Base):
     agent_memory_settings = relationship("UserAgentMemorySetting", back_populates="user", cascade="all, delete-orphan")
 
     def __repr__(self):
-        return f"<User(id={self.id}, user_id='{self.user_id}', display_name='{self.display_name}')>"
+        return f"<User(id={self.id}, username='{self.username}', email='{self.email}', role='{self.role}')>"
 
 
 class UserAgentMemorySetting(Base):

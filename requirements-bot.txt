@@ -44,3 +44,10 @@ sentence-transformers>=2.2.0  # Local embeddings (optional, for EMBEDDING_PROVID
 azure-identity>=1.15.0  # Azure auth (optional, for EMBEDDING_PROVIDER=azure)
 openai[azure]>=1.90.0  # Azure OpenAI SDK (optional, for EMBEDDING_PROVIDER=azure)
 ollama>=0.1.0  # Ollama LLM provider for Mem0 (local-only operation)
+
+# User Authentication (User Auth & RBAC)
+passlib>=1.7.4  # Password hashing
+bcrypt>=4.0.0,<5.0.0  # bcrypt backend for passlib (compatible version)
+python-jose[cryptography]>=3.3.0  # JWT token creation and validation
+python-multipart>=0.0.6  # Form data parsing for login endpoints
+email-validator>=2.0.0  # Email validation for Pydantic EmailStr
