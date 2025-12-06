@@ -81,11 +81,12 @@ async def sync_orphaned_facts(dry_run: bool = False):
                     failed_count += 1
                     continue
 
-                # Determine memory scope
+                # Determine memory scope (use UUID as fallback if legacy user_id is not set)
+                effective_user_id = user.user_id or str(user.id)
                 if agent and agent.memory_scope == "global":
-                    mem_user_id = user.user_id  # Global memory across all agents
+                    mem_user_id = effective_user_id  # Global memory across all agents
                 else:
-                    mem_user_id = f"{user.user_id}:{fact.agent_id}"  # Agent-specific memory
+                    mem_user_id = f"{effective_user_id}:{fact.agent_id}"  # Agent-specific memory
 
                 # Re-create vector using fact_text
                 fact_text = fact.fact_text or f"{fact.fact_key}: {fact.fact_value}"

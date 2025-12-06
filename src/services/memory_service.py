@@ -2311,7 +2311,7 @@ Respond ONLY with JSON, no other text:
         to_prune = (current_count - self.max_memories_per_user) + self.pruning_batch_size
         to_prune = min(to_prune, current_count)  # Don't prune more than we have
 
-        logger.info(f"✂️ Memory limit reached for user {user.user_id}: {current_count}/{self.max_memories_per_user}")
+        logger.info(f"✂️ Memory limit reached for user {user.user_id or str(user.id)}: {current_count}/{self.max_memories_per_user}")
         logger.info(f"✂️ Pruning {to_prune} facts using '{self.pruning_strategy}' strategy")
 
         if self.pruning_strategy == "fifo":
@@ -2675,7 +2675,7 @@ Respond ONLY with JSON, no other text:
             select(User).where(User.id == user_id)
         )
         user = user_result.scalar_one_or_none()
-        mem_user_id = user.user_id if user else str(user_id)
+        mem_user_id = (user.user_id or str(user.id)) if user else str(user_id)
 
         # Find clusters using embedding similarity
         clusters = await self._find_memory_clusters(facts, mem_user_id)
@@ -2836,7 +2836,7 @@ Output a single paragraph summary."""
 
             # Create embedding for summary via Mem0
             loop = asyncio.get_event_loop()
-            mem_user_id = user.user_id  # Use string user_id for Mem0
+            mem_user_id = user.user_id or str(user.id)  # Use string user_id for Mem0
 
             result = await loop.run_in_executor(
                 self.executor,

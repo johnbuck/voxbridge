@@ -35,11 +35,46 @@ from src.database.models import User, UserFact, Agent, ExtractionTask
 from src.database.session import get_db_session
 from src.services.memory_service import MemoryService, get_global_embedding_config, get_admin_memory_policy
 from src.config.logging_config import get_logger
+import uuid as uuid_module
 
 # Import global memory_service instance
 from src.api import server
 
 logger = get_logger(__name__)
+
+
+async def get_user_by_id_or_legacy(db, user_id: str) -> User | None:
+    """
+    Look up a user by either UUID (User.id) or legacy string ID (User.user_id).
+
+    Tries UUID lookup first (for authenticated users), falls back to legacy string ID
+    for backward compatibility with Discord/WebRTC users.
+
+    Args:
+        db: Database session
+        user_id: Either a UUID string or a legacy identifier like "discord:123"
+
+    Returns:
+        User object or None if not found
+    """
+    # Try parsing as UUID first
+    try:
+        user_uuid = uuid_module.UUID(user_id)
+        result = await db.execute(
+            select(User).where(User.id == user_uuid)
+        )
+        user = result.scalar_one_or_none()
+        if user:
+            return user
+    except (ValueError, AttributeError):
+        # Not a valid UUID, try legacy lookup
+        pass
+
+    # Fall back to legacy user_id string lookup
+    result = await db.execute(
+        select(User).where(User.user_id == user_id)
+    )
+    return result.scalar_one_or_none()
 
 router = APIRouter(prefix="/api/memory", tags=["memory"])
 
@@ -167,11 +202,8 @@ async def list_user_facts(
     """
     try:
         async with get_db_session() as db:
-            # Get user
-            result = await db.execute(
-                select(User).where(User.user_id == user_id)
-            )
-            user = result.scalar_one_or_none()
+            # Get user by UUID or legacy string ID
+            user = await get_user_by_id_or_legacy(db, user_id)
 
             if not user:
                 raise HTTPException(status_code=404, detail=f"User {user_id} not found")
@@ -271,14 +303,11 @@ async def create_user_fact(user_id: str, request: FactCreateRequest):
     """
     try:
         async with get_db_session() as db:
-            # Get or create user
-            result = await db.execute(
-                select(User).where(User.user_id == user_id)
-            )
-            user = result.scalar_one_or_none()
+            # Get user by UUID or legacy string ID
+            user = await get_user_by_id_or_legacy(db, user_id)
 
             if not user:
-                # Create user if doesn't exist
+                # Create user if doesn't exist (use original user_id as legacy identifier)
                 user = User(
                     user_id=user_id,
                     memory_extraction_enabled=True
@@ -381,11 +410,8 @@ async def update_user_fact(user_id: str, fact_id: UUID, request: FactUpdateReque
     """
     try:
         async with get_db_session() as db:
-            # Get user
-            user_result = await db.execute(
-                select(User).where(User.user_id == user_id)
-            )
-            user = user_result.scalar_one_or_none()
+            # Get user by UUID or legacy string ID
+            user = await get_user_by_id_or_legacy(db, user_id)
             if not user:
                 raise HTTPException(status_code=404, detail=f"User {user_id} not found")
 
@@ -473,11 +499,8 @@ async def delete_user_fact(user_id: str, fact_id: UUID):
     """
     try:
         async with get_db_session() as db:
-            # Get user
-            user_result = await db.execute(
-                select(User).where(User.user_id == user_id)
-            )
-            user = user_result.scalar_one_or_none()
+            # Get user by UUID or legacy string ID
+            user = await get_user_by_id_or_legacy(db, user_id)
             if not user:
                 raise HTTPException(status_code=404, detail=f"User {user_id} not found")
 
@@ -535,11 +558,8 @@ async def get_memory_settings(user_id: str):
     """
     try:
         async with get_db_session() as db:
-            # Get user
-            result = await db.execute(
-                select(User).where(User.user_id == user_id)
-            )
-            user = result.scalar_one_or_none()
+            # Get user by UUID or legacy string ID
+            user = await get_user_by_id_or_legacy(db, user_id)
 
             if not user:
                 raise HTTPException(status_code=404, detail=f"User {user_id} not found")
@@ -567,7 +587,7 @@ async def get_memory_settings(user_id: str):
             logger.info(f"⚙️ Retrieved memory settings for user {user_id}: {total_facts} facts")
 
             return MemorySettingsResponse(
-                user_id=user.user_id,
+                user_id=user.user_id or str(user.id),
                 display_name=user.display_name,
                 embedding_provider=user.embedding_provider,
                 memory_extraction_enabled=user.memory_extraction_enabled,
@@ -601,14 +621,11 @@ async def update_memory_settings(user_id: str, request: MemorySettingsUpdateRequ
     """
     try:
         async with get_db_session() as db:
-            # Get user
-            result = await db.execute(
-                select(User).where(User.user_id == user_id)
-            )
-            user = result.scalar_one_or_none()
+            # Get user by UUID or legacy string ID
+            user = await get_user_by_id_or_legacy(db, user_id)
 
             if not user:
-                # Create user if doesn't exist
+                # Create user if doesn't exist (use original user_id as legacy identifier)
                 user = User(
                     user_id=user_id,
                     display_name=request.display_name,
@@ -714,7 +731,7 @@ async def update_memory_settings(user_id: str, request: MemorySettingsUpdateRequ
             logger.info(f"✅ Updated memory settings for user {user_id}")
 
             return MemorySettingsResponse(
-                user_id=user.user_id,
+                user_id=user.user_id or str(user.id),
                 display_name=user.display_name,
                 embedding_provider=user.embedding_provider,
                 memory_extraction_enabled=user.memory_extraction_enabled,
@@ -751,11 +768,8 @@ async def export_user_data(user_id: str):
     """
     try:
         async with get_db_session() as db:
-            # Get user
-            result = await db.execute(
-                select(User).where(User.user_id == user_id)
-            )
-            user = result.scalar_one_or_none()
+            # Get user by UUID or legacy string ID
+            user = await get_user_by_id_or_legacy(db, user_id)
 
             if not user:
                 raise HTTPException(status_code=404, detail=f"User {user_id} not found")
@@ -800,7 +814,7 @@ async def export_user_data(user_id: str):
             logger.info(f"📦 Exported data for user {user_id}: {len(fact_responses)} facts")
 
             return GDPRExportResponse(
-                user_id=user.user_id,
+                user_id=user.user_id or str(user.id),
                 display_name=user.display_name,
                 exported_at=datetime.utcnow().isoformat(),
                 total_facts=len(fact_responses),
@@ -832,11 +846,8 @@ async def delete_user_data(user_id: str):
     """
     try:
         async with get_db_session() as db:
-            # Get user
-            result = await db.execute(
-                select(User).where(User.user_id == user_id)
-            )
-            user = result.scalar_one_or_none()
+            # Get user by UUID or legacy string ID
+            user = await get_user_by_id_or_legacy(db, user_id)
 
             if not user:
                 raise HTTPException(status_code=404, detail=f"User {user_id} not found")
