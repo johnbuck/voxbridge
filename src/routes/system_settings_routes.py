@@ -28,6 +28,7 @@ from src.database.models import SystemSettings
 from src.database.session import get_db_session
 from src.config.logging_config import get_logger
 from src.services.memory_service import get_embedding_model_status
+from src.utils.encryption import encrypt_api_key, decrypt_api_key, is_encryption_configured
 
 logger = get_logger(__name__)
 
@@ -142,9 +143,13 @@ async def update_embedding_config(request: EmbeddingConfigRequest):
                     detail="Azure provider requires azure_api_key and azure_endpoint"
                 )
 
-            # TODO: Encrypt azure_api_key before storing
+            # Encrypt Azure API key before storing
+            encrypted_key = encrypt_api_key(request.azure_api_key)
+            if not is_encryption_configured():
+                logger.warning("⚠️ ENCRYPTION_KEY not set - Azure API key stored without encryption")
+
             config_value.update({
-                "azure_api_key": request.azure_api_key,
+                "azure_api_key": encrypted_key,
                 "azure_endpoint": request.azure_endpoint,
                 "azure_deployment": request.azure_deployment or "text-embedding-3-large",
                 "azure_api_version": request.azure_api_version or "2024-12-01-preview",

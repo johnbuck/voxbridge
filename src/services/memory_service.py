@@ -17,6 +17,7 @@ from src.database.session import get_db_session
 from src.services.llm_service import LLMService, LLMConfig, ProviderType
 from src.services.mem0_compat import Mem0ResponseNormalizer
 from src.config.logging_config import get_logger
+from src.utils.encryption import decrypt_api_key
 
 # Configure logging
 logger = get_logger(__name__)
@@ -1287,13 +1288,17 @@ If no user-specific facts are found, extract nothing.
         provider = db_config.get('provider', 'local')
 
         if provider == 'azure':
+            # Decrypt the API key (handles both encrypted and legacy plaintext values)
+            encrypted_key = db_config.get('azure_api_key', '')
+            decrypted_key = decrypt_api_key(encrypted_key) if encrypted_key else ''
+
             return {
                 "provider": "azure_openai",
                 "config": {
                     "model": "text-embedding-3-large",
                     "embedding_dims": 3072,
                     "azure_kwargs": {
-                        "api_key": db_config.get('azure_api_key'),  # TODO: Decrypt if encrypted
+                        "api_key": decrypted_key,
                         "azure_endpoint": db_config.get('azure_endpoint'),
                         "azure_deployment": db_config.get('azure_deployment', 'text-embedding-3-large'),
                         "api_version": db_config.get('azure_api_version', '2024-12-01-preview'),
