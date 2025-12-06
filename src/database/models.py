@@ -350,6 +350,9 @@ class UserAgentMemorySetting(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()"))
 
     # Associations
+    # NOTE: Uses String FK to users.user_id for Discord ID compatibility
+    # This differs from UserFact which uses UUID FK to users.id
+    # Both patterns are valid - String for Discord IDs, UUID for internal refs
     user_id = Column(String(255), ForeignKey("users.user_id", ondelete="CASCADE"), nullable=False, index=True)
     agent_id = Column(UUID(as_uuid=True), ForeignKey("agents.id", ondelete="CASCADE"), nullable=False, index=True)
 
