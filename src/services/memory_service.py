@@ -563,11 +563,31 @@ GENERAL - Other persistent facts:
 - Miscellaneous preferences
 
 **DO NOT EXTRACT:**
-- General knowledge or trivia
-- AI commands or meta-requests ("tell me about...", "what is...")
-- Temporary states ("I'm tired", "I'm busy today")
-- Opinions about external topics (politics, news)
+- General knowledge or trivia (facts about the world, not the user)
+- Questions the user asked about the assistant, AI, or this system:
+  - BAD: "User wants to know assistant's height" (about AI, not user)
+  - BAD: "User asked what the assistant can do"
+  - BAD: "User is curious about the AI's capabilities"
+- Conversational actions that just describe what happened:
+  - BAD: "User greeted the assistant"
+  - BAD: "User said hello"
+  - BAD: "User asked a question about X"
+  - BAD: "User is testing the system"
+  - BAD: "User thanked the assistant"
+- Opinions about external topics (politics, news, world events)
 - Anything the assistant said (only extract USER information)
+- Mere rephrasing of the conversation (the chat logs already store this)
+- Requests or commands ("tell me about...", "what is...", "can you...")
+
+**TEMPORARY STATES ARE OK TO EXTRACT:**
+- "User is tired today" -> Extract as temporary fact
+- "User is busy this week" -> Extract as temporary fact
+- "User is feeling stressed" -> Extract as temporary fact
+These are useful for context and will be marked as low importance with auto-expiration.
+
+**KEY DISTINCTION:**
+- Extract FACTS ABOUT the user (who they are, what they feel, their life)
+- Do NOT extract WHAT the user did in this conversation (asked, said, wondered, greeted)
 
 **OUTPUT FORMAT:**
 For each fact, output a concise statement in third person:
@@ -577,6 +597,7 @@ For each fact, output a concise statement in third person:
 - "User has a dog named Max"
 - "User is planning a trip to Japan next month"
 - "User is allergic to peanuts"
+- "User is tired today"
 
 Only extract facts that are explicitly stated or strongly implied by the user.
 If no user-specific facts are found, extract nothing.
@@ -2056,6 +2077,28 @@ Answer with only "yes" or "no".
                 self.metrics["temporal_permanent"] += 1
                 return None
 
+        # === TEMPORARY STATE PATTERNS (emotional/physical states - expire quickly) ===
+        # These are transient user states that should auto-expire
+        temporary_state_patterns = [
+            # Physical states (1 day expiration)
+            (r"(?:is|feels?|feeling)\s+(?:tired|exhausted|sleepy|sick|unwell|ill)", 1, "physical state"),
+            (r"(?:has|have)\s+(?:a\s+)?(?:headache|cold|flu|fever|stomachache)", 1, "health issue"),
+            # Emotional states (1 day expiration)
+            (r"(?:is|feels?|feeling)\s+(?:stressed|overwhelmed|frustrated|anxious|worried|upset|angry)", 1, "emotional state"),
+            (r"(?:is|feels?|feeling)\s+(?:excited|happy|sad|nervous|bored)", 1, "mood"),
+            # Busy states (variable expiration)
+            (r"(?:is|feels?)\s+(?:busy|swamped|occupied)\s+(?:today|right now|at the moment)", 1, "busy today"),
+            (r"(?:is|feels?)\s+(?:busy|swamped|occupied)\s+(?:this week|these days)", 7, "busy this week"),
+            (r"(?:is|feels?)\s+(?:busy|swamped|occupied)", 2, "busy general"),
+        ]
+
+        for pattern, days, desc in temporary_state_patterns:
+            if re.search(pattern, text_lower):
+                validity_end = now + timedelta(days=days)
+                logger.info(f"⏰ Temporary state: '{fact_text[:40]}...' -> expires in {days} day(s) ({desc})")
+                self.metrics["temporal_regex_detected"] += 1
+                return validity_end
+
         # === TEMPORAL PATTERNS WITH FIXED DURATIONS ===
         fixed_temporal_patterns = [
             # (pattern, days_to_add, description)
@@ -2277,6 +2320,17 @@ Respond ONLY with JSON, no other text:
             if key in key_lower:
                 logger.debug(f"⭐ Inferred importance: '{fact_text[:40]}...' -> 0.6 (medium key)")
                 return 0.6
+
+        # Temporary/transient states (0.3) - low importance, auto-expiring
+        temporary_patterns = [
+            r"(?:is|feel[s]?|feeling)\s+(?:tired|exhausted|sleepy|busy|stressed|overwhelmed|frustrated|sick|unwell|anxious|worried|excited|happy|sad)",
+            r"(?:today|right now|at the moment|this week|currently|these days)",
+            r"(?:have|has)\s+a\s+(?:headache|cold|flu|meeting|deadline|appointment)",
+        ]
+        for pattern in temporary_patterns:
+            if re.search(pattern, text_lower):
+                logger.debug(f"⭐ Inferred importance: '{fact_text[:40]}...' -> 0.3 (temporary state)")
+                return 0.3
 
         # Default to 0.7 (medium-high, since Mem0 already filtered for relevance)
         logger.debug(f"⭐ Inferred importance: '{fact_text[:40]}...' -> 0.7 (default)")
