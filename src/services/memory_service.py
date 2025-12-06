@@ -205,7 +205,7 @@ async def get_admin_memory_policy() -> bool:
 async def resolve_memory_scope(
     user_id: str,
     agent_id: UUID,
-    agent: Agent,
+    agent: Optional[Agent],
     user: Optional[User] = None
 ) -> tuple[str, Optional[UUID]]:
     """
@@ -220,7 +220,7 @@ async def resolve_memory_scope(
     Args:
         user_id: User identifier (e.g., "discord:123456789")
         agent_id: Agent UUID
-        agent: Agent model instance
+        agent: Agent model instance (can be None if agent was deleted)
         user: Optional User model instance (for backwards compat check)
 
     Returns:
@@ -267,7 +267,11 @@ async def resolve_memory_scope(
             )
             return ('global', None)
 
-        # Fall back to agent default
+        # Fall back to agent default (if agent still exists)
+        if agent is None:
+            logger.warning(f"⚠️ Agent {agent_id} not found (deleted?), falling back to global scope")
+            return ('global', None)
+
         if agent.memory_scope == "agent":
             logger.info(f"🎯 Agent {agent_id} default: agent-specific memory")
             return ('agent', agent_id)
@@ -616,6 +620,15 @@ If no user-specific facts are found, extract nothing.
         """Manually reset the error guard (admin operation)."""
         self.error_guard.force_reset()
 
+    def __del__(self):
+        """Cleanup ThreadPoolExecutor on service destruction."""
+        if hasattr(self, 'executor') and self.executor:
+            try:
+                self.executor.shutdown(wait=True)
+                logger.info("🧹 MemoryService executor shutdown complete")
+            except Exception as e:
+                logger.warning(f"⚠️ Failed to shutdown executor: {e}")
+
     async def queue_extraction(
         self,
         user_id: str,
@@ -720,18 +733,29 @@ If no user-specific facts are found, extract nothing.
                                 )
 
                             # Count facts created for this task
-                            # Query UserFact table for facts created in this extraction
-                            facts_result = await db.execute(
-                                select(UserFact).where(
-                                    and_(
-                                        UserFact.user_id == (await db.execute(select(User.id).where(User.user_id == task.user_id))).scalar_one_or_none(),
-                                        UserFact.created_at >= task.created_at
+                            # Use a FRESH session to see commits from _extract_facts_from_turn's inner session
+                            async with get_db_session() as count_db:
+                                # Get user ID for the query
+                                user_result = await count_db.execute(
+                                    select(User.id).where(User.user_id == task.user_id)
+                                )
+                                user_uuid = user_result.scalar_one_or_none()
+
+                                if user_uuid:
+                                    facts_result = await count_db.execute(
+                                        select(UserFact).where(
+                                            and_(
+                                                UserFact.user_id == user_uuid,
+                                                UserFact.created_at >= task.created_at
+                                            )
+                                        ).order_by(UserFact.created_at.desc())
                                     )
-                                ).order_by(UserFact.created_at.desc())
-                            )
-                            recent_facts = facts_result.scalars().all()
-                            facts_count = len(recent_facts)
-                            fact_ids = [str(f.id) for f in recent_facts[:5]]  # Limit to 5 most recent
+                                    recent_facts = facts_result.scalars().all()
+                                    facts_count = len(recent_facts)
+                                    fact_ids = [str(f.id) for f in recent_facts[:5]]  # Limit to 5 most recent
+                                else:
+                                    facts_count = 0
+                                    fact_ids = []
 
                             # Mark as completed
                             task.status = "completed"
@@ -1040,7 +1064,7 @@ If no user-specific facts are found, extract nothing.
                 vector_id = memory["id"]
 
                 # Phase 7: Check for duplicates before saving
-                is_dupe = await self._is_duplicate(fact_text, user.id, db)
+                is_dupe = await self._is_duplicate(fact_text, user.id, mem_user_id, db)
                 if is_dupe:
                     # Duplicate detected - delete the vector that was just created
                     logger.info(f"🔍 Skipping duplicate fact (deleting vector {vector_id}): \"{fact_text[:50]}...\"")
@@ -1540,6 +1564,7 @@ Answer with only "yes" or "no".
         self,
         fact_text: str,
         user_id: UUID,
+        mem_user_id: str,
         db
     ) -> bool:
         """
@@ -1552,7 +1577,8 @@ Answer with only "yes" or "no".
 
         Args:
             fact_text: The fact text to check
-            user_id: User UUID (not user_id string)
+            user_id: User UUID (for PostgreSQL queries)
+            mem_user_id: User identifier for Mem0 (e.g., "user123" or "user123:agent456")
             db: Database session
 
         Returns:
@@ -1578,15 +1604,14 @@ Answer with only "yes" or "no".
 
             if self.use_embeddings_for_dedup:
                 # Embedding-based deduplication
-                # Search Mem0 for similar memories
+                # Search Mem0 for similar memories within the same user scope
                 loop = asyncio.get_event_loop()
 
-                # Get the mem_user_id pattern (we need to search across all patterns for this user)
-                # For now, search with the fact_text directly
                 similar_memories = await loop.run_in_executor(
                     self.executor,
-                    lambda: self.memory.search(
+                    lambda uid=mem_user_id: self.memory.search(
                         query=fact_text,
+                        user_id=uid,  # Filter by user to avoid cross-user false positives
                         limit=5  # Check top 5 similar
                     )
                 )
@@ -1655,12 +1680,16 @@ Answer with only "yes" or "no".
 
         return user
 
-    async def _get_agent(self, agent_id: UUID, db) -> Agent:
-        """Get agent by ID."""
+    async def _get_agent(self, agent_id: UUID, db) -> Optional[Agent]:
+        """
+        Get agent by ID.
+
+        Returns None if agent doesn't exist (e.g., deleted between task creation and processing).
+        """
         result = await db.execute(
             select(Agent).where(Agent.id == agent_id)
         )
-        return result.scalar_one()
+        return result.scalar_one_or_none()
 
     def _infer_fact_category(self, fact_text: str) -> str:
         """
@@ -2302,15 +2331,20 @@ Respond ONLY with JSON, no other text:
         pruned_count = 0
         for fact in facts_to_prune:
             try:
-                # Delete vector from Mem0
+                # Delete vector from Mem0 FIRST (compensating transaction pattern)
                 if fact.vector_id:
                     loop = asyncio.get_event_loop()
-                    await loop.run_in_executor(
-                        self.executor,
-                        lambda vid=fact.vector_id: self.memory.delete(vid)
-                    )
+                    try:
+                        await loop.run_in_executor(
+                            self.executor,
+                            lambda vid=fact.vector_id: self.memory.delete(vid)
+                        )
+                    except Exception as vec_err:
+                        # If vector deletion fails, skip this fact to avoid orphaned vectors
+                        logger.warning(f"⚠️ Failed to delete vector {fact.vector_id}, skipping fact deletion: {vec_err}")
+                        continue
 
-                # Delete fact from database
+                # Delete fact from database only if vector deletion succeeded
                 await db.delete(fact)
                 pruned_count += 1
                 logger.debug(f"✂️ Pruned fact: {fact.fact_key} (created: {fact.created_at})")
@@ -2350,15 +2384,20 @@ Respond ONLY with JSON, no other text:
         pruned_count = 0
         for fact in facts_to_prune:
             try:
-                # Delete vector from Mem0
+                # Delete vector from Mem0 FIRST (compensating transaction pattern)
                 if fact.vector_id:
                     loop = asyncio.get_event_loop()
-                    await loop.run_in_executor(
-                        self.executor,
-                        lambda vid=fact.vector_id: self.memory.delete(vid)
-                    )
+                    try:
+                        await loop.run_in_executor(
+                            self.executor,
+                            lambda vid=fact.vector_id: self.memory.delete(vid)
+                        )
+                    except Exception as vec_err:
+                        # If vector deletion fails, skip this fact to avoid orphaned vectors
+                        logger.warning(f"⚠️ Failed to delete vector {fact.vector_id}, skipping fact deletion: {vec_err}")
+                        continue
 
-                # Delete fact from database
+                # Delete fact from database only if vector deletion succeeded
                 await db.delete(fact)
                 pruned_count += 1
                 logger.debug(f"✂️ Pruned fact: {fact.fact_key} (last_accessed: {fact.last_accessed_at})")
@@ -2842,7 +2881,7 @@ Output a single paragraph summary."""
         except Exception as e:
             logger.error(f"❌ Summarization failed: {e}")
             await db.rollback()
-            return False
+            raise  # Re-raise so caller knows summarization failed
 
     async def _call_summarization_llm(self, prompt: str) -> str:
         """

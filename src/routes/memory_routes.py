@@ -49,17 +49,17 @@ class FactCreateRequest(BaseModel):
     """Request model for creating a fact manually."""
     agent_id: UUID = Field(..., description="Agent ID to use for embedding configuration")
     scope: Literal['global', 'agent'] = Field(..., description="'global' = shared across agents (agent_id NULL), 'agent' = agent-specific (agent_id UUID)")
-    fact_key: str = Field(..., description="Fact key (e.g., 'name', 'location')")
-    fact_value: str = Field(..., description="Fact value (e.g., 'Alice', 'San Francisco')")
-    fact_text: Optional[str] = Field(None, description="Natural language representation")
+    fact_key: str = Field(..., min_length=1, max_length=100, description="Fact key (e.g., 'name', 'location')")
+    fact_value: str = Field(..., min_length=1, max_length=10000, description="Fact value (e.g., 'Alice', 'San Francisco')")
+    fact_text: Optional[str] = Field(None, max_length=50000, description="Natural language representation")
     importance: float = Field(0.8, ge=0.0, le=1.0, description="Importance score (0.0-1.0)")
     memory_bank: Literal['Personal', 'Work', 'General', 'Relationships', 'Health', 'Interests', 'Events'] = Field('General', description="Memory bank category")
 
 
 class FactUpdateRequest(BaseModel):
     """Request model for updating a fact."""
-    fact_value: Optional[str] = Field(None, description="Updated fact value")
-    fact_text: Optional[str] = Field(None, description="Updated natural language representation")
+    fact_value: Optional[str] = Field(None, min_length=1, max_length=10000, description="Updated fact value")
+    fact_text: Optional[str] = Field(None, max_length=50000, description="Updated natural language representation")
     importance: Optional[float] = Field(None, ge=0.0, le=1.0, description="Updated importance score")
     memory_bank: Optional[Literal['Personal', 'Work', 'General', 'Relationships', 'Health', 'Interests', 'Events']] = Field(None, description="Updated memory bank")
     validity_end: Optional[datetime] = Field(None, description="Mark fact as invalid after this time")
@@ -135,7 +135,9 @@ async def list_user_facts(
     scope: Optional[str] = Query(None, description="Filter by scope: 'global' (agent_id=NULL), 'agent' (agent_id!=NULL), or 'all'"),
     agent_id: Optional[UUID] = Query(None, description="Filter by specific agent ID (overrides scope parameter)"),
     memory_bank: Optional[str] = Query(None, description="Filter by memory bank: 'Personal', 'Work', 'General', or None for all"),
-    include_invalid: bool = Query(False, description="Include facts with validity_end in the past")
+    include_invalid: bool = Query(False, description="Include facts with validity_end in the past"),
+    skip: int = Query(0, ge=0, description="Number of records to skip (pagination offset)"),
+    limit: Optional[int] = Query(None, ge=1, le=1000, description="Maximum number of records to return (default: all)")
 ):
     """
     List all facts for a user with optional filtering by scope, agent, or memory bank.
@@ -149,6 +151,8 @@ async def list_user_facts(
         agent_id: Filter by specific agent UUID (overrides scope parameter)
         memory_bank: Filter by memory bank category (Personal, Work, General)
         include_invalid: Include facts marked as invalid (validity_end in past)
+        skip: Pagination offset (default: 0)
+        limit: Maximum records to return (default: all, max: 1000)
 
     Returns:
         List of user facts sorted by creation date (newest first)
@@ -159,6 +163,7 @@ async def list_user_facts(
         - GET /users/discord:123/facts?scope=agent - Only agent-specific facts
         - GET /users/discord:123/facts?agent_id=uuid - Facts for specific agent only
         - GET /users/discord:123/facts?memory_bank=Personal - Only personal facts
+        - GET /users/discord:123/facts?skip=0&limit=50 - First 50 facts (paginated)
     """
     try:
         async with get_db_session() as db:
@@ -197,6 +202,12 @@ async def list_user_facts(
 
             # Sort by created_at descending
             query = query.order_by(UserFact.created_at.desc())
+
+            # Apply pagination
+            if skip > 0:
+                query = query.offset(skip)
+            if limit is not None:
+                query = query.limit(limit)
 
             result = await db.execute(query)
             facts = result.scalars().all()
@@ -776,7 +787,13 @@ async def export_user_data(user_id: str):
                         validity_end=fact.validity_end,
                         created_at=fact.created_at,
                         updated_at=fact.updated_at,
-                        is_valid=is_valid
+                        is_valid=is_valid,
+                        # Phase 2: Pruning fields
+                        last_accessed_at=fact.last_accessed_at,
+                        is_protected=fact.is_protected,
+                        # Phase 3: Summarization fields
+                        is_summarized=fact.is_summarized,
+                        summarized_from=[str(fid) for fid in fact.summarized_from] if fact.summarized_from else None
                     )
                 )
 
@@ -804,10 +821,8 @@ async def delete_user_data(user_id: str):
 
     WARNING: This is a destructive operation that cannot be undone.
     Deletes:
-    - User record
-    - All user facts (cascades)
-    - Extraction queue tasks (cascades)
-    - Vector embeddings (TODO: implement Mem0 cleanup)
+    - Vector embeddings from Mem0
+    - User record (cascades to facts and extraction tasks)
 
     Args:
         user_id: User identifier
@@ -826,11 +841,40 @@ async def delete_user_data(user_id: str):
             if not user:
                 raise HTTPException(status_code=404, detail=f"User {user_id} not found")
 
+            # Get all vector_ids BEFORE deleting the user (for Mem0 cleanup)
+            vector_result = await db.execute(
+                select(UserFact.vector_id).where(
+                    and_(
+                        UserFact.user_id == user.id,
+                        UserFact.vector_id.isnot(None)
+                    )
+                )
+            )
+            vector_ids = [row[0] for row in vector_result.fetchall()]
+
             # Count facts with separate async query
             facts_result = await db.execute(
                 select(func.count(UserFact.id)).where(UserFact.user_id == user.id)
             )
             facts_count = facts_result.scalar() or 0
+
+            # Delete Mem0 vector embeddings BEFORE deleting user
+            vectors_deleted = 0
+            vectors_failed = 0
+            if vector_ids and server.memory_service:
+                loop = asyncio.get_event_loop()
+                for vector_id in vector_ids:
+                    try:
+                        await loop.run_in_executor(
+                            server.memory_service.executor,
+                            lambda vid=vector_id: server.memory_service.memory.delete(memory_id=vid)
+                        )
+                        vectors_deleted += 1
+                    except Exception as e:
+                        logger.warning(f"⚠️ Failed to delete vector {vector_id}: {e}")
+                        vectors_failed += 1
+
+                logger.info(f"🗑️ Deleted {vectors_deleted}/{len(vector_ids)} Mem0 vectors for user {user_id}")
 
             # Delete user (cascades to facts and extraction tasks)
             await db.delete(user)
@@ -838,14 +882,12 @@ async def delete_user_data(user_id: str):
 
             logger.info(f"🗑️ Deleted user {user_id} and {facts_count} facts (GDPR erasure)")
 
-            # TODO: Delete Mem0 vector embeddings
-            # This requires calling Mem0's delete API with vector_ids
-
             return {
                 "status": "deleted",
                 "user_id": user_id,
                 "facts_deleted": facts_count,
-                "note": "Vector embeddings cleanup pending (TODO: implement Mem0 cleanup)"
+                "vectors_deleted": vectors_deleted,
+                "vectors_failed": vectors_failed
             }
 
     except HTTPException:
