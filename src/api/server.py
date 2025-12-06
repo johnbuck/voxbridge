@@ -750,17 +750,24 @@ async def health_check():
     """
     Generic health check endpoint.
 
-    Returns basic server health status. For Discord-specific status,
-    use /api/plugins/discord/voice/status/{agent_id} endpoint.
+    Returns basic server health status including database connectivity.
+    For Discord-specific status, use /api/plugins/discord/voice/status/{agent_id} endpoint.
     """
+    from src.database.session import check_db_connection
+
+    # Check database connectivity
+    db_healthy = await check_db_connection()
+
     if not _bot_bridge:
         return {
             "status": "starting",
+            "database": "ok" if db_healthy else "error",
             "timestamp": datetime.now().isoformat()
         }
 
     return {
-        "status": "ok",
+        "status": "ok" if db_healthy else "degraded",
+        "database": "ok" if db_healthy else "error",
         "timestamp": datetime.now().isoformat()
     }
 
