@@ -1,7 +1,11 @@
+> **📁 ARCHIVED - IMPLEMENTED**: This fix was implemented in commit `d8ac48e` (Nov 26, 2025).
+> Singleton service pattern now ensures ConversationService is shared across all handlers.
+> For current architecture, see [memory-system-enhancements.md](../memory-system-enhancements.md).
+
 # Singleton Service Pattern Fix - Multi-Turn Conversation Restoration
 
 **Date**: 2025-11-26
-**Status**: PLANNED (Not yet implemented)
+**Status**: ✅ IMPLEMENTED (commit d8ac48e)
 **Priority**: CRITICAL
 **Branch**: `feature/memory-system`
 **Issue**: Multi-turn conversations broken after factory pattern implementation

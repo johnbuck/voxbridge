@@ -1,6 +1,13 @@
 # VoxBridge Memory System - Implementation Plan
 
-**Status**: FINAL / APPROVED
+> ⚠️ **ARCHIVED**: Historical architecture reference document
+>
+> **Archived**: 2025-12-05
+> **Reason**: Implementation complete, see `docs/planning/memory-system-enhancements.md` for current status
+
+---
+
+**Status**: FINAL / APPROVED → **✅ IMPLEMENTED**
 **Last Updated**: 2025-11-21
 **Vector Database**: pgvectorscale (PostgreSQL extension)
 **Framework**: Mem0 (Apache 2.0, self-hosted)

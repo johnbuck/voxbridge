@@ -1,8 +1,12 @@
+> **📁 ARCHIVED**: This document describes a future enhancement (Phase 9) that has not yet been implemented.
+> For current memory system status, see [memory-system-enhancements.md](../memory-system-enhancements.md).
+> **Last Updated**: November 25, 2025
+
 # Per-Agent Memory Preferences Implementation Plan
 
 **Date**: November 25, 2025
 **Branch**: `feature/memory-system`
-**Status**: Planning → Implementation
+**Status**: Planning (Future Phase 9)
 **Priority**: High (Core UX improvement)
 
 ---
