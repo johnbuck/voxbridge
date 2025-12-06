@@ -7,7 +7,7 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { api, type Message } from '@/services/api';
-import { useWebSocket } from '@/hooks/useWebSocket';
+import { useWebSocket, type WebSocketMessage } from '@/hooks/useWebSocket';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { MetricsPanel } from '@/components/MetricsPanel';
 import { StatusSummary } from '@/components/StatusSummary';
@@ -320,6 +320,11 @@ export function VoxbridgePage() {
     pendingAIResponse?.text,
     messageSequence,
   ]);
+
+  // ✅ PERFORMANCE FIX: Memoize reversed messages to avoid .slice().reverse() on every render
+  const reversedDisplayMessages = useMemo(() => {
+    return [...displayMessages].reverse();
+  }, [displayMessages]);
 
   // Monitor React Query cache updates via dataUpdatedAt
   useEffect(() => {
@@ -783,7 +788,7 @@ export function VoxbridgePage() {
   // So this timeout was redundant and harmful.
 
   // Handle WebSocket messages (Discord conversation monitoring - for metrics updates)
-  const handleMessage = useCallback((message: any) => {
+  const handleMessage = useCallback((message: WebSocketMessage) => {
     // Log all WebSocket events for debugging (debug only)
     logger.debug('📡', 'WS EVENT', message.event, {
       event: message.event,
@@ -1238,11 +1243,12 @@ export function VoxbridgePage() {
         toast.success('Joined voice channel');
       }
       setShowChannelSelector(false);
-    } catch (error: any) {
+    } catch (error: unknown) {
       logger.error('[VoxbridgePage] Failed to join voice:', error);
 
       // If already connected, try to force leave first then retry
-      if (error?.message?.includes('Already connected')) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      if (errorMessage.includes('Already connected')) {
         try {
           logger.debug('Already connected detected, forcing leave and retry...');
           await api.leaveChannel(activeAgent.id, guildId);
@@ -1603,6 +1609,7 @@ export function VoxbridgePage() {
                       size="icon"
                       onClick={() => setSidebarOpen(false)}
                       title="Close sidebar"
+                      aria-label="Close sidebar"
                     >
                       <X className="h-5 w-5" />
                     </Button>
@@ -1638,6 +1645,8 @@ export function VoxbridgePage() {
                     className="shrink-0"
                     onClick={() => setSidebarOpen(!sidebarOpen)}
                     title={sidebarOpen ? 'Hide sidebar' : 'Show sidebar'}
+                    aria-label={sidebarOpen ? 'Hide sidebar' : 'Show sidebar'}
+                    aria-expanded={sidebarOpen}
                   >
                     <Menu className="h-5 w-5" />
                   </Button>
@@ -1690,6 +1699,8 @@ export function VoxbridgePage() {
                         size="icon"
                         onClick={() => setIsSpeakerMuted(!isSpeakerMuted)}
                         title={isSpeakerMuted ? 'Unmute speaker' : 'Mute speaker'}
+                        aria-label={isSpeakerMuted ? 'Unmute speaker' : 'Mute speaker'}
+                        aria-pressed={isSpeakerMuted}
                       >
                         {isSpeakerMuted ? (
                           <VolumeX className="h-5 w-5 text-muted-foreground" />
@@ -1865,7 +1876,7 @@ export function VoxbridgePage() {
                         </div>
                       ) : (
                         <>
-                          {displayMessages.slice().reverse().map((message) => {
+                          {reversedDisplayMessages.map((message) => {
                             // Generate stable React key (no 'pending' → ID transition)
                             // ✅ REORDERING FIX: Keys remain constant across optimistic → database transitions
                             // This prevents React from remounting DOM elements and causing visual jumps
