@@ -387,6 +387,9 @@ class MemoryService:
         from concurrent.futures import ThreadPoolExecutor
         self.executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="mem0_extraction")
 
+        # Per-user locks to prevent concurrent extraction race conditions (Issue 5 fix)
+        self._user_extraction_locks: dict[str, asyncio.Lock] = {}
+
         # Initialize Mem0 response normalizer for API compatibility
         self.mem0_normalizer = Mem0ResponseNormalizer()
 
@@ -619,6 +622,18 @@ If no user-specific facts are found, extract nothing.
     def reset_error_guard(self):
         """Manually reset the error guard (admin operation)."""
         self.error_guard.force_reset()
+
+    def _get_user_lock(self, user_id: str) -> asyncio.Lock:
+        """
+        Get or create an asyncio.Lock for the given user.
+
+        This prevents concurrent extraction race conditions where two
+        extractions for the same user could both create duplicate vectors
+        before either checks for duplicates.
+        """
+        if user_id not in self._user_extraction_locks:
+            self._user_extraction_locks[user_id] = asyncio.Lock()
+        return self._user_extraction_locks[user_id]
 
     def __del__(self):
         """Cleanup ThreadPoolExecutor on service destruction."""
@@ -1020,99 +1035,103 @@ If no user-specific facts are found, extract nothing.
         # Track full extraction metric
         self.metrics["extraction_full"] += 1
 
-        async with get_db_session() as db:
-            # Get or create user
-            user = await self._get_or_create_user(user_id, db)
+        # Acquire per-user lock to prevent concurrent extraction race conditions
+        # This ensures deduplication checks see all prior extractions
+        user_lock = self._get_user_lock(user_id)
+        async with user_lock:
+            async with get_db_session() as db:
+                # Get or create user
+                user = await self._get_or_create_user(user_id, db)
 
-            # Get agent
-            agent = await self._get_agent(agent_id, db)
+                # Get agent
+                agent = await self._get_agent(agent_id, db)
 
-            # TWO-TIER HIERARCHY: Determine memory scope using resolve_memory_scope()
-            scope, fact_agent_id = await resolve_memory_scope(user_id, agent_id, agent, user)
-            mem_user_id = f"{user_id}:{agent_id}" if scope == 'agent' else user_id
+                # TWO-TIER HIERARCHY: Determine memory scope using resolve_memory_scope()
+                scope, fact_agent_id = await resolve_memory_scope(user_id, agent_id, agent, user)
+                mem_user_id = f"{user_id}:{agent_id}" if scope == 'agent' else user_id
 
-            logger.info(f"📝 Final memory scope: scope={scope}, mem_user_id={mem_user_id}, fact_agent_id={fact_agent_id}")
+                logger.info(f"📝 Final memory scope: scope={scope}, mem_user_id={mem_user_id}, fact_agent_id={fact_agent_id}")
 
-            # Call Mem0 to extract facts (wrapped in executor to prevent event loop blocking)
-            loop = asyncio.get_event_loop()
-            result = await loop.run_in_executor(
-                self.executor,
-                lambda: self.memory.add(
-                    messages=[
-                        {"role": "user", "content": user_message},
-                        {"role": "assistant", "content": ai_response}
-                    ],
-                    user_id=mem_user_id
+                # Call Mem0 to extract facts (wrapped in executor to prevent event loop blocking)
+                loop = asyncio.get_event_loop()
+                result = await loop.run_in_executor(
+                    self.executor,
+                    lambda: self.memory.add(
+                        messages=[
+                            {"role": "user", "content": user_message},
+                            {"role": "assistant", "content": ai_response}
+                        ],
+                        user_id=mem_user_id
+                    )
                 )
-            )
 
-            # Store extracted facts in PostgreSQL for relational queries
-            # Normalize Mem0 response using compatibility layer
-            normalized = self.mem0_normalizer.normalize_add_response(result)
+                # Store extracted facts in PostgreSQL for relational queries
+                # Normalize Mem0 response using compatibility layer
+                normalized = self.mem0_normalizer.normalize_add_response(result)
 
-            # Enforce memory limit before adding new facts (pruning if needed)
-            if normalized:
-                pruned = await self._enforce_memory_limit(user, db)
-                if pruned > 0:
-                    logger.info(f"✂️ Pre-extraction pruning: {pruned} facts removed to make room")
+                # Enforce memory limit before adding new facts (pruning if needed)
+                if normalized:
+                    pruned = await self._enforce_memory_limit(user, db)
+                    if pruned > 0:
+                        logger.info(f"✂️ Pre-extraction pruning: {pruned} facts removed to make room")
 
-            saved_count = 0
-            skipped_duplicates = 0
+                saved_count = 0
+                skipped_duplicates = 0
 
-            for memory in normalized:
-                fact_text = memory["text"]
-                vector_id = memory["id"]
+                for memory in normalized:
+                    fact_text = memory["text"]
+                    vector_id = memory["id"]
 
-                # Phase 7: Check for duplicates before saving
-                is_dupe = await self._is_duplicate(fact_text, user.id, mem_user_id, db)
-                if is_dupe:
-                    # Duplicate detected - delete the vector that was just created
-                    logger.info(f"🔍 Skipping duplicate fact (deleting vector {vector_id}): \"{fact_text[:50]}...\"")
-                    try:
-                        loop = asyncio.get_event_loop()
-                        await loop.run_in_executor(
-                            self.executor,
-                            lambda vid=vector_id: self.memory.delete(vid)
-                        )
-                    except Exception as del_err:
-                        logger.warning(f"⚠️ Failed to delete duplicate vector {vector_id}: {del_err}")
-                    skipped_duplicates += 1
-                    continue
+                    # Phase 7: Check for duplicates before saving
+                    is_dupe = await self._is_duplicate(fact_text, user.id, mem_user_id, db)
+                    if is_dupe:
+                        # Duplicate detected - delete the vector that was just created
+                        logger.info(f"🔍 Skipping duplicate fact (deleting vector {vector_id}): \"{fact_text[:50]}...\"")
+                        try:
+                            loop = asyncio.get_event_loop()
+                            await loop.run_in_executor(
+                                self.executor,
+                                lambda vid=vector_id: self.memory.delete(vid)
+                            )
+                        except Exception as del_err:
+                            logger.warning(f"⚠️ Failed to delete duplicate vector {vector_id}: {del_err}")
+                        skipped_duplicates += 1
+                        continue
 
-                # Infer fact_key for categorization (used by importance and bank inference)
-                fact_key = self._infer_fact_category(fact_text)
+                    # Infer fact_key for categorization (used by importance and bank inference)
+                    fact_key = self._infer_fact_category(fact_text)
 
-                # Infer importance based on fact content
-                # - Uses pattern matching to assign 1.0 (critical), 0.8 (important), 0.6 (medium), 0.7 (default)
-                raw_score = memory.get("score", 0.0)
-                importance = raw_score if raw_score > 0.0 else self._infer_importance(fact_text, fact_key)
+                    # Infer importance based on fact content
+                    # - Uses pattern matching to assign 1.0 (critical), 0.8 (important), 0.6 (medium), 0.7 (default)
+                    raw_score = memory.get("score", 0.0)
+                    importance = raw_score if raw_score > 0.0 else self._infer_importance(fact_text, fact_key)
 
-                # Infer memory bank based on fact content
-                memory_bank = self._infer_memory_bank(fact_text, fact_key)
+                    # Infer memory bank based on fact content
+                    memory_bank = self._infer_memory_bank(fact_text, fact_key)
 
-                # Infer validity period for temporal facts (Phase 8)
-                validity_end = None
-                if self.enable_temporal_detection:
-                    validity_end = await self._infer_validity_period(fact_text, memory_bank)
+                    # Infer validity period for temporal facts (Phase 8)
+                    validity_end = None
+                    if self.enable_temporal_detection:
+                        validity_end = await self._infer_validity_period(fact_text, memory_bank)
 
-                await self._upsert_fact(
-                    user=user,
-                    agent_id=fact_agent_id,
-                    vector_id=vector_id,
-                    fact_text=fact_text,
-                    importance=importance,
-                    embedding_provider=self.embedding_config["provider"],
-                    embedding_model=self.embedding_config["model"],
-                    db=db,
-                    memory_bank=memory_bank,
-                    validity_end=validity_end
-                )
-                saved_count += 1
+                    await self._upsert_fact(
+                        user=user,
+                        agent_id=fact_agent_id,
+                        vector_id=vector_id,
+                        fact_text=fact_text,
+                        importance=importance,
+                        embedding_provider=self.embedding_config["provider"],
+                        embedding_model=self.embedding_config["model"],
+                        db=db,
+                        memory_bank=memory_bank,
+                        validity_end=validity_end
+                    )
+                    saved_count += 1
 
-            if skipped_duplicates > 0:
-                logger.info(f"🔍 Deduplication: skipped {skipped_duplicates} duplicates, saved {saved_count} facts")
-            else:
-                logger.info(f"📝 Extracted {saved_count} facts for user {user_id}")
+                if skipped_duplicates > 0:
+                    logger.info(f"🔍 Deduplication: skipped {skipped_duplicates} duplicates, saved {saved_count} facts")
+                else:
+                    logger.info(f"📝 Extracted {saved_count} facts for user {user_id}")
 
     async def get_user_memory_context(
         self,
