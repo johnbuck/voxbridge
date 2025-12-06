@@ -309,6 +309,9 @@ class User(Base):
     memory_extraction_enabled = Column(Boolean, server_default=text('false'))  # Opt-in (GDPR)
     allow_agent_specific_memory = Column(Boolean, server_default=text('true'))  # When False: forces all facts to global
 
+    # User Preferences
+    timezone = Column(String(50), server_default='America/Los_Angeles', nullable=False)  # IANA timezone
+
     # Authentication Tokens (legacy WebRTC, kept for backward compatibility)
     auth_token = Column(String(255), unique=True, nullable=True, index=True)  # Legacy JWT or random token
     token_created_at = Column(DateTime(timezone=True), nullable=True)
