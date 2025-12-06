@@ -6,12 +6,13 @@
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { SettingsSidebar } from '@/components/SettingsSidebar';
 import { Link, useLocation } from 'wouter';
-import { Settings, Mic, Volume2, Plug, Brain, Database } from 'lucide-react';
+import { Settings, Mic, Volume2, Plug, Brain, Database, User } from 'lucide-react';
 import { WhisperXSettingsPage } from './settings/WhisperXSettingsPage';
 import { ChatterboxSettingsPage } from './settings/ChatterboxSettingsPage';
 import { PluginsSettingsPage } from './settings/PluginsSettingsPage';
 import { EmbeddingsSettingsPage } from './settings/EmbeddingsSettingsPage';
 import { MemorySettingsPage } from './settings/MemorySettingsPage';
+import { AccountSettingsPage } from './settings/AccountSettingsPage';
 import { LLMProvidersPage } from './LLMProvidersPage';
 
 /**
@@ -33,6 +34,22 @@ function OverviewCards() {
 
       {/* Overview Cards */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <Link href="/settings/account">
+          <Card className="hover:border-primary/50 cursor-pointer transition-colors">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <User className="h-5 w-5" />
+                Account
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <p className="text-sm text-muted-foreground">
+                Change password and manage account settings
+              </p>
+            </CardContent>
+          </Card>
+        </Link>
+
         <Link href="/settings/llm-providers">
           <Card className="hover:border-primary/50 cursor-pointer transition-colors">
             <CardHeader>
@@ -140,6 +157,8 @@ export function SettingsPage() {
   let content;
   if (location === '/settings') {
     content = <OverviewCards />;
+  } else if (location === '/settings/account') {
+    content = <AccountSettingsPage />;
   } else if (location === '/settings/llm-providers') {
     content = <LLMProvidersPage />;
   } else if (location === '/settings/memory') {
@@ -155,7 +174,7 @@ export function SettingsPage() {
   }
 
   return (
-    <div className="container mx-auto px-4 py-6 md:py-8">
+    <div className="max-w-7xl mx-auto px-6 py-6 md:py-8">
       <div className="flex gap-6">
         {/* Sidebar Navigation - Hidden on mobile, visible on desktop */}
         <aside className="hidden md:block w-64 flex-shrink-0">

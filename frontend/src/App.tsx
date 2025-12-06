@@ -77,9 +77,19 @@ function App() {
                       <AdminPage />
                     </ProtectedRoute>
                   </Route>
+                  <Route path="/admin/users">
+                    <ProtectedRoute requireAdmin>
+                      <AdminPage />
+                    </ProtectedRoute>
+                  </Route>
 
                   {/* Settings Routes - Require Authentication */}
                   <Route path="/settings">
+                    <ProtectedRoute>
+                      <SettingsPage />
+                    </ProtectedRoute>
+                  </Route>
+                  <Route path="/settings/account">
                     <ProtectedRoute>
                       <SettingsPage />
                     </ProtectedRoute>

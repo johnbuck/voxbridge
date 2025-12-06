@@ -379,3 +379,72 @@ async def logout(
     """
     logger.info(f"👋 User logged out: {user.username}")
     return MessageResponse(message="Successfully logged out")
+
+
+class ChangePasswordRequest(BaseModel):
+    """Request body for changing password."""
+
+    current_password: str = Field(..., description="Current password")
+    new_password: str = Field(
+        ...,
+        min_length=8,
+        max_length=128,
+        description="New password (minimum 8 characters)"
+    )
+
+
+@router.post("/change-password", response_model=MessageResponse)
+async def change_password(
+    request: ChangePasswordRequest,
+    user: Annotated[User, Depends(get_current_user)],
+):
+    """
+    Change current user's password.
+
+    Requires verification of current password before allowing change.
+
+    Args:
+        request: Current and new password
+        user: Current user (from JWT)
+
+    Returns:
+        Success message
+
+    Raises:
+        400: Current password is incorrect
+        400: User has no password set (OAuth-only user)
+    """
+    auth_service = get_auth_service()
+
+    # Check if user has a password (not OAuth-only)
+    if not user.password_hash:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot change password for accounts without password authentication"
+        )
+
+    # Verify current password
+    if not auth_service.verify_password(request.current_password, user.password_hash):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Current password is incorrect"
+        )
+
+    # Hash new password and update
+    async with get_db_session() as db:
+        result = await db.execute(
+            select(User).where(User.id == user.id)
+        )
+        db_user = result.scalar_one_or_none()
+
+        if not db_user:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="User not found"
+            )
+
+        db_user.password_hash = auth_service.hash_password(request.new_password)
+        await db.commit()
+
+    logger.info(f"🔑 Password changed for user: {user.username}")
+    return MessageResponse(message="Password changed successfully")
