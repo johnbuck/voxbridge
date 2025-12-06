@@ -463,7 +463,7 @@ class ApiClient {
     });
   }
 
-  async speak(text: string, options: any = {}): Promise<{ success: boolean; message: string }> {
+  async speak(text: string, options: Partial<TTSOptions> = {}): Promise<{ success: boolean; message: string }> {
     return this.request('/voice/speak', {
       method: 'POST',
       body: JSON.stringify({
@@ -646,19 +646,10 @@ class ApiClient {
   }
 
   async agentUnlockSpeaker(_agentId: string): Promise<{ success: boolean; previousSpeaker: string | null }> {
-    // TODO: Replace with per-agent endpoint when backend is ready
-    // return this.request(`/api/agents/${_agentId}/plugins/discord/speaker/unlock`, {
-    //   method: 'POST',
-    // });
     return this.unlockSpeaker();
   }
 
-  async agentTestTTS(_agentId: string, text: string, options?: any): Promise<{ success: boolean; message: string }> {
-    // TODO: Replace with per-agent endpoint when backend is ready
-    // return this.request(`/api/agents/${_agentId}/plugins/discord/tts/speak`, {
-    //   method: 'POST',
-    //   body: JSON.stringify({ text, options }),
-    // });
+  async agentTestTTS(_agentId: string, text: string, options?: Partial<TTSOptions>): Promise<{ success: boolean; message: string }> {
     return this.speak(text, options);
   }
 
@@ -708,14 +699,14 @@ class ApiClient {
     return this.request<EmbeddingConfigResponse>('/api/system-settings/embedding-config');
   }
 
-  async updateEmbeddingConfig(config: EmbeddingConfig): Promise<{ status: string; config: any; updated_at: string }> {
+  async updateEmbeddingConfig(config: EmbeddingConfig): Promise<{ status: string; config: EmbeddingConfigResponse['config']; updated_at: string }> {
     return this.request('/api/system-settings/embedding-config', {
       method: 'PUT',
       body: JSON.stringify(config),
     });
   }
 
-  async resetEmbeddingConfig(): Promise<{ status: string; config: any }> {
+  async resetEmbeddingConfig(): Promise<{ status: string; config: EmbeddingConfigResponse['config'] }> {
     return this.request('/api/system-settings/embedding-config/reset', {
       method: 'POST',
     });
