@@ -133,8 +133,10 @@ class LLMService:
         self.fallback_enabled = fallback_enabled or os.getenv(
             "LLM_FALLBACK_ENABLED", "true"
         ).lower() in ("true", "1", "yes")
-        self.timeout_s = timeout_s
-        self.max_retries = max_retries
+        # Timeout and retry configuration from env vars if not explicitly set
+        self.timeout_s = timeout_s if timeout_s != 60.0 else float(os.getenv("LLM_TIMEOUT_S", "60.0"))
+        self.max_retries = max_retries if max_retries != 2 else int(os.getenv("LLM_MAX_RETRIES", "2"))
+        self.service_timeout_s = float(os.getenv("LLM_SERVICE_TIMEOUT_S", "90.0"))
         self.error_callback = error_callback
 
         # Provider cache (shared instances for connection pooling)
@@ -544,9 +546,8 @@ class LLMService:
             str: Complete response text
 
         Raises:
-            LLMTimeoutError: Service layer timeout (90s)
+            LLMTimeoutError: Service layer timeout (default 90s, configurable via LLM_SERVICE_TIMEOUT_S)
         """
-        SERVICE_TIMEOUT = 90.0  # Service layer timeout (higher than provider's 60s)
 
         # Batch 2.4: Timeout warner task for progressive warnings
         async def timeout_warner():
@@ -562,7 +563,7 @@ class LLMService:
         warner_task = asyncio.create_task(timeout_warner())
 
         try:
-            async with asyncio.timeout(SERVICE_TIMEOUT):
+            async with asyncio.timeout(self.service_timeout_s):
                 if not stream:
                     # Non-streaming mode: Collect all chunks
                     chunks = []
@@ -591,8 +592,8 @@ class LLMService:
                 return "".join(chunks)
 
         except asyncio.TimeoutError:
-            logger.error(f"🤖 LLM Service: ⏱️ Service layer timeout after {SERVICE_TIMEOUT}s")
-            raise LLMTimeoutError(f"LLM service timeout: No response in {SERVICE_TIMEOUT}s")
+            logger.error(f"🤖 LLM Service: ⏱️ Service layer timeout after {self.service_timeout_s}s")
+            raise LLMTimeoutError(f"LLM service timeout: No response in {self.service_timeout_s}s")
         finally:
             # Batch 2.4: Cancel warner task when generation completes
             warner_task.cancel()
