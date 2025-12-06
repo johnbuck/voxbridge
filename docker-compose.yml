@@ -2,7 +2,7 @@ services:
   # PostgreSQL - Database for agents, sessions, conversations
   # Using pgvector/pgvector image for pgvector extension support (memory system)
   postgres:
-    image: pgvector/pgvector:pg15
+    image: pgvector/pgvector:pg15-v0.8.0
     container_name: voxbridge-postgres
     ports:
       - "5432:5432"
@@ -13,6 +13,12 @@ services:
     volumes:
       - postgres-data:/var/lib/postgresql/data
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+        reservations:
+          memory: 256M
     networks:
       - bot-network
     healthcheck:
@@ -123,7 +129,7 @@ services:
 
       # LLM Provider Configuration (VoxBridge 2.0 Phase 3)
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
-      - LOCAL_LLM_BASE_URL=${LOCAL_LLM_BASE_URL}
+      - LOCAL_LLM_BASE_URL=${LOCAL_LLM_BASE_URL:-http://ollama:11434/v1}
       - LOCAL_LLM_RELEVANCE_MODEL=${LOCAL_LLM_RELEVANCE_MODEL:-gemma3n:latest}
 
       # Plugin System Security (VoxBridge 2.0 Phase 6)
@@ -141,7 +147,6 @@ services:
       - SUMMARIZATION_SIMILARITY_THRESHOLD=${SUMMARIZATION_SIMILARITY_THRESHOLD:-0.6}
       - SUMMARIZATION_LLM_PROVIDER=${SUMMARIZATION_LLM_PROVIDER:-local}
       - SUMMARIZATION_LLM_MODEL=${SUMMARIZATION_LLM_MODEL:-gpt-oss:20b}
-      - LOCAL_LLM_BASE_URL=${LOCAL_LLM_BASE_URL:-http://ollama:11434/v1}
 
       # Temporal Detection (Memory System Phase 8)
       - ENABLE_TEMPORAL_DETECTION=${ENABLE_TEMPORAL_DETECTION:-true}
@@ -153,6 +158,12 @@ services:
       whisperx:
         condition: service_started
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+        reservations:
+          memory: 512M
     networks:
       - bot-network
       - pinkleberry_bridge
@@ -171,6 +182,12 @@ services:
     depends_on:
       - voxbridge-api
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+        reservations:
+          memory: 32M
     networks:
       - bot-network
     healthcheck:
