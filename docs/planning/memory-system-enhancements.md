@@ -1,6 +1,6 @@
 # Memory System Enhancements Plan
 
-**Status**: ✅ Complete (All 7 Phases)
+**Status**: ✅ Complete (All 8 Phases + Bug Fixes)
 **Branch**: `feature/memory-system`
 **Inspired by**: OpenWebUI Adaptive Memory v3.0
 **Created**: 2025-12-04
@@ -19,6 +19,23 @@
 | 5 | LLM Optimization | ✅ Complete | Preference shortcuts, regex patterns, `_extract_preference_shortcut()` |
 | 6 | Error Guards | ✅ Complete | `ErrorGuard` circuit breaker, auto-reset after cooldown |
 | 7 | Deduplication | ✅ Complete | Embedding + text similarity, `_is_duplicate()`, configurable thresholds |
+| 8 | Temporal Detection | ✅ Complete | `_infer_validity_period()`, date parsing, validity_end auto-assignment |
+
+### Bug Fixes (Dec 5, 2025)
+
+| Issue | Description | Status |
+|-------|-------------|--------|
+| Critical | Cross-user duplicate detection | ✅ Fixed - Added user_id filtering |
+| Critical | GDPR export missing fields | ✅ Fixed - Added 4 missing fields |
+| Critical | User deletion orphaned vectors | ✅ Fixed - Mem0 cleanup before cascade |
+| Critical | Session handling in queue worker | ✅ Fixed - Fresh session for counting |
+| High | Extraction race condition | ✅ Fixed - Per-user asyncio.Lock |
+| High | Agent deletion crash | ✅ Fixed - scalar_one_or_none() |
+| High | Pruning orphaned vectors | ✅ Fixed - Compensating transactions |
+| Medium | Edit modal stale state | ✅ Fixed - Optimistic locking |
+| Medium | Pending facts UI gap | ✅ Fixed - Await query invalidation |
+| Medium | Delete button loading | ✅ Fixed - isDeletePending prop |
+| Low | Mobile API URLs | ✅ Fixed - Dynamic URL detection |
 
 ---
 
@@ -556,9 +573,10 @@ class MemoryConfig(BaseModel):
 | 2 | Pruning | High | Medium | None | ✅ Complete |
 | 3 | Summarization | Medium | High | Phase 1 (banks), Phase 2 (pruning) | ✅ Complete |
 | 4 | Enhanced Extraction | High | Low | Phase 1 (banks in prompt) | ✅ Complete |
-| 5 | LLM Optimization | Medium | Medium | None | 🔜 Pending |
-| 6 | Error Guards | Low | Low | None | 🔜 Pending |
-| 7 | Deduplication | Medium | Low | None | 🔜 Pending |
+| 5 | LLM Optimization | Medium | Medium | None | ✅ Complete |
+| 6 | Error Guards | Low | Low | None | ✅ Complete |
+| 7 | Deduplication | Medium | Low | None | ✅ Complete |
+| 8 | Temporal Detection | Medium | Medium | Phase 4 (extraction) | ✅ Complete |
 
 ---
 
