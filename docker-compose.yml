@@ -27,6 +27,41 @@ services:
       timeout: 5s
       retries: 5
 
+  # Neo4j - Graph database for Graphiti knowledge graphs (RAG Phase 3.1)
+  neo4j:
+    image: neo4j:5.26-community
+    container_name: voxbridge-neo4j
+    ports:
+      - "7474:7474"  # HTTP (Browser UI)
+      - "7687:7687"  # Bolt protocol
+    environment:
+      - NEO4J_AUTH=${NEO4J_USER:-neo4j}/${NEO4J_PASSWORD:-voxbridge_graph}
+      - NEO4J_PLUGINS=["apoc"]
+      - NEO4J_apoc_export_file_enabled=true
+      - NEO4J_apoc_import_file_enabled=true
+      - NEO4J_apoc_import_file_use__neo4j__config=true
+      - NEO4J_dbms_security_procedures_unrestricted=apoc.*
+      - NEO4J_server_memory_heap_initial__size=512m
+      - NEO4J_server_memory_heap_max__size=1G
+    volumes:
+      - neo4j-data:/data
+      - neo4j-logs:/logs
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+        reservations:
+          memory: 512M
+    networks:
+      - bot-network
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:7474 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
   # WhisperX STT Server - Handles speech-to-text with GPU
   whisperx:
     build:
@@ -152,8 +187,20 @@ services:
       - ENABLE_TEMPORAL_DETECTION=${ENABLE_TEMPORAL_DETECTION:-true}
       - TEMPORAL_LLM_FALLBACK=${TEMPORAL_LLM_FALLBACK:-true}
       - TEMPORAL_DEFAULT_DAYS=${TEMPORAL_DEFAULT_DAYS:-7}
+
+      # Graphiti/Neo4j Configuration (RAG Phase 3.1)
+      - NEO4J_URI=bolt://neo4j:7687
+      - NEO4J_USER=${NEO4J_USER:-neo4j}
+      - NEO4J_PASSWORD=${NEO4J_PASSWORD:-voxbridge_graph}
+      - GRAPHITI_LLM_PROVIDER=${GRAPHITI_LLM_PROVIDER:-openrouter}
+      - GRAPHITI_EMBEDDING_MODEL=${GRAPHITI_EMBEDDING_MODEL:-BAAI/bge-large-en-v1.5}
+
+      # RAG Service Client (Phase 3.1 Containerization)
+      - RAG_SERVICE_URL=http://voxbridge-rag:4910
     depends_on:
       postgres:
+        condition: service_healthy
+      neo4j:
         condition: service_healthy
       whisperx:
         condition: service_started
@@ -167,6 +214,71 @@ services:
     networks:
       - bot-network
       - pinkleberry_bridge
+
+  # VoxBridge RAG - Document ingestion and hybrid retrieval service
+  voxbridge-rag:
+    build:
+      context: ./rag
+      dockerfile: Dockerfile
+    container_name: voxbridge-rag
+    ports:
+      - "4910:4910"
+    environment:
+      # Database
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-voxbridge}:${POSTGRES_PASSWORD:-voxbridge_dev_password}@postgres:5432/${POSTGRES_DB:-voxbridge}
+
+      # Neo4j (optional - graceful degradation if unavailable)
+      - RAG_NEO4J_URI=bolt://neo4j:7687
+      - RAG_NEO4J_USER=${NEO4J_USER:-neo4j}
+      - RAG_NEO4J_PASSWORD=${NEO4J_PASSWORD:-voxbridge_graph}
+
+      # LLM for Graphiti entity extraction
+      - RAG_LLM_PROVIDER=${GRAPHITI_LLM_PROVIDER:-local}
+      - RAG_LLM_MODEL=${GRAPHITI_LLM_MODEL:-llama3.2:3b}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+      - LOCAL_LLM_BASE_URL=${LOCAL_LLM_BASE_URL:-http://ollama:11434/v1}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-not-needed}
+
+      # Embeddings & Reranking
+      - RAG_EMBEDDING_MODEL=${RAG_EMBEDDING_MODEL:-BAAI/bge-large-en-v1.5}
+      - RAG_RERANKER_MODEL=${RAG_RERANKER_MODEL:-BAAI/bge-reranker-base}
+
+      # Chunking
+      - RAG_CHUNK_SIZE=${RAG_CHUNK_SIZE:-512}
+      - RAG_CHUNK_OVERLAP_PERCENT=${RAG_CHUNK_OVERLAP_PERCENT:-10}
+
+      # Retrieval
+      - RAG_RETRIEVAL_TOP_K=${RAG_RETRIEVAL_TOP_K:-20}
+      - RAG_RERANK_TOP_K=${RAG_RERANK_TOP_K:-10}
+
+      # Debug
+      - RAG_DEBUG=${RAG_DEBUG:-false}
+    volumes:
+      - rag-models:/home/raguser/.cache/huggingface  # Cache for embeddings/reranker models
+    depends_on:
+      postgres:
+        condition: service_healthy
+      neo4j:
+        condition: service_healthy
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+        reservations:
+          memory: 1G
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    networks:
+      - bot-network
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:4910/health"]
+      interval: 30s
+      timeout: 10s
+      start_period: 60s
+      retries: 3
 
   # VoxBridge Frontend - React monitoring dashboard
   voxbridge-frontend:
@@ -222,3 +334,21 @@ volumes:
       type: none
       o: bind
       device: ../zexternal-volumes/voxbridge-models
+  neo4j-data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ../zexternal-volumes/voxbridge-neo4j-data
+  neo4j-logs:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ../zexternal-volumes/voxbridge-neo4j-logs
+  rag-models:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ../zexternal-volumes/voxbridge-rag-models
