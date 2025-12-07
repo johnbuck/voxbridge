@@ -1,8 +1,11 @@
 # VoxBridge Frontend + LangGraph Agent System - Implementation Plan
 
 **Created:** October 21, 2025
-**Status:** In Progress - Frontend Foundation Complete
+**Status:** Part 1 ✅ Complete (Frontend) | Part 2 Pending (LangGraph)
 **Project Location:** `/home/wiley/Docker/voxbridge`
+
+> **Note:** Part 1 (Frontend) is complete and deployed on port 4903.
+> Part 2 (LangGraph Agent System) is tracked in [ROADMAP.md](../ROADMAP.md) as Phase 3.13.
 
 ---
 
