@@ -12,6 +12,7 @@ import Header from '@/components/Header';
 import { VoxbridgePage } from '@/pages/VoxbridgePage';
 import { AgentsPage } from '@/pages/AgentsPage';
 import { MemoryPage } from '@/pages/MemoryPage';
+import { KnowledgePage } from '@/pages/KnowledgePage';
 import { SettingsPage } from '@/pages/SettingsPage';
 import { AdminPage } from '@/pages/AdminPage';
 import { LoginPage } from '@/pages/LoginPage';
@@ -63,6 +64,12 @@ function App() {
                   <Route path="/memory">
                     <ProtectedRoute>
                       <MemoryPage />
+                    </ProtectedRoute>
+                  </Route>
+
+                  <Route path="/knowledge">
+                    <ProtectedRoute>
+                      <KnowledgePage />
                     </ProtectedRoute>
                   </Route>
 

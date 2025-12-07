@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Link, useLocation } from 'wouter';
-import { Home, Brain, Database, Settings, Shield, Menu, X } from 'lucide-react';
+import { Home, Brain, Database, Settings, Shield, Menu, X, BookOpen } from 'lucide-react';
 import { cn } from '../lib/utils';
 
 export default function Navigation() {
@@ -25,6 +25,12 @@ export default function Navigation() {
       label: 'Memory',
       icon: Database,
       description: 'Manage User Facts & Memory Settings'
+    },
+    {
+      path: '/knowledge',
+      label: 'Knowledge',
+      icon: BookOpen,
+      description: 'RAG Collections & Documents'
     },
     {
       path: '/settings',
