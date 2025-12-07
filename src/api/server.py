@@ -28,6 +28,7 @@ from src.services.llm_service import get_llm_service, LLMConfig, ProviderType
 from src.services.tts_service import get_tts_service
 from src.services.plugin_manager import get_plugin_manager
 from src.services.memory_service import MemoryService, get_global_embedding_config
+from src.services.rag_client import get_rag_client, close_rag_client
 
 # Configuration
 from src.config.streaming import get_streaming_config, update_streaming_config, reset_streaming_config
@@ -41,6 +42,9 @@ from src.routes.system_settings_routes import router as system_settings_router
 from src.routes.memory_routes import router as memory_router
 from src.routes.auth_routes import router as auth_router
 from src.routes.admin_routes import router as admin_router
+
+# RAG routes now proxied to voxbridge-rag container (Phase 3.1 Containerization)
+from src.routes.rag_proxy_routes import router as rag_proxy_router
 
 # LLM exceptions for error handling
 from src.llm import LLMError, LLMConnectionError, LLMTimeoutError
@@ -513,6 +517,9 @@ app.include_router(auth_router)
 # Include admin management routes (User Auth & RBAC)
 app.include_router(admin_router)
 
+# RAG routes proxy to voxbridge-rag container (Phase 3.1 Containerization)
+app.include_router(rag_proxy_router)
+
 # Pydantic models for API
 class JoinVoiceRequest(BaseModel):
     channelId: str
@@ -687,6 +694,7 @@ async def shutdown_services():
     await tts_service.close()
     await stt_service.shutdown()
     await plugin_manager.shutdown()
+    await close_rag_client()
 
     logger.info("✅ Services shutdown complete")
 
@@ -758,16 +766,33 @@ async def health_check():
     # Check database connectivity
     db_healthy = await check_db_connection()
 
+    # Check RAG service health (non-blocking - graceful degradation)
+    rag_status = "unknown"
+    try:
+        rag_client = get_rag_client()
+        rag_health = await rag_client.health_check()
+        rag_status = rag_health.get("status", "unknown")
+    except Exception as e:
+        logger.debug(f"RAG health check failed: {e}")
+        rag_status = "unavailable"
+
     if not _bot_bridge:
         return {
             "status": "starting",
             "database": "ok" if db_healthy else "error",
+            "rag": rag_status,
             "timestamp": datetime.now().isoformat()
         }
 
+    # Overall status: degraded if any critical service is unhealthy
+    overall_status = "ok"
+    if not db_healthy:
+        overall_status = "degraded"
+
     return {
-        "status": "ok" if db_healthy else "degraded",
+        "status": overall_status,
         "database": "ok" if db_healthy else "error",
+        "rag": rag_status,
         "timestamp": datetime.now().isoformat()
     }
 

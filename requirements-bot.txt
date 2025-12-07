@@ -50,3 +50,6 @@ bcrypt>=4.0.0,<5.0.0  # bcrypt backend for passlib (compatible version)
 python-jose[cryptography]>=3.3.0  # JWT token creation and validation
 python-multipart>=0.0.6  # Form data parsing for login endpoints
 email-validator>=2.0.0  # Email validation for Pydantic EmailStr
+
+# RAG Service Client (Phase 3.1 - heavy deps moved to voxbridge-rag container)
+# See rag/ directory for RAG-specific dependencies (graphiti, unstructured, etc.)

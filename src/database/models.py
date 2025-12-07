@@ -480,6 +480,209 @@ class ExtractionTask(Base):
         return f"<ExtractionTask(id={self.id}, user_id='{self.user_id}', status='{self.status}', attempts={self.attempts})>"
 
 
+# ============================================================================
+# RAG & Knowledge Graph Models (Phase 3.1)
+# ============================================================================
+
+
+class Collection(Base):
+    """
+    Knowledge Collection (RAG Phase 3.1)
+
+    Stores knowledge bases for organizing documents.
+    Each collection can be shared across multiple agents via agent_collections.
+
+    Features:
+    - User ownership with optional public sharing
+    - Document/chunk count tracking
+    - Flexible metadata storage
+    """
+
+    __tablename__ = "collections"
+
+    # Primary key - UUID for global uniqueness
+    id = Column(UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()"))
+
+    # Collection Identity
+    name = Column(String(255), nullable=False)
+    description = Column(Text, nullable=True)
+
+    # Ownership
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    is_public = Column(Boolean, server_default=text("false"))  # Shared across all agents
+
+    # Statistics (denormalized for performance)
+    document_count = Column(Integer, server_default="0")
+    chunk_count = Column(Integer, server_default="0")
+
+    # Flexible metadata (JSON) - Column mapped to 'metadata' in DB
+    meta_data = Column("metadata", JSONB, server_default="{}")
+
+    # Timestamps
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    # Relationships
+    user = relationship("User")
+    documents = relationship("Document", back_populates="collection", cascade="all, delete-orphan")
+    agent_collections = relationship("AgentCollection", back_populates="collection", cascade="all, delete-orphan")
+
+    # Constraints
+    __table_args__ = (
+        UniqueConstraint("user_id", "name", name="uq_collection_user_name"),
+    )
+
+    def __repr__(self):
+        return f"<Collection(id={self.id}, name='{self.name}', document_count={self.document_count})>"
+
+
+class Document(Base):
+    """
+    Document (RAG Phase 3.1)
+
+    Stores uploaded documents (PDF, DOCX, TXT, MD) and web content.
+    Documents are chunked into DocumentChunk entries for vector search.
+
+    Source Types:
+    - pdf: PDF files
+    - docx: Microsoft Word documents
+    - txt: Plain text files
+    - md: Markdown files
+    - web: Scraped web pages
+    - code: Source code files
+    """
+
+    __tablename__ = "documents"
+
+    # Primary key - UUID for global uniqueness
+    id = Column(UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()"))
+
+    # Collection Association
+    collection_id = Column(UUID(as_uuid=True), ForeignKey("collections.id", ondelete="CASCADE"), nullable=False, index=True)
+
+    # Document Identity
+    filename = Column(String(500), nullable=False)
+    source_type = Column(String(50), nullable=False)  # 'pdf', 'docx', 'txt', 'md', 'web', 'code'
+    source_url = Column(Text, nullable=True)  # For web content
+    mime_type = Column(String(100), nullable=True)
+    file_size_bytes = Column(Integer, nullable=True)
+
+    # Deduplication
+    content_hash = Column(String(64), nullable=True, index=True)  # SHA-256
+
+    # Processing Status
+    chunk_count = Column(Integer, server_default="0")
+    processing_status = Column(String(50), server_default="'pending'")  # 'pending', 'processing', 'completed', 'failed'
+    processing_error = Column(Text, nullable=True)
+
+    # Flexible metadata (title, author, etc.) - Column mapped to 'metadata' in DB
+    meta_data = Column("metadata", JSONB, server_default="{}")
+
+    # Timestamps
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    # Relationships
+    collection = relationship("Collection", back_populates="documents")
+    chunks = relationship("DocumentChunk", back_populates="document", cascade="all, delete-orphan")
+
+    def __repr__(self):
+        return f"<Document(id={self.id}, filename='{self.filename}', status='{self.processing_status}')>"
+
+
+class DocumentChunk(Base):
+    """
+    Document Chunk (RAG Phase 3.1)
+
+    Stores chunked content with vector embeddings for similarity search.
+    Uses pgvector for efficient vector storage and retrieval.
+
+    Bi-Temporal Model:
+    - ingested_at: When the chunk was added to the system
+    - valid_from: When the information became valid (document date)
+    - valid_until: When the information stopped being valid (NULL = still valid)
+    """
+
+    __tablename__ = "document_chunks"
+
+    # Primary key - UUID for global uniqueness
+    id = Column(UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()"))
+
+    # Document Association
+    document_id = Column(UUID(as_uuid=True), ForeignKey("documents.id", ondelete="CASCADE"), nullable=False, index=True)
+
+    # Chunk Content
+    chunk_index = Column(Integer, nullable=False)  # Order within document
+    content = Column(Text, nullable=False)
+    token_count = Column(Integer, nullable=True)
+
+    # Position in Original Document
+    start_char = Column(Integer, nullable=True)
+    end_char = Column(Integer, nullable=True)
+    page_number = Column(Integer, nullable=True)  # For PDFs
+    section_title = Column(String(500), nullable=True)  # Extracted heading
+
+    # Flexible metadata - Column mapped to 'metadata' in DB
+    meta_data = Column("metadata", JSONB, server_default="{}")
+
+    # Bi-Temporal Tracking
+    ingested_at = Column(DateTime(timezone=True), server_default=func.now())
+    valid_from = Column(DateTime(timezone=True), server_default=func.now())
+    valid_until = Column(DateTime(timezone=True), nullable=True)  # NULL = still valid
+
+    # Timestamp
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    # NOTE: embedding column (vector(1024)) is added via raw SQL in migration
+    # SQLAlchemy doesn't natively support pgvector types
+
+    # Relationships
+    document = relationship("Document", back_populates="chunks")
+
+    def __repr__(self):
+        return f"<DocumentChunk(id={self.id}, document_id={self.document_id}, chunk_index={self.chunk_index})>"
+
+
+class AgentCollection(Base):
+    """
+    Agent-Collection Junction Table (RAG Phase 3.1)
+
+    Links agents to their knowledge collections (many-to-many).
+    Each agent can access multiple collections, and collections can be shared.
+
+    Features:
+    - Priority ordering for relevant collections
+    - Enables per-agent knowledge scope
+    """
+
+    __tablename__ = "agent_collections"
+
+    # Primary key - UUID for global uniqueness
+    id = Column(UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()"))
+
+    # Associations
+    agent_id = Column(UUID(as_uuid=True), ForeignKey("agents.id", ondelete="CASCADE"), nullable=False, index=True)
+    collection_id = Column(UUID(as_uuid=True), ForeignKey("collections.id", ondelete="CASCADE"), nullable=False, index=True)
+
+    # Ordering
+    priority = Column(Integer, server_default="0")  # Higher = more relevant
+
+    # Timestamp
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    # Relationships
+    agent = relationship("Agent")
+    collection = relationship("Collection", back_populates="agent_collections")
+
+    # Constraints
+    __table_args__ = (
+        UniqueConstraint("agent_id", "collection_id", name="uq_agent_collection"),
+    )
+
+    def __repr__(self):
+        return f"<AgentCollection(agent_id={self.agent_id}, collection_id={self.collection_id}, priority={self.priority})>"
+
+
 class SystemSettings(Base):
     """
     Global System Settings (VoxBridge 2.0 Phase 2)

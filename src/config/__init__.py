@@ -8,6 +8,10 @@ from .streaming import (
     reset_streaming_config,
     is_streaming_enabled,
 )
+from .graphiti import (
+    GraphitiSettings,
+    get_graphiti_settings,
+)
 
 __all__ = [
     'StreamingConfig',
@@ -16,4 +20,6 @@ __all__ = [
     'update_streaming_config',
     'reset_streaming_config',
     'is_streaming_enabled',
+    'GraphitiSettings',
+    'get_graphiti_settings',
 ]
